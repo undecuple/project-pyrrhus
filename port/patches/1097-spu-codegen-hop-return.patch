@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1097-spu-codegen-hop-return.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1097-spu-codegen-hop-return.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1097: cheaper SPU job code and direct hops for the audio mixer jobs.
 
 - fsmb/fsmbi: one 16-entry nibble table per SPU word (a constant immediate folds to a constant vector); the byte

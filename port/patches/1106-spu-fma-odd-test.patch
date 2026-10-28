@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1106-spu-fma-odd-test.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1106-spu-fma-odd-test.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1106: the -mfma fast path of spu__fma4 tests its result in 4 vector ops instead of 7.
 
 Patch 1097's fused path returns the vfmadd result unless a lane is "odd": |r| non-zero below 2^-125 (exponent 0 or

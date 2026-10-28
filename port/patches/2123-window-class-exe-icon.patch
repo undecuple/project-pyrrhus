@@ -1,0 +1,41 @@
+KZ2 patch 2123: the D3D12 and null backend window class takes the exe's icon resource 1 for the
+title bar and taskbar. From Project Helghast (the Killzone 3 PC port) patch 2122, v0.1.3
+(2122-d3d12-window-class-icon.patch; same author, MIT); renumbered because KZ2's 2122 is the Keyboard page rows.
+Symptom: the game window and its taskbar button show the generic Windows icon although kz2.exe carries the
+Project Pyrrhus icon (installer/app.rc.in: `1 ICON "kz2.ico"`). Cause: create_window() in rsx_d3d12_backend.c and
+rsx_null_backend.c (the live renderer's window) registers the WNDCLASSEXA without hIcon/hIconSm. Fix: load the exe's
+icon resource id 1 with LoadImageA at SM_CXICON/SM_CYICON and SM_CXSMICON/SM_CYSMICON; an exe without that resource
+gets NULL and keeps the default icon. General (upstream candidate).
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -681,6 +681,12 @@
+     wc.lpfnWndProc = d3d12_wndproc;
+     wc.hInstance = GetModuleHandle(NULL);
+     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
++    /* KZ2 patch 2123 (from Project Helghast patch 2122, v0.1.3): the host exe's first icon resource (id 1) is
++     * the window and taskbar icon. No such resource: LoadImage returns NULL and Windows keeps its default icon. */
++    wc.hIcon   = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++                                   GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
++    wc.hIconSm = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+     wc.lpszClassName = "ps3recomp_d3d12";
+     RegisterClassExA(&wc);
+ 
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -555,6 +555,12 @@
+     wc.hInstance = GetModuleHandle(NULL);
+     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
++    /* KZ2 patch 2123 (from Project Helghast patch 2122, v0.1.3): the host exe's first icon resource (id 1) is
++     * the window and taskbar icon. No such resource: LoadImage returns NULL and Windows keeps its default icon. */
++    wc.hIcon   = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++                                   GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
++    wc.hIconSm = (HICON)LoadImageA(wc.hInstance, MAKEINTRESOURCEA(1), IMAGE_ICON,
++                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+     wc.lpszClassName = "ps3recomp_null";
+     RegisterClassExA(&wc);
+ 

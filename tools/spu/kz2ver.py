@@ -1,6 +1,6 @@
 """EBOOT version switch and image table for the KZ2 SPU tools (lift_spu.py, gen_spu_register.py).
 
-Adapted from KZ3 78bf574 tools/spu/kz3ver.py, much simpler: KZ2's image table is the re-data census
+Adapted from Project Helghast tools/spu/kz3ver.py, much simpler: KZ2's image table is the re-data census
 (re/wws_jobs_v129.tsv, re/wws_jobs_v101.tsv: kind, file offset, size, header, registered name), so every image is
 carved from the EBOOT itself and named by its file offset in the selected version (elf_00ccb180, job_00d71900,
 pm_00d92c80). KZ2_EBOOT_VER=129 (default) or 101.

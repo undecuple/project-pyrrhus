@@ -15,7 +15,7 @@ covers main memory only).
   ld_gv_note_gpu_write and both write-back paths; ld_pwd_flip prints one `[post-wb]` line per record with SPU
   GETs every N frames (LD_POST_WB_DIAG=N, 1 = 60; at most 4000 lines).
 
-From KZ3 dabb17c3 port/patches/2084-post-wb-diag.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2084-post-wb-diag.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: applied with fuzz on the kz2-v015 stack (context lines of KZ3-only patches), placements checked, re-diffed.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

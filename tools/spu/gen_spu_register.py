@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate KZ2's SPU registration TU for ps3recomp's runtime from the lift in <lift>/lift.
-From KZ3 78bf574 tools/spu/gen_spu_register.py (kz3 -> kz2; output is the spu_workloads.c that port/kz2/CMakeLists.txt
+From Project Helghast tools/spu/gen_spu_register.py (kz3 -> kz2; output is the spu_workloads.c that port/kz2/CMakeLists.txt
 compiles from SPU_DIR, no port/spu subproject; no KZ3 skip/cull tables).
 
     gen_spu_register.py --lift work/spu/spu [--only NAME,...]
@@ -189,7 +189,7 @@ def main():
     for m in images:
         L.append(f"extern void {m['name']}_spu_recomp_register(void);")
         if m["kind"] in ("pm", "elf"):
-            L.append(f"extern SPU_ABI void {m['entry_sym']}(spu_context*);")   # patch 1099 (from KZ3 0c2e770b)
+            L.append(f"extern SPU_ABI void {m['entry_sym']}(spu_context*);")   # patch 1099 (from Project Helghast)
     L += ["", "unsigned kz2_spu_image_count = %du;" % sum(m["kind"] != "elfseg" for m in images), "",
           "void kz2_spu_register_all(void)", "{",
           "    static int done;", "    if (done) return;", "    done = 1;"]

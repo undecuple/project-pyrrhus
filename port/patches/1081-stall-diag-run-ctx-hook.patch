@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1081-stall-diag-run-ctx-hook.patch (taken 2026-10-20); hand-rebased: the spu_async_run hunk without KZ3 1066/1072's lines (KZ2 has neither).
+From Project Helghast port/patches/1081-stall-diag-run-ctx-hook.patch (taken 2026-10-20); hand-rebased: the spu_async_run hunk without KZ3 1066/1072's lines (KZ2 has neither).
 KZ3 patch 1081 (opt-in diagnostic): publish the live spu_context of every lifted job/task run and
 policy-module run (g_kz3_run_ctx_hook, defined next to spu_run_with_halt), the taskset/task id of the async task
 thread (g_kz3_cur_taskset/taskid), and one scan call per SPURS watcher pass (g_kz3_stall_scan). NULL hooks unless

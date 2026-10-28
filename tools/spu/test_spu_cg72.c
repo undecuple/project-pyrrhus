@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_cg72.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_cg72.c (unchanged). */
 /* Patch 1097 host test: the rewritten SPU helpers against copies of the old ones.
  * 1. fsmb/fsmbi (nibble table): all 65536 masks against the byte loop.
  * 2. cbd/chd/cwd/cdd generate-controls (tables): every position -64..63 against the byte loops.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launcher logic behind `Project Pyrrhus.exe`. From KZ3 78bf574 tools/release/launch.py (no "Prepare shaders
+"""Launcher logic behind `Project Pyrrhus.exe`. From Project Helghast tools/release/launch.py (no "Prepare shaders
 again": KZ2 has no shader warm-up yet).
 
 The exe (installer/launcher/launcher.c) only starts the bundled `toolchain\\python\\pythonw.exe` on this file with
@@ -110,7 +110,7 @@ def write_ini(root, section, key, value):
 
 def version_line(root):
     """"version: <VERSION.txt>", plus what the build recorded in build/build-stamp.json (port version, patch set, build
-    time) when that file exists; nothing is invented (from KZ3 2f45a2b)."""
+    time) when that file exists; nothing is invented (from Project Helghast v0.1.3)."""
     stamp = load_json(os.path.join(root, "build", "build-stamp.json")) or {}
     rec = [f"{k} {stamp[k]}" for k in ("version", "patchset", "built") if stamp.get(k)]
     return f"version: {fr.port_version(root)}" + (f" (build stamp: {', '.join(rec)})" if rec else "")
@@ -280,7 +280,7 @@ def setup_paths(root):
 
 def firstrun_cmd(root, action, paths, portable, python):
     """The build command for an action other than run. A first build with the installer's folders in kz2-install.ini
-    [paths] starts from them (checks them first; the console asks only after a FAIL or on c; from KZ3 3d692df);
+    [paths] starts from them (checks them first; the console asks only after a FAIL or on c; from Project Helghast v0.1.3);
     without them, and for missing-inputs (the recorded folders are gone), the console asks."""
     a = [python, os.path.join(HERE, "firstrun.py"), "--root", root, "--log-dir", root, "--log-name", FIRSTRUN_LOG]
     given = setup_paths(root) if (action == "first-build" and not paths) else {}
@@ -299,18 +299,19 @@ def firstrun_cmd(root, action, paths, portable, python):
 
 
 def verify_install(root):
-    """The payload files against <root>/manifest.json (assemble_payload.py): -> (checked, [problems]).
+    """The payload files against <root>/manifest.json (assemble_payload.py): -> (files checked, [problems]).
     No manifest (a source tree, a developer run) -> (0, [])."""
     man = load_json(os.path.join(root, "manifest.json"))
     if not man or not isinstance(man.get("files"), list):
         return 0, []
     import hashlib
-    bad = []
+    bad, n = [], 0
     zip_only = set(man.get("zip_only", ()))     # the zip's run.cmd: an installed copy has none (kz2.iss Excludes)
     for e in man["files"]:
         p = os.path.join(root, *e["path"].split("/"))
         if e["path"] in zip_only and not os.path.lexists(p):
             continue
+        n += 1                                  # only what was checked is counted ("Verified: N install files")
         try:
             if os.path.getsize(p) != e["size"]:
                 bad.append(f"{e['path']} (changed)")
@@ -323,7 +324,7 @@ def verify_install(root):
                 bad.append(f"{e['path']} (changed)")
         except OSError:
             bad.append(f"{e['path']} (missing)")
-    return len(man["files"]), bad
+    return n, bad
 
 
 def repair(root, action, reason, paths, ini, ui, run):
@@ -346,7 +347,7 @@ def repair(root, action, reason, paths, ini, ui, run):
                           ini["portable"], console_python()), creationflags=flags)
     after, _ = decide(root)
     if rc != 0 or after != "run":
-        ui.info(f"The check or the build did not finish (code {rc}). The log is {os.path.join(root, FIRSTRUN_LOG)}.{REPORT}")
+        ui.info(f"{did_not_finish(rc, 'The check or the build did not finish')}. {log_note(root)}")
         return rc or 1
     ui.info(f"Verified: {checked} install files intact, your game files pass the checks and the port is up to date.")
     return 0
@@ -506,6 +507,28 @@ def run_wait(argv, **kw):
     return subprocess.call(argv, **kw)
 
 
+# The first-run console closed with its X button (or Ctrl+Break): STATUS_CONTROL_C_EXIT and DBG_TERMINATE_PROCESS, as
+# unsigned and signed exit codes. Adapted from Project Helghast (the Killzone 3 PC port, same author, MIT), KZ3
+# Project Helghast v0.1.1: the dialog said "code 3221225786".
+CONSOLE_CLOSED = (0xC000013A, 0x40010004, 0xC000013A - 2**32)
+
+
+def did_not_finish(rc, what):
+    """The dialog's first sentence for a first-run or rebuild child that ended with rc != 0."""
+    if rc in CONSOLE_CLOSED:
+        return what + " (its window was closed before it finished; finished steps are kept, open the program again to continue)"
+    return f"{what} (code {rc})"
+
+
+def log_note(root):
+    """The dialog's log sentence: the first-run log's path and how to report it, or, when the window was closed before
+    the first check wrote it, that no log exists yet (adapted from Project Helghast v0.1.1)."""
+    log = os.path.join(root, FIRSTRUN_LOG)
+    if os.path.isfile(log):
+        return f"The log is {log}.{REPORT}"
+    return "No log was written yet: it starts with the first check."
+
+
 def spawn(argv, **kw):
     return subprocess.Popen(argv, **kw)
 
@@ -608,13 +631,13 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         rc = run(firstrun_cmd(root, action, paths, ini["portable"], console_python()), creationflags=flags)
         if rc != 0:
-            ui.info(f"The build did not finish (code {rc}). The log is {os.path.join(root, FIRSTRUN_LOG)}.{REPORT}")
+            ui.info(f"{did_not_finish(rc, 'The build did not finish')}. {log_note(root)}")
             return rc
         ini = read_ini(root)   # --interactive may have written portable/check_updates
         action, reason = decide(root)
         paths = load_json(os.path.join(root, "build", "paths.json")) or {}
         if action != "run":
-            ui.info(f"{reason}. The log is {os.path.join(root, FIRSTRUN_LOG)}.{REPORT}")
+            ui.info(f"{reason}. {log_note(root)}")
             return 1
 
     gargv, cwd, env, added = game_env(root, paths, ini["portable"], environ, layout=ini["layout"], prompts=ini["prompts"],

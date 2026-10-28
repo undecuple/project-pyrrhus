@@ -1,4 +1,4 @@
-/* Project Pyrrhus.exe: the release's launcher (Killzone 2 PC port). From KZ3 78bf574 installer/launcher/launcher.c.
+/* Project Pyrrhus.exe: the release's launcher (Killzone 2 PC port). From Project Helghast installer/launcher/launcher.c.
  *
  * All decisions live in kz2-setup\release\launch.py (host-tested: tools/release/test_launch.py). This stub only
  * starts the bundled Python without a console window on it:

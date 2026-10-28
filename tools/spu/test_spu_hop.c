@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_hop.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_hop.c (unchanged). */
 /* Patch 1096 host test: direct hops between lifted SPU functions (SPU_HOP / SPU_IB_HOP in
  * spu_context.h). Self-contained: the runtime pieces the macros use are stubs here, the "lifted" functions are
  * hand-written in the form spu_lifter.py emits.

@@ -1,4 +1,4 @@
-# From KZ3 78bf574 cmake/llvm-mingw.cmake (unchanged below this line except comment wording).
+# From Project Helghast cmake/llvm-mingw.cmake (unchanged below this line except comment wording).
 # Build the Windows x64 exe with llvm-mingw (clang + lld + libc++/libunwind, MinGW-w64 UCRT): the release's
 # bundled compiler (KZ3 chose it for the installer payload) and the llvm-mingw trial. Mirrors cmake/mingw-w64.cmake (the
 # verified GCC 16.2 cross build). Works with a Windows-hosted llvm-mingw (the payload's toolchain\llvm-mingw,

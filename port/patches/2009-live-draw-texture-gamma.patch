@@ -10,7 +10,7 @@ Switches: LD_NO_GAMMA=1 turns the decode off; LD_GAMMA_NO_SURF=1 (diagnostic A/B
 surface; LD_GAMMA_LOG=1 prints each new (unit, format, gamma) combination, the units that sample a surface, and
 SET_SHADER_PACKER (0x1FBC, ASSUMPTION: the sRGB-output register) / SET_SURFACE_FORMAT values.
 Behaviour follows RPCS3 (GPL-2.0), the texture gamma bits of the RSX texture unit; read, not copied.
-From KZ3 78bf574 port/patches/2009-live-draw-texture-gamma.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2009-live-draw-texture-gamma.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): both sides kept (context moved by upstream edits)
 

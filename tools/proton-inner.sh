@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inside the sandbox (called by tools/proton-test.sh): Xvfb + Proton run + screenshot + cleanup.
-# From KZ3 78bf574 tools/proton-inner.sh (KZ3_* -> KZ2_*).
+# From Project Helghast tools/proton-inner.sh (KZ3_* -> KZ2_*).
 set -uo pipefail
 PROTON_DIR="$1" RUN="$2" SECS="$3" SHOT="$4" EXE="$5"; shift 5
 

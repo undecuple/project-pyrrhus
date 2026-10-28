@@ -1,4 +1,4 @@
-KZ2 patch 4018. From KZ3 e9390c46 port/patches/4018-cellfs-unlink-rmdir-remove-on-host.patch (Project Helghast,
+KZ2 patch 4018. From Project Helghast port/patches/4018-cellfs-unlink-rmdir-remove-on-host.patch (Project Helghast,
 undecuple, MIT). Applies unchanged on KZ2's stack. Host test: tools/runtime/test_cellfs.sh (KZ2's own fixture
 tools/runtime/test_fs_remove.cpp). Upstream candidate (the upstream fix list). KZ3's header follows.
 

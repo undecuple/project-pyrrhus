@@ -19,7 +19,7 @@
  *    (kz2_request_close in main.cpp: the same clean shutdown as the window's close button, exit code 0); any other
  *    url runs the original body.
  * 3. Keyboard page <-> host: PlayerProfile SetTimeZone(s) @0x00082E40 and GetTimeZone() @0x00A619FC (OPDs 0xE7AB70 /
- *    0xE7AB78; no page and no `bl` calls them) are re-registered the same way, as KZ3 78bf574 port/kz3/main.cpp does
+ *    0xE7AB78; no page and no `bl` calls them) are re-registered the same way, as Project Helghast port/kz3/main.cpp does
  *    (its "Keyboard page" bridge, copied and adapted): a "kb:<cmd>" string goes to pad_kb_ui_cmd (cellPad.c, patch
  *    2038), the reply is what the next GetTimeZone() returns; anything else runs the original bodies.
  * All three hooks check the first instruction words before they install (1.29 EBOOT only).

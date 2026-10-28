@@ -11,7 +11,7 @@ The bookkeeping is platform-neutral in libs/video/rsx_pso_async.h (host test too
 Aim: the cold-cache level-start stall (K4: 245 misses = 16.4 s of walker time).
 Statistics: [pso-async] every 256 frames once builds ran.
 
-From KZ3 dabb17c3 port/patches/2048-async-pso-builds.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2048-async-pso-builds.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: applied with fuzz on the kz2-v015 stack (context lines of KZ3-only patches), placements checked, re-diffed.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

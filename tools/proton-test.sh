@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run a Windows exe under the user's Proton, hidden and muted, inside the sandbox.
-# From KZ3 78bf574 tools/proton-test.sh (KZ3_* -> KZ2_*; runprov calls run only once tools/runprov.py is copied).
+# From Project Helghast tools/proton-test.sh (KZ3_* -> KZ2_*; runprov calls run only once tools/runprov.py is copied).
 # On a shared GPU, wrap it in a lock, e.g. flock: nix develop --command tools/proton-test.sh ...
 #
 #   tools/proton-test.sh [--seconds N] [--shot FILE.png] [--proton DIR] [--name NAME] EXE [ARGS...]

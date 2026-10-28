@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_mfc_slots.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_mfc_slots.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # MFC engine host test (tools/spu/test_mfc_slots.c; was patch 1083's, which v0.15.0 absorbed: upstream PR #290's
 # per-context slot list, s_mfc_slots in spu_channels.c, now grows without limit): every SPU context keeps its own
 # MFC engine past 64 live contexts (300 contexts: distinct engines, a held tag not completed by peers' DMA, released

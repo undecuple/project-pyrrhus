@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_fastcg.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_fastcg.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1038 host test (tools/spu/test_spu_fastcg.c), built with the port's SPU flags (-O2 -msse4.1).
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_fastcg.sh
 set -uo pipefail

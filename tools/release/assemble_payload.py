@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Assemble the Project Pyrrhus release payload folder from the repository, with an allowlist, a scrub and a
-manifest. From KZ3 78bf574 tools/release/assemble_payload.py (with the SPU lift tools; no shader warm-up, no net client:
+manifest. From Project Helghast tools/release/assemble_payload.py (with the SPU lift tools; no shader warm-up, no net client:
 KZ2 has neither yet). Standard library only, Python 3.8+.
 
     assemble_payload.py --out DIR [--repo DIR] [--replace] [--version [v]X.Y.Z] [--launcher EXE] [--toolchain CACHE]
@@ -85,6 +85,7 @@ RULES = [
     ("tools/release/lift_fixups.py", "kz2-setup/release/lift_fixups.py", "file", {}),
     ("tools/release/eboot_sha256.json", "kz2-setup/release/eboot_sha256.json", "file", {}),
     ("tools/release/psarc_sha256.json", "kz2-setup/release/psarc_sha256.json", "file", {}),   # firstrun_check A1
+    ("tools/release/iso9660.py", "kz2-setup/release/iso9660.py", "file", {}),   # a decrypted disc ISO as the dump
     # "Use my RPCS3 install": rpcs3_locate.py is a shared module, vendored unchanged; rpcs3_import.py is our glue
     ("tools/release/rpcs3_locate.py", "kz2-setup/release/rpcs3_locate.py", "file", {}),
     ("tools/release/rpcs3_import.py", "kz2-setup/release/rpcs3_import.py", "file", {}),

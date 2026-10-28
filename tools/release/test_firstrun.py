@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test for tools/release/firstrun.py (from KZ3 78bf574) on synthetic fake steps (no game data, no toolchain: each step runs the
+"""Host test for tools/release/firstrun.py (from Project Helghast) on synthetic fake steps (no game data, no toolchain: each step runs the
 current Python with a one-line script). Exit 0 = PASS, 1 = FAIL.
 
     python3 tools/release/test_firstrun.py
@@ -13,6 +13,7 @@ zip): re-asks a missing folder, finds the EBOOT, runs the real check on syntheti
 shows a console bar instead of raw lines and logs the answers; a failed check shows the update help and offers
 check again / quit; the opt-in version check is asked first and logged; the console bar's compile count.
 """
+import hashlib
 import io
 import json
 import os
@@ -390,6 +391,18 @@ def main():
         go = fr.interactive(a12, root12, "x.log", [], ask=lambda q: next(answers), out=io.StringIO(),
                             check=lambda *x: (1, "FAIL D1: x\n"))
         check(go is False, "12 quit after a failed check")
+        # 12d. folder answers one level too deep are stepped up (PS3_GAME/USRDIR, the update's USRDIR), and the EBOOT
+        # question takes the folder holding EBOOT.elf, saying where it looked (adapted from Project Helghast v0.1.2 and v0.1.4)
+        empty12 = os.path.join(t12, "empty")
+        os.makedirs(empty12, exist_ok=True)
+        got, o12d = [], io.StringIO()
+        a12d = types.SimpleNamespace(dump="", update="", eboot="", build=os.path.join(t12, "b"), portable=False)
+        answers = iter([os.path.join(d12, "PS3_GAME", "USRDIR"), os.path.join(u12, "USRDIR"), empty12, u12, "q"])
+        fr.interactive(a12d, root12, "x.log", [], ask=lambda q: next(answers), out=o12d,
+                       check=lambda *x: (got.append(x), (1, "FAIL D1: x\n"))[1])
+        o = o12d.getvalue()
+        check(got == [(os.path.abspath(d12), os.path.abspath(u12), os.path.abspath(os.path.join(u12, "USRDIR", "EBOOT.elf")))]
+              and "is a folder without EBOOT.elf or " in o and o.count("using ") == 3, f"12d folder answers: {got} {o[-400:]!r}")
 
         # 12b. --check-first: the folders from setup (kz2-install.ini [paths], via launch.py) are checked before any
         # folder question; the wizard's other answers are kept (no version, pad, prompt or display question)
@@ -437,6 +450,7 @@ def main():
               f"13 archive-hash progress on the check's permille, facts read: {p13}")
         cc = fr.cmd_check(c13)[0]
         check(cc[cc.index("--build") + 1] == c13.build and "--progress" in cc, f"13 check gets --build and --progress {cc}")
+        check(cc[cc.index("--root") + 1] == c13.root, f"13 check gets --root (O1, OneDrive) {cc}")
         import firstrun_check as fc13
         got13 = []
         real_main = fc13.main
@@ -513,6 +527,114 @@ def main():
         b = bar.getvalue()
         check("Compiling 312 / 1,204" in b and "12:34" in b and "some tool output" not in b and "issues" in b
               and "Log: /x/y.log" in b, f"12 console bar: {b!r}")
+
+        # 16. a decrypted ISO as the dump (adapted from Project Helghast v0.1.2): the check step copies PS3_DISC.SFB and PS3_GAME
+        # into <root>/game/disc, hashing the archive on the way (A1), the later steps see that folder, the bar stays
+        # monotonic, a second run copies nothing, failures are plain
+        from iso_fixture import build_iso
+        import collections
+        t16 = os.path.join(tmp, "t16")
+        os.makedirs(os.path.join(t16, "root"))
+        iso16 = os.path.join(t16, "game.iso")
+        files16 = {"PS3_DISC.SFB": b".SFB" + b"\0" * 8, "PS3_GAME/PARAM.SFO": b"\0PSF" + b"s" * 30,
+                   "PS3_GAME/ICON0.PNG": b"png", "PS3_GAME/TROPDIR/NPWR00000_00/TROPHY.TRP": b"trp",
+                   "PS3_GAME/USRDIR/EBOOT.BIN": b"SCE\0" + b"e" * 20,
+                   "PS3_GAME/USRDIR/data_ps3.psarc": b"PSAR" + bytes(range(256)) * 80}
+        build_iso(iso16, files16, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 4096})
+        seen16 = os.path.join(t16, "seen.txt")
+        facts16 = py("import json; print(json.dumps({'ok': True, 'facts': {'disc': {'TITLE_ID': 'BCUS98116'}}}))")
+        steps16 = [fr.Step("check", "Check", 1, lambda c: [facts16], always=True, after=fr.after_check),
+                   fr.Step("b", "B", 2, lambda c: [append(seen16, c.dump + "\n")])]
+        out16 = io.StringIO()
+        args16 = ["--dump", iso16, "--root", os.path.join(t16, "root"), "--jobs", "1", "--log-dir", os.path.join(t16, "dl")]
+        known16 = os.path.join(t16, "known.json")
+        psarc16 = files16["PS3_GAME/USRDIR/data_ps3.psarc"]
+        with open(known16, "w") as f:
+            json.dump({"sha256": hashlib.sha256(psarc16).hexdigest(), "size": len(psarc16), "discs": ["BCUS98116"],
+                       "fail_on_mismatch": True}, f)
+        import firstrun_check as fc16
+        real_known, real_hash = fc16.PSARC_HASHES_FILE, fc16.hash_file
+        reads16 = []
+        fc16.hash_file = lambda p, progress=None: (reads16.append(p), real_hash(p, progress))[1]
+        defaults = fc16.check_psarc_hash.__defaults__
+        fc16.check_psarc_hash.__defaults__ = (known16,) + defaults[1:]
+        try:
+            rc = fr.main(args16, steps=steps16, out=out16)
+            dest16 = os.path.join(t16, "root", "game", "disc")
+            o16 = out16.getvalue()
+            check(rc == 0 and "OK   A1: data_ps3.psarc matches the known disc archive" in o16 and not reads16,
+                  f"16 rc {rc}, A1 from the hash taken while copying (no second read): {o16[-400:]}")
+            got16 = {os.path.relpath(os.path.join(dd, n), dest16).replace(os.sep, "/"): open(os.path.join(dd, n), "rb").read()
+                     for dd, _, ns in os.walk(dest16) for n in ns}
+            check(got16 == files16, f"16 extracted tree equals the ISO's files, disc spelling kept: {sorted(got16)}")
+            check(open(seen16).read().strip() == dest16, "16 later steps see the extracted folder as the dump")
+            pj = json.load(open(os.path.join(t16, "root", "build", "paths.json")))
+            check(pj["dump"] == dest16 and pj["iso"] == iso16 and pj["facts"]["psarc"]["sha256"]
+                  == hashlib.sha256(psarc16).hexdigest(), "16 paths.json records the folder, the ISO and the hash")
+            pr16 = progress(o16)
+            pc16 = [float(x["pct"]) for x in pr16]
+            check(pc16 == sorted(pc16) and pc16[-1] == 100.0, f"16 pct monotonic to 100: {pc16}")
+            check(any(x["name"] == "check" and x["total"] == "1000" and x["done"] == "1000" for x in pr16),
+                  "16 copy progress ends at 1000/1000")
+            check(fr.steps_for(True)[0].weight > fr.STEPS[0].weight and fr.steps_for(False)[0].weight == fr.STEPS[0].weight,
+                  "16 the check step weighs more for an ISO")
+            out16 = io.StringIO()
+            rc = fr.main(args16, steps=steps16, out=out16)
+            check(rc == 0 and "0.00 GiB to copy" in out16.getvalue() and "OK   A1" in out16.getvalue() and len(reads16) <= 1
+                  and not any(n.endswith(".part") for _, _, ns in os.walk(dest16) for n in ns),
+                  f"16 a second run copies nothing; A1 read at most once (then cached): {len(reads16)}")
+            victim = os.path.join(dest16, "PS3_GAME", "USRDIR", "data_ps3.psarc")
+            with open(victim, "r+b") as f:
+                f.truncate(100)
+            c16 = fr.Ctx(root=os.path.join(t16, "root"), build=os.path.join(t16, "b"), iso=iso16, dump=iso16)
+            said = []
+            sha = fr.iso_extract(c16, say=said.append)
+            check(open(victim, "rb").read() == psarc16 and c16.dump == dest16 and sha == hashlib.sha256(psarc16).hexdigest(),
+                  "16 a short file is copied again (and hashed)")
+            # a damaged archive inside the ISO fails A1 (fail_on_mismatch) with a plain message, RESULT ok=0
+            bad16 = dict(files16, **{"PS3_GAME/USRDIR/data_ps3.psarc": b"PSAR" + bytes(255 - (k % 256) for k in range(20480))})
+            shutil.rmtree(dest16)
+            build_iso(iso16, bad16, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 4096})
+            out16 = io.StringIO()
+            rc = fr.main(args16, steps=steps16, out=out16)
+            check(rc == 1 and "FAIL A1" in out16.getvalue() and "failed the archive check (A1)" in out16.getvalue()
+                  and "RESULT ok=0 step=check" in out16.getvalue(), f"16 damaged archive in the ISO: {out16.getvalue()[-300:]}")
+        finally:
+            fc16.PSARC_HASHES_FILE, fc16.hash_file = real_known, real_hash
+            fc16.check_psarc_hash.__defaults__ = defaults
+        build_iso(iso16, files16, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 4096})
+        shutil.rmtree(dest16)
+        c16 = fr.Ctx(root=os.path.join(t16, "root"), build=os.path.join(t16, "b"), iso=iso16, dump=iso16)
+        try:
+            fr.iso_extract(c16, say=said.append, free=lambda p: collections.namedtuple("U", "free")(1000))
+            check(False, "16 low disk space refused")
+        except fr.StepFailed as e:
+            check("Not enough free disk space" in str(e) and "GiB" in str(e)
+                  and not os.path.exists(os.path.join(dest16, "PS3_GAME")), f"16 low disk space refused before writing: {e}")
+        enc = bytearray(2048 * 40)
+        enc[0:4] = b"\0\0\0\2"
+        enc[8:24] = b"\0\0\0\0\0\0\0\x0f\0\0\0\x10\0\0\0\x1e"
+        bad16 = os.path.join(t16, "enc.iso")
+        open(bad16, "wb").write(bytes(enc))
+        c16 = fr.Ctx(root=os.path.join(t16, "root"), build=os.path.join(t16, "b"), iso=bad16, dump=bad16)
+        try:
+            fr.iso_extract(c16, say=said.append)
+            check(False, "16 encrypted ISO refused")
+        except fr.StepFailed as e:
+            check(str(e) == "this ISO is encrypted; use a decrypted dump", f"16 encrypted ISO message: {e}")
+        open(bad16, "wb").write(b"not an iso" * 5000)
+        try:
+            fr.iso_extract(c16, say=said.append)
+            check(False, "16 non-ISO refused")
+        except fr.StepFailed as e:
+            check("cannot read the ISO" in str(e), f"16 non-ISO message: {e}")
+        # the console prompt takes a .iso file as the dump (and still re-asks a missing path)
+        picked = []
+        answers = iter([os.path.join(t16, "nope.iso"), iso16, u12, "", "q"])
+        a16 = types.SimpleNamespace(dump="", update="", eboot="", build=os.path.join(t16, "b"), portable=False)
+        go = fr.interactive(a16, root12, "x.log", [], ask=lambda q: next(answers), out=io.StringIO(),
+                            check=lambda dd, uu, ee: (picked.append(dd), (1, "FAIL D1: x\n"))[1])
+        check(go is False and picked == [iso16], f"16 the console accepts a decrypted .iso as the dump: {picked}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("test_firstrun:", "PASS" if not FAILS else f"FAIL ({len(FAILS)})")

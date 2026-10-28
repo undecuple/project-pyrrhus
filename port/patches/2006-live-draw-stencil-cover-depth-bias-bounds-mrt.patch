@@ -22,7 +22,7 @@ KZ3 port, 2026-10-08.
 
 Rebased on ps3recomp v0.15.0: PR282 z16 clear overlaps, ours kept since 2041 builds the same decode on it (seen-count default, clear rects).
 Behaviour follows RPCS3 (GPL-2.0), the RSX clear handling (scissored clears) and its depth-bounds, polygon-offset and per-face stencil state handling; read, not copied.
-From KZ3 78bf574 port/patches/2006-live-draw-stencil-cover-depth-bias-bounds-mrt.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2006-live-draw-stencil-cover-depth-bias-bounds-mrt.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

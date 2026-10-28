@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_cg72.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_cg72.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1097 host test (tools/spu/test_spu_cg72.c): fsmbi/generate-control tables, SSE conversions and the fma
 # exact-midpoint lanes against the old helpers, built with the port's SPU flags (-O2 -msse4.1, no FP contraction).
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_cg72.sh

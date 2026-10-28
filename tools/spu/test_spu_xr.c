@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_xr.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_xr.c (unchanged). */
 /* Patch 1071 host test: SPU extended-range single precision on exponent-255 lanes (SPU ISA v1.2 s.9.1: no Inf/NaN,
  * exponent 255 is ordinary, overflow saturates to +-Smax = 0x7FFFFFFF, exponent 0 is zero, truncation).
  * Checks the ISA rules on such lanes, that every other lane is bit-identical with the patch off (g_kz3_spu_xr = 0),

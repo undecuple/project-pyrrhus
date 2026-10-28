@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_fastcg.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_fastcg.c (unchanged). */
 /* Patch 1038 host test (KZ3_SPU_FASTCG paths against the old ones, g_kz3_spu_slowcg = 1):
  * 1. the pshufb quadword byte shifts/rotates (spu__byteperm) for every shift count, out-of-range counts and
  *    random data. Negative control: an index without the SPU_W word swap (t instead of t ^ 3) must be caught.

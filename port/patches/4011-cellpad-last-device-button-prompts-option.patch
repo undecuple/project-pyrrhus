@@ -1,4 +1,4 @@
-KZ2 patch 4011: the last input device and the button prompts option. From KZ3 55b2d073
+KZ2 patch 4011: the last input device and the button prompts option. From Project Helghast
 port/patches/4011-cellpad-last-device-button-prompts-option.patch (KZ3 stage 2). KZ2 changes: KZ2_PROMPTS=auto|ps3|ps4|
 xbox|keyboard (KZ3_PROMPTS); keybinds.ini [prompts] buttons=... is the option (KZ2 has no Options row for it yet; KZ3's
 page is port/net/kz3_prompts_ui.h, not carried).

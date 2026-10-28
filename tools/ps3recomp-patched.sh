@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 78bf574 tools/ps3recomp-patched.sh (KZ3_* -> KZ2_*; output under $KZ2_OUT, default work/, so a second worktree can
+# From Project Helghast tools/ps3recomp-patched.sh (KZ3_* -> KZ2_*; output under $KZ2_OUT, default work/, so a second worktree can
 # write its own copy: KZ2_OUT=work/runtime).
 # Make $KZ2_OUT/ps3recomp-patched: a fresh copy of third_party/ps3recomp at its pinned commit with every
 # port/patches/*.patch applied. Both the lift (tools/lift.sh) and the Windows build (port/kz2) use it, so

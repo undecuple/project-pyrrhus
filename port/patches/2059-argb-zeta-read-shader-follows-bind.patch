@@ -16,7 +16,7 @@ tagging. Log: [zeta-argb] ... pso unit reads colour (first 16). Host test tools/
 checks all four channels of a 0.3 colour (COL0 = 1 survived the rebuild by accident). Upstream candidate (general
 aliasing rule, follows 2011/2044).
 
-From KZ3 dabb17c3 port/patches/2059-argb-zeta-read-shader-follows-bind.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2059-argb-zeta-read-shader-follows-bind.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

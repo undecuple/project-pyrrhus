@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Host test for the release toolchain: tools/release/toolchain.json, fetch_toolchain.py, assemble_payload.py
---toolchain and firstrun.py's use of the payload toolchain (from KZ3 78bf574). No network: the "downloads" are file:// URLs
+--toolchain and firstrun.py's use of the payload toolchain (from Project Helghast). No network: the "downloads" are file:// URLs
 to zips built in a temp folder. Exit 0 = PASS, 1 = FAIL.
 
     python3 tools/release/test_fetch_toolchain.py

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# From KZ3 0c2e770b tools/spu/test_ib_guess.py (KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched).
+# From Project Helghast tools/spu/test_ib_guess.py (KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched).
 """Patch 1098 host test: the lifter's computed-hop guesses (compute_ib_guesses in tools/spu_lifter.py).
 
     python3 tools/spu/test_ib_guess.py            (KZ2_PATCHED_DIR = patched ps3recomp, default work/ps3recomp-patched)

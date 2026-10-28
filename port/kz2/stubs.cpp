@@ -1,4 +1,4 @@
-/* Killzone 2 port host. From KZ3 78bf574 port/kz3/stubs.cpp, itself ps3recomp templates/project/stubs.cpp (MIT
+/* Killzone 2 port host. From Project Helghast port/kz3/stubs.cpp, itself ps3recomp templates/project/stubs.cpp (MIT
  * licence: third_party/ps3recomp/LICENSE). Unchanged apart from this header. */
 /*
  * ps3recomp game project -- game-specific hooks and overrides.

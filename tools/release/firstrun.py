@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """First-run build pipeline for the Project Pyrrhus installer and portable zip (Killzone 2 PC port).
-From KZ3 78bf574 tools/release/firstrun.py (Project Helghast), adapted to Killzone 2: an SPU lift step from
+From Project Helghast tools/release/firstrun.py (Project Helghast), adapted to Killzone 2: an SPU lift step from
 tools/spu (spu_step.py), no shader warm-up step (KZ3-only for now; see the release notes).
 
 Runs the checks, then lifts and compiles the port on the player's machine, as a table of steps (name, weight, command
 builder, done-marker). Standard library only, Python 3.11+, Windows and Linux.
 
-    firstrun.py --dump DIR --update DIR [--eboot FILE] [--root DIR] [--build DIR] [--jobs N] [--toolchain DIR]
+    firstrun.py --dump DIR|ISO --update DIR [--eboot FILE] [--root DIR] [--build DIR] [--jobs N] [--toolchain DIR]
                 [--log-dir DIR] [--log-name NAME] [--dry-run]
     firstrun.py --interactive [--portable] [same options; --dump/--update/--eboot become the defaults it offers]
 
+  --dump       the decrypted disc dump folder (holds PS3_GAME; a pick of PS3_GAME or PS3_GAME/USRDIR is taken as the
+               folder above), or a decrypted disc ISO file (adapted from Project Helghast v0.1.2). For an ISO the
+               check step checks the image (firstrun_check.py), then copies PS3_DISC.SFB and everything under PS3_GAME
+               out of it into <root>/game/disc, hashing the disc archive on the way (A1 without a second read), and the
+               rest of the build uses that folder as the dump; the ISO is only read. Files already extracted with the
+               same size are kept; too little free disk space (the missing bytes + 1 GiB) stops with a message before
+               anything is written.
   --root       the install (or source tree) holding the toolkit and our tools; default: two folders above this script
   --build      where everything generated goes; default <root>/build (the dump is never written to)
   --jobs       compile/lift job count; default from free RAM: (available - 8 GB) / 1.5 GB, clamped 1..8 (build-kz2.sh)
@@ -52,6 +59,7 @@ KZ3's runner ran every step on the payload's Windows Python under Proton; this K
 test (synthetic steps). Weights: ASSUMPTION (from the developer build's Linux timings) until a KZ2 first run is timed.
 """
 import argparse
+import dataclasses
 import datetime
 import hashlib
 import json
@@ -101,6 +109,9 @@ class Ctx:
     root: str
     build: str
     dump: str = ""
+    iso: str = ""                   # the decrypted ISO the player picked, until the check step has extracted it
+    progress: Callable | None = field(default=None, repr=False)   # (done, total) -> PROGRESS line, set by the Runner
+    say: Callable | None = field(default=None, repr=False)        # line -> the run's output and log, set by the Runner
     update: str = ""
     eboot: str = ""
     jobs: int = 1
@@ -194,7 +205,7 @@ class Step:
 
 
 class StepFailed(Exception):
-    """A step that cannot run, with the plain message for the player (from KZ3 3068397 / 88aa92c)."""
+    """A step that cannot run, with the plain message for the player (from Project Helghast v0.1.2 and v0.1.3)."""
 
 
 def _h16(text):
@@ -228,9 +239,10 @@ def lift_inputs_hash(c):
 
 # ------------------------------------------------------------------------------------------------- the step table
 def cmd_check(c):
-    # --build: A1 caches the disc archive's SHA-256 there; --progress: ARCHIVE-HASH lines (Runner.run_cmd's bar)
+    # --build: A1 caches the disc archive's SHA-256 there; --root/--build: O1 refuses them inside OneDrive (adapted
+    # from Project Helghast v0.1.2); --progress: ARCHIVE-HASH lines (Runner.run_cmd's bar)
     a = [*c.py, c.tool("release", "firstrun_check.py"), "--dump", c.dump, "--json",
-         "--target", EBOOT_VERS[c.ver]["check"], "--build", c.build, "--progress"]
+         "--target", EBOOT_VERS[c.ver]["check"], "--build", c.build, "--root", c.root, "--progress"]
     if c.update:
         a += ["--update", c.update]
     if c.eboot:
@@ -473,10 +485,116 @@ def cmd_compile(c):
 
 
 def after_record(c):
-    """Write paths.json (the launcher reads it): the three paths and the check's facts."""
+    """Write paths.json (the launcher reads it): the three paths and the check's facts (and the ISO they came from)."""
     os.makedirs(c.build, exist_ok=True)
     with open(c.b("paths.json"), "w", encoding="utf-8") as f:
-        json.dump({"dump": c.dump, "update": c.update, "eboot": c.eboot, "facts": c.facts}, f, indent=2)
+        json.dump({"dump": c.dump, "iso": c.iso, "update": c.update, "eboot": c.eboot, "facts": c.facts}, f, indent=2)
+
+
+# A decrypted disc ISO as the game source (adapted from Project Helghast, the Killzone 3 PC port, same author, MIT,
+# Project Helghast v0.1.2). The ISO must already be decrypted by the player; nothing here decrypts anything.
+ISO_NAMES = {n.lower(): n for n in ("PS3_DISC.SFB", "PS3_GAME/PARAM.SFO", "PS3_GAME/USRDIR/EBOOT.BIN",
+                                     "PS3_GAME/USRDIR/data_ps3.psarc")}   # the disc's own spelling
+ISO_MARGIN = 1 << 30           # free space kept beyond the bytes still to copy out of the ISO
+ISO_CHECK_WEIGHT = 8           # the check step also copies ~6.5 GiB out of an ISO: a bigger share of the bar
+
+
+def steps_for(iso, steps=None):
+    """The step table; for an ISO the check step (which also copies the files out) weighs ISO_CHECK_WEIGHT."""
+    return [dataclasses.replace(s, weight=max(s.weight, ISO_CHECK_WEIGHT)) if iso and s.name == "check" else s
+            for s in (STEPS if steps is None else steps)]
+
+
+def iso_dest(c):
+    """Where an ISO's files go (the uninstaller removes it; the ISO itself stays where it is)."""
+    return os.path.join(c.root, "game", "disc")
+
+
+def iso_extract(c, say=print, progress=None, free=None):
+    """Copy PS3_DISC.SFB and every file under PS3_GAME out of the decrypted ISO c.iso into iso_dest(c), then point
+    c.dump there. Files already there with the size the ISO says are kept (a half copy resumes; a copy is written as
+    <name>.part and renamed). -> the SHA-256 of data_ps3.psarc when it was copied in this run (hashed on the way),
+    else None. Raises StepFailed with a plain message."""
+    import iso9660
+    dest = iso_dest(c)
+    sha = None
+    try:
+        with iso9660.Iso(c.iso) as im:
+            files = [("PS3_DISC.SFB", e) for e in [im.lookup("PS3_DISC.SFB")] if e is not None and not e.is_dir]
+            files += [("PS3_GAME/" + rel, e) for rel, e in im.walk("PS3_GAME")]
+            if not any(r.lower() == "ps3_game/param.sfo" for r, _ in files):
+                raise StepFailed("the ISO holds no PS3_GAME/PARAM.SFO")
+            for _, e in files:
+                if not im.in_image(e):
+                    raise StepFailed("the ISO is truncated (a file reaches past the end of the image); copy it again")
+            total = sum(e.size for _, e in files)
+
+            def target(rel):      # the runtime opens these by their disc names; ISO 9660 stores upper case
+                rel = ISO_NAMES.get(rel.lower(), rel)
+                return os.path.join(dest, *rel.split("/"))
+
+            def have(rel, e):
+                p = target(rel)
+                return os.path.isfile(p) and os.path.getsize(p) == e.size
+            todo = [(r, e) for r, e in files if not have(r, e)]
+            need = sum(e.size for _, e in todo)
+            if need:
+                os.makedirs(dest, exist_ok=True)
+                avail = (free or shutil.disk_usage)(dest).free
+                if avail < need + ISO_MARGIN:
+                    raise StepFailed(
+                        f"Not enough free disk space to copy the game files out of the ISO: {(need + ISO_MARGIN) / GIB:.1f} GiB "
+                        f"are needed (the copy is {need / GIB:.1f} GiB) and {avail / GIB:.1f} GiB are free on the drive of "
+                        f"{dest}. Free some space, or install into a folder on a drive with more room, and run the setup again")
+            say(f"iso: {len(files)} files, {total / GIB:.2f} GiB from {os.path.basename(c.iso)}; "
+                f"{len(files) - len(todo)} already extracted, {need / GIB:.2f} GiB to copy into {dest}")
+            done = total - need
+            for rel, e in todo:
+                p = target(rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                base = done
+
+                def cb(d, t, base=base):
+                    if progress:
+                        progress(base + d, total)
+                h = hashlib.sha256() if rel.lower() == ISO_NAMES_PSARC else None
+                im.copy(rel, p, cb, sink=h.update if h else None)
+                if h:
+                    sha = h.hexdigest()
+                done += e.size
+            if progress:
+                progress(total, total)
+    except iso9660.IsoEncrypted as e:
+        raise StepFailed(str(e))
+    except iso9660.IsoError as e:
+        raise StepFailed(f"cannot read the ISO: {e}")
+    except OSError as e:
+        raise StepFailed(f"copying out of the ISO failed: {e.strerror or e} ({e.filename or dest})")
+    c.dump = dest
+    say(f"iso: extracted; the dump is now {dest}")
+    return sha
+
+
+ISO_NAMES_PSARC = "ps3_game/usrdir/data_ps3.psarc"
+
+
+def after_check(c):
+    """After the check: an ISO is extracted (and its archive checked, A1), then paths.json is written."""
+    if c.iso and c.dump == c.iso:
+        say = c.say or (lambda s: print(s, flush=True))
+        sha = iso_extract(c, say=say, progress=c.progress)
+        fc = _fc()
+        rep = fc.Report()
+        fc.check_psarc_hash(rep, os.path.join(c.dump, "PS3_GAME", "USRDIR", fc.PSARC_NAME),
+                            (c.facts.get("disc") or {}).get("TITLE_ID"), cache_dir=c.build, known_sha=sha,
+                            progress=None if sha else c.progress)   # resumed copy: one read (then cached)
+        for ch in rep.checks:
+            say(f"{ch['level']:4} {ch['code']}: {ch['message']}")
+        c.facts.setdefault("psarc", {})["sha256"] = (rep.facts.get("psarc") or {}).get("sha256", "")
+        if not rep.passed:
+            raise StepFailed("the disc archive copied out of the ISO failed the archive check (A1): copy or dump the "
+                             "disc again")
+    after_record(c)
 
 
 def eboot_stat(path):
@@ -510,7 +628,7 @@ def place_fonts(root, build):
 
 
 def file_sha256(path):
-    """-> the file's SHA-256 (hex), or "" (no file). From KZ3 78bf574."""
+    """-> the file's SHA-256 (hex), or "" (no file). From Project Helghast."""
     if not path or not os.path.isfile(path):
         return ""
     h = hashlib.sha256()
@@ -584,7 +702,7 @@ def after_stamp(c):
 
 
 STEPS = [   # weights (ASSUMPTION): from the developer build on Linux (-j4: lifts ~1 min, SPU lift ~30 s, compile ~18 min)
-    Step("check", "Checking the game files", 1, cmd_check, always=True, after=after_record),
+    Step("check", "Checking the game files", 1, cmd_check, always=True, after=after_check),
     Step("load", "Loading the EBOOT", 4, cmd_load, clean=lambda c: [c.b("analysis")]),
     Step("ppu-lift", "Lifting PPU code", 8, cmd_ppu_lift, clean=lambda c: [c.b("recomp")], keys=("lift",)),
     # configure re-runs in place (no clean of obj\): a runtime-only update then recompiles only what changed
@@ -810,7 +928,7 @@ class Runner:
                   f"elapsed={int(time.monotonic() - self.t0)} pct={pct:.1f}")
 
     def progress_due(self, done, total):
-        """At most one archive-hash PROGRESS line per 0.5 %, and the last one (from KZ3 2f45a2b)."""
+        """At most one archive-hash PROGRESS line per 0.5 %, and the last one (from Project Helghast v0.1.3)."""
         v = int(200 * done / total)
         if v != getattr(self, "_hash_v", -1) or done >= total:
             self._hash_v = v
@@ -885,6 +1003,9 @@ class Runner:
                     self.emit(str(e))
                     return self.result(False, step.name)
                 units = 1000 if step.name == "check" else (len(cmds) or 1)   # check: permille (the archive hash)
+                iso_copy = step.name == "check" and bool(ctx.iso) and ctx.dump == ctx.iso   # 10 = checked, then the copy
+                ctx.say = self.emit
+                ctx.progress = self.iso_progress(i)
                 self.progress(i, 0, units)
                 failed = False
                 for k, argv in enumerate(cmds):
@@ -903,9 +1024,13 @@ class Runner:
                             self.emit(bad)
                             return self.result(False, step.name)
                     if not step.ninja:
-                        self.progress(i, 1000 if step.name == "check" else k + 1, units)
+                        self.progress(i, (10 if iso_copy else 1000) if step.name == "check" else k + 1, units)
                 if step.after and not failed:
-                    step.after(ctx)
+                    try:
+                        step.after(ctx)
+                    except StepFailed as e:     # the ISO copy (space, truncated, encrypted) or its A1: no marker
+                        self.emit(str(e))
+                        return self.result(False, step.name)
                 if not cmds or step.ninja or failed:
                     self.progress(i, 1, 1)
                 if failed:
@@ -918,6 +1043,20 @@ class Runner:
             self.log.write("## cancelled: the running step left no marker, the next start resumes here")
             self.emit(f"RESULT ok=0 step=cancelled elapsed={int(time.monotonic() - self.t0)}")
             return 130
+
+    def iso_progress(self, i):
+        """(done, total) bytes of the ISO copy -> PROGRESS lines on the check step's permille scale (10..1000), at most
+        one per 0.5 %; a Stop request ends the copy (from Project Helghast v0.1.2)."""
+        last = [-1]
+
+        def cb(done, total):
+            if self.stop_requested:
+                raise Cancelled()
+            v = 10 + int(990 * done / total) if total else 1000
+            if v - last[0] >= 5 or v >= 1000:
+                last[0] = v
+                self.progress(i, v, 1000)
+        return cb
 
     def take_check(self, out):
         """Keep the check's facts (EBOOT size/hash) so a changed input invalidates the later markers."""
@@ -954,7 +1093,9 @@ def header(ctx, log_path, fallback):
             f"# root {ctx.root}", f"# build {ctx.build}",
             f"# toolchain {ctx.toolchain or 'port/cmake/mingw-w64.cmake (cross)'}, cmake {ctx.cmake}, "
             f"ninja {ctx.ninja or '(PATH)'}, python {ctx.python}",
-            f"# dump {ctx.dump}", f"# update {ctx.update}", f"# eboot {ctx.eboot or '(auto)'}",
+            f"# dump {ctx.dump}" + (f" (decrypted ISO; its files are copied to {iso_dest(ctx)})"
+                                  if ctx.iso and ctx.dump == ctx.iso else ""),
+            f"# update {ctx.update}", f"# eboot {ctx.eboot or '(auto)'}",
             f"# tree built for the {EBOOT_VERS[ctx.ver]['check']} EBOOT; PPU overrides "
             f"port/kz2/{EBOOT_VERS[ctx.ver]['overrides']}, lift fixups "
             f"{os.path.relpath(fixups_file(ctx), ctx.root).replace(os.sep, '/') if fixups_file(ctx) else 'none'}"] + \
@@ -1182,6 +1323,14 @@ def _version_check(current):
     return version_check.check(current)
 
 
+def _fc():
+    """firstrun_check, imported from this script's folder (resolve_dump, resolve_update)."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import firstrun_check
+    return firstrun_check
+
+
 def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_check_files, vcheck=_version_check):
     """Fill a.dump/a.update/a.eboot from the player's answers; True = build now, False = quit. Lines for the install
     log go to `notes` (main writes them, redacted, after the log header)."""
@@ -1192,15 +1341,31 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
         r = ask(f"{q} [{'Y/n' if default else 'y/N'}] ").strip().lower()
         return default if not r else r.startswith("y")
 
-    def folder(q, default, need_dir=True):
+    def folder(q, default, need_dir=True, inside=(), resolve=None, iso=False):
+        """A folder (need_dir) or a file. For a file, a folder answer is searched for the `inside` names (relative
+        paths, in order): players give the folder that holds EBOOT.elf as often as the file itself (adapted from
+        Project Helghast v0.1.4). `resolve` maps a folder answer one or two levels too deep to the right one."""
         while True:
             r = ask(f"{q}" + (f" [{default}]" if default else "") + ": ").strip().strip('"')
             r = os.path.expanduser(r or default or "")
             if not r and not need_dir:
                 return ""
+            if r and need_dir and iso and os.path.isfile(r) and r.lower().endswith(".iso"):
+                return os.path.abspath(r)      # a decrypted disc ISO (firstrun_check reads inside it)
             if r and (os.path.isdir(r) if need_dir else os.path.isfile(r)):
+                if resolve and resolve(r) != r:
+                    say(f"  using {os.path.abspath(resolve(r))}")
+                    return os.path.abspath(resolve(r))
                 return os.path.abspath(r)
-            say(f"  not found: {r or '(empty)'}")
+            if r and not need_dir and os.path.isdir(r):
+                hit = next((os.path.join(r, n) for n in inside if os.path.isfile(os.path.join(r, n))), "")
+                if hit:
+                    say(f"  using {os.path.abspath(hit)}")
+                    return os.path.abspath(hit)
+                say(f"  not found: {r} is a folder without " + " or ".join(n.replace("/", os.sep) for n in inside)
+                    + "; give the file itself, or press Enter for the path in brackets")
+                continue
+            say(f"  not found: {r or '(empty)'}" + ("" if need_dir else " (no such file)"))
 
     prev = {}
     try:
@@ -1214,7 +1379,7 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
     say("")
     dump, upd, elf = a.dump or prev.get("dump", ""), a.update or prev.get("update", ""), a.eboot or ""
     # --check-first: the folders the installer wizard wrote to kz2-install.ini [paths] (launch.py passes them) are
-    # checked before any question; the prompts come back only after a FAIL and c (from KZ3 3d692df)
+    # checked before any question; the prompts come back only after a FAIL and c (from Project Helghast v0.1.3)
     given = bool(getattr(a, "check_first", False) and a.dump and a.update)
     if given:
         dump, upd = os.path.abspath(a.dump), os.path.abspath(a.update)
@@ -1229,12 +1394,14 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
         say("")
     while True:
         if not got and not skip:   # from RPCS3 or setup: the paths are filled in; a failed check falls back to asking
-            dump = folder("Disc dump folder (the one holding PS3_GAME)", dump)
-            upd = folder("1.29 update folder (dev_hdd0/game/BCUS98116)", upd)
+            dump = folder("Disc dump: the folder holding PS3_GAME, or a decrypted .iso file", dump,
+                          resolve=_fc().resolve_dump, iso=True)
+            upd = folder("1.29 update folder (dev_hdd0/game/BCUS98116)", upd, resolve=_fc().resolve_update)
             auto = os.path.join(upd, "USRDIR", "EBOOT.elf")
             elf = elf or (prev.get("eboot", "") if prev.get("update") == upd else "") or \
                 (auto if os.path.isfile(auto) else "")
-            elf = folder("Decrypted EBOOT (EBOOT.elf; Enter = find it)", elf, need_dir=False)
+            elf = folder("Decrypted EBOOT: the EBOOT.elf file or the folder holding it (Enter = the path in brackets, "
+                         "or find it)", elf, need_dir=False, inside=("EBOOT.elf", "USRDIR/EBOOT.elf"))
             if _rpcs3().encrypted_eboot(elf):
                 say("  " + _rpcs3().HELP_ENCRYPTED)
         got = None
@@ -1373,14 +1540,19 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
     if a.interactive and not a.dry_run:
         if not interactive(a, root, pick_log(a.log_dir or None, a.log_name)[0], notes, ask=ask, out=out):
             quit_early = True
-    steps = STEPS if steps is None else steps
+    is_iso = bool(a.dump) and os.path.isfile(a.dump)      # a decrypted disc ISO instead of a dump folder
+    if steps is None:
+        steps = steps_for(is_iso)
     out0 = out
     if (a.interactive or a.bar) and not a.dry_run:
         out = ConsoleBar(out, steps)
     bundled = payload_tools(root)
     toolchain = os.path.abspath(a.toolchain) if a.toolchain else bundled.get("llvm_mingw", "")
+    # a pick of PS3_GAME, PS3_GAME/USRDIR or the update's USRDIR names the folder above (as the check and the wizard)
+    a.dump, a.update = _fc().resolve_dump(a.dump), _fc().resolve_update(a.update) if a.update else a.update
     ctx = Ctx(root=root, build=os.path.abspath(a.build or os.path.join(root, "build")),
-              dump=os.path.abspath(a.dump), update=os.path.abspath(a.update) if a.update else "",
+              dump=os.path.abspath(a.dump), iso=os.path.abspath(a.dump) if is_iso else "",
+              update=os.path.abspath(a.update) if a.update else "",
               eboot=os.path.abspath(a.eboot) if a.eboot else "",
               jobs=a.jobs or jobs_for(available_ram(), clang=bool(toolchain), cores=os.cpu_count()),
               toolchain=toolchain,

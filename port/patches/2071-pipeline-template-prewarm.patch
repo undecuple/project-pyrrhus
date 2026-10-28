@@ -15,7 +15,7 @@ game data, so it can be shared.
    by the walker and the prewarm; the walker's output is unchanged.
 Merge tool: tools/smoke/pso_template.py; host test tools/smoke/test_pso_template.sh.
 
-From KZ3 dabb17c3 port/patches/2071-pipeline-template-prewarm.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2071-pipeline-template-prewarm.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: applied with fuzz on the kz2-v015 stack (context lines of KZ3-only patches), placements checked, re-diffed.
 v0.17.0 rebase (ps3recomp a6d76c8): context only (#399 PS3_LOG_FIRST log caps and other upstream context); diff regenerated.
 

@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_fmaodd.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_fmaodd.c (unchanged). */
 /* Patch 1106 host test: the -mfma fast path's 4-op result test (SPU_FMA_ODD4=1) against the 7-op form (=0).
  * test_spu_fmaodd_tu.c is compiled twice (old_* and new_* wrappers); this file compares them:
  * 1. every 32-bit word w as the fused result (a = w, b = 1.0, c = +0 / -0, all four lanes different words),

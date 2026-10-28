@@ -1,4 +1,4 @@
-/* From KZ3 a4ef4360 tools/spu/test_spurs_kern.c (unchanged).
+/* From Project Helghast tools/spu/test_spurs_kern.c (unchanged).
  * KZ3 patch 1074 host test: the per-SPU SPURS kernel's selection rule and idle wake (runtime/spu/spurs_kern_sched.h,
  * rule ported from ps3recomp PR #213 by NoahBPeterson). Checks, on a byte image of a CellSpurs instance:
  *  admission   - a workload runs only while wanted: readyCount + idle > contention, a signal (taken by one SPU), or

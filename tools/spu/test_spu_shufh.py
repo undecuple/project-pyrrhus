@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# From KZ3 0c2e770b tools/spu/test_spu_shufh.py (KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched).
+# From Project Helghast tools/spu/test_spu_shufh.py (KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched).
 """Patch 1108 host test, lifter half: spu_lifter._shufb1_hoist rewrites only the shufb1 uses whose control the
 function never writes, and only in functions with a loop whose only uses of ctx are gpr, the LS accessors and
 SPU_RET. Synthetic bodies; no game data. Usage: test_spu_shufh.py PATCHED_TOOLKIT_DIR"""

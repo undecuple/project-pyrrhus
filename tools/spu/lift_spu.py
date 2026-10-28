@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lift Killzone 2's SPU programs with ps3recomp's spu_lifter: the WWS job-manager policy module, the WWS job modules
-and the SPU ELFs. From KZ3 78bf574 tools/spu/lift_spu.py (kz3ver -> kz2ver; inputs from the re-data census).
+and the SPU ELFs. From Project Helghast tools/spu/lift_spu.py (kz3ver -> kz2ver; inputs from the re-data census).
 
     lift_spu.py --ps3recomp work/spu/ps3recomp-patched --out work/spu/spu [-j N] [--only NAME,...] [--kinds pm,job,elf]
 

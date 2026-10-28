@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1108-spu-shufb-hoisted-decode.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1108-spu-shufb-hoisted-decode.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1108: shufb with a loop-invariant control decodes the control once per function.
 
 Patch 1082's one-source shufb (spu_shufb1, ra == rb) costs 7 vector ops, 5 of them decoding the control (the byte index

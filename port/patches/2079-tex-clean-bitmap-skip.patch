@@ -9,7 +9,7 @@ LD_TEX_CLEAN=0: the 2046 rule. LD_TEX_HASH_CHECK=1: hash clean entries anyway an
 ([tex-clean] miss0/miss1, [tex-clean-miss] lines); [tex-clean] prints every 256 frames under RSX_PERF or the check.
 Host test: tools/smoke/test_guest_write.c KZ3_GW_TIER=3 (Proton); tiers 0-2 run with LD_TEX_CLEAN=0.
 
-From KZ3 dabb17c3 port/patches/2079-tex-clean-bitmap-skip.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2079-tex-clean-bitmap-skip.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

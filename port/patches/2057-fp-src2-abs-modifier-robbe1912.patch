@@ -2,7 +2,7 @@ Third-source abs modifier of the fragment decompiler (opt-in LD_SRC2_ABS=1), plu
 
 decode_src(w3, 0, &s2) ignored DWORD3 bit 18 (SRC2.abs in RPCS3's FP decoder, the same position as SRC1.abs in DWORD2). With the switch on the third source of MAD/LRP-type ops decodes to abs(...). The switch changes shader text, so it is part of the PSO key (tag 0x5A2A, only when on).
 
-From KZ3 dabb17c3 port/patches/2057-fp-src2-abs-modifier-robbe1912.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2057-fp-src2-abs-modifier-robbe1912.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 Licence: MIT. Source: robbe1912/ps3recomp 0d03c8b5 (MIT, from the MotorStorm: Monument Valley port); the KZ3 copy is MIT (undecuple). SRC2.abs position per RPCS3's fragment decoder (GPL-2.0); read, not copied.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

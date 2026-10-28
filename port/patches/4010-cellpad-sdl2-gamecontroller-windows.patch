@@ -1,6 +1,6 @@
-KZ2: from KZ3 55b2d073 port/patches/4010-cellpad-sdl2-gamecontroller-windows.patch (KZ3 087439a5 + 92419637: PS3 HIDAPI
+KZ2: from Project Helghast port/patches/4010-cellpad-sdl2-gamecontroller-windows.patch (Project Helghast + 92419637: PS3 HIDAPI
 + sixaxis SDL hints at normal priority, the environment wins; DS3 analog pressure from SDL axes 6-15 as (v+32768)/257;
-DS3 accelerometer centres X 513 / Y 511 / Z 511). Replaces KZ3 b42098e3's 4010; applies unchanged.
+DS3 accelerometer centres X 513 / Y 511 / Z 511). Replaces Project Helghast's 4010; applies unchanged.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): cellPad.c taken as the patch side whole (KZ2's SDL3/XInput host backend, which replaces the SDL2 code upstream's #472/#496/#570/#581 edit); upstream cellPad changes to port after the rebase: #565 sensor-mode HLE, #581 empty XInput slot poll, #496 centred sticks (check against 4015)
 

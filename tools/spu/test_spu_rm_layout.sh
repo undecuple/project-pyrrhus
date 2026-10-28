@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_rm_layout.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_rm_layout.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1102 host test: the read-mostly SPU gates (SPU_READ_MOSTLY, .data$kz3rm) share no 64-byte cache line with
 # any other variable in a MinGW-w64 PE link. Takes the patched toolkit's SPU_READ_MOSTLY macro (spu_context.h) and
 # fence definitions (spu_channels.c), builds three TUs that interleave gate definitions with written counters

@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_ls_gate.c. ps3recomp v0.18.0: upstream #445 runs the WWS probes
+/* From Project Helghast tools/spu/test_spu_ls_gate.c. ps3recomp v0.18.0: upstream #445 runs the WWS probes
  * only with SPU_WWS_PROBE (g_spu_wws_probe), so the probe checks turn it on, and a check that the caps do not arm the
  * gates while it is off. */
 /* Patch 1100 host test: the per-function LS gates (spu_ls_dbg_armed, SPU_LS_LOCALS) with the WWS

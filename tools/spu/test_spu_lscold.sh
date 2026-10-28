@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_lscold.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_lscold.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1107 host test (tools/spu/test_spu_lscold.c), built with the out-of-line gated accessors (default) and with
 # -DSPU_LS_COLD=0 (old, inlined); both must match the byte-wise reference. No game data.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_lscold.sh

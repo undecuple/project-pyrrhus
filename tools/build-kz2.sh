@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Memory-safe Windows build of port/kz2, one build at a time on the machine shared with the Killzone 3 port.
-# From KZ3 78bf574 tools/build-kz3.sh (KZ3_* -> KZ2_*; configures the build dir itself when it has no CMakeCache.txt;
+# From Project Helghast tools/build-kz3.sh (KZ3_* -> KZ2_*; configures the build dir itself when it has no CMakeCache.txt;
 # no SPU registration step yet). Run inside the sandbox:
 #   nix develop .#win --command tools/sandbox.sh -- tools/build-kz2.sh build/kz2-win [extra cmake --build args]
 #   (a second worktree: ... tools/sandbox.sh -- env KZ2_OUT=work/runtime tools/build-kz2.sh build/kz2-win)

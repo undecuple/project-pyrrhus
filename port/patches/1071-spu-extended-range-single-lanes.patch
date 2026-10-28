@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1071-spu-extended-range-single-lanes.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1071-spu-extended-range-single-lanes.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1071: SPU extended-range single precision on the lanes the host gets wrong.
 The SPU has no single-precision Inf/NaN (exponent 255 is an ordinary binade, overflow saturates, SPU ISA v1.2 s.9.1);
 the helpers read such words as host Inf/NaN. fa/fs/fm, fma/fms/fnms (both paths), fceq/fcgt/fcmeq/fcmgt,

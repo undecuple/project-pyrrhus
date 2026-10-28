@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_fmaodd.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_fmaodd.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1106 host test: test_spu_fmaodd_tu.c built twice (-DSPU_FMA_ODD4=0 -> old_*, =1 -> new_*) with the Windows
 # build's SPU ISA (-msse4.1 -mavx2 -mfma), linked with test_spu_fmaodd.c. Needs an FMA host CPU (else SKIP). No game data.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_fmaodd.sh

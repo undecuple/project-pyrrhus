@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Installer artwork and GitHub cover images for Project Pyrrhus, drawn from the project site's look.
 
-From KZ3 78bf574 tools/release/installer_art.py (Project Helghast), with Killzone 2's palette (warm
+From Project Helghast tools/release/installer_art.py (Project Helghast), with Killzone 2's palette (warm
 black and rust, orange for Helghast eyes and fire, arc-tower lightning blue as the second accent) and the Project
 Pyrrhus wordmark. Everything is drawn here from shapes, stripes and text: the plain wordmark "PROJECT PYRRHUS" and the
 line "KILLZONE 2 PC" set in Rajdhani Bold, small text in Rajdhani (both SIL OFL 1.1, from Google Fonts' own

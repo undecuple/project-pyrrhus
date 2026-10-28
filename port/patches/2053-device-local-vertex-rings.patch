@@ -9,7 +9,7 @@ upload ring. Mirrors rest in COMMON between lists (copy list: COMMON -> COPY_DES
 Measured (K4 level): draw GPU time 65 -> 35 ms/frame but the copy lists cost 22-25 ms/frame
 (50 MB/frame at ~2 GB/s on a GPU the driver keeps at P5/P8 with PCIe gen 1-2), so no net gain: default off.
 
-From KZ3 dabb17c3 port/patches/2053-device-local-vertex-rings.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2053-device-local-vertex-rings.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

@@ -1,4 +1,4 @@
-/* Killzone 2 port: a stdio stand-in for KZ3's file logger (KZ3 78bf574 port/kz3/kz3_log.h), so the boot code
+/* Killzone 2 port: a stdio stand-in for KZ3's file logger (Project Helghast port/kz3/kz3_log.h), so the boot code
  * copied from port/kz3/main.cpp keeps its log calls. Log files: kz2_session_log.c copies stdout/stderr into
  * <exe dir>/logs/kz2-*.log. ENHANCEMENT candidate: the real logger for levels and crash files (patches 2030/2032 call
  * into it only with KZ3_LOG_REDIRECT_STDIO, not defined here). */

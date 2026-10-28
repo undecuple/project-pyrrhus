@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_shufh.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_shufh.c (unchanged). */
 /* Patch 1108 host test: spu_shufb1_h(a, spu_shufb1_dec(c), c) (the hoisted one-source shufb) against the byte-loop
  * reference spu_shufb_ref(a, a, c): every control byte value in every lane position (with random other lanes), then
  * random vectors; and a negative control (bit 7 dropped from the index) that must differ. Built twice by the .sh

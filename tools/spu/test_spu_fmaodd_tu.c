@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_fmaodd_tu.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_fmaodd_tu.c (unchanged). */
 /* One translation unit of the patch 1106 host test: spu_fma/spu_fms/spu_fnms built with SPU_FMA_ODD4 as given on
  * the command line (TU_NAME = the wrapper prefix). Linked twice into test_spu_fmaodd (old and new forms). */
 #include <stdint.h>

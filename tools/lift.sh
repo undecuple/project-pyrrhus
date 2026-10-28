@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproducible PPU lift of the Killzone 2 EBOOT with ps3recomp + port/patches.
-# From KZ3 78bf574 tools/lift.sh (KZ3_* -> KZ2_*; KZ2's own code end and TOC; KZ2's own, empty, override list).
+# From Project Helghast tools/lift.sh (KZ3_* -> KZ2_*; KZ2's own code end and TOC; KZ2's own, empty, override list).
 #
 #   nix develop .#re --command tools/sandbox.sh -- tools/lift.sh [EBOOT.elf]
 #   (a second worktree: ... tools/sandbox.sh -- env KZ2_OUT=work/runtime tools/lift.sh)

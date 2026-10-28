@@ -9,7 +9,7 @@ the RE notes.
 2. LD_PSO_TEMPLATE unset: <exe dir>\pso-template.bin, else <exe dir>\..\pso-template.bin (the release keeps kz3.exe
    in build\ and the template in the install root) is prewarmed when it exists. LD_PSO_TEMPLATE=0 turns it off.
 
-From KZ3 dabb17c3 port/patches/2077-pso-key-vp-start-template-default.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2077-pso-key-vp-start-template-default.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): live-draw both sides kept (upstream's first, then ours); vp_decompiler.h both
 

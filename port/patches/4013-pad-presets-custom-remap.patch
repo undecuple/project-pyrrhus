@@ -1,4 +1,4 @@
-KZ2 patch 4013: pad presets and a custom host remap; prompts follow the remap. From KZ3 55b2d073
+KZ2 patch 4013: pad presets and a custom host remap; prompts follow the remap. From Project Helghast
 port/patches/4013-pad-presets-custom-remap.patch (KZ3 stage 3). KZ2 changes: preset modern is the identity on the host
 (PRM_MODERN_IS_GAME_MAP): KZ2's Modern is the game's own button map (port/kz2/kz2_pad_layout.c, KZ2_PAD_LAYOUT),
 a host remap on top would move buttons twice; custom remap and the prompt cell permutation are KZ3's, through 2091's

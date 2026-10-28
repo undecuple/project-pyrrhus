@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack an assembled payload (assemble_payload.py --out DIR) into the portable zip. From KZ3 78bf574
+"""Pack an assembled payload (assemble_payload.py --out DIR) into the portable zip. From Project Helghast
 tools/release/pack_zip.py. Standard library only.
 
     pack_zip.py --payload DIR --out Project-Pyrrhus-<version>-portable.zip [--top "Project Pyrrhus"] [--replace]

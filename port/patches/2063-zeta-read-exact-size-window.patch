@@ -10,7 +10,7 @@ Patch 2021's divide-by-snapshot-size for unnormalised zeta reads is skipped whil
 has the texture's size). Logs: [zwin] on/off, the first 16 windows, the copy count every 16384 copies.
 Upstream candidate (general: any two surfaces of different sizes at one zeta address).
 
-From KZ3 dabb17c3 port/patches/2063-zeta-read-exact-size-window.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2063-zeta-read-exact-size-window.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 v0.17.0 rebase (ps3recomp a6d76c8): context only (#399 PS3_LOG_FIRST log caps and other upstream context); diff regenerated.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

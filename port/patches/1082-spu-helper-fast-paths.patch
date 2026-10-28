@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1082-spu-helper-fast-paths.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1082-spu-helper-fast-paths.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1082: SPU helper fast paths, every result bit-identical.
 1. Float ops: the exponent-255 recompute (spu__xr_fix) and the fma cold paths take __m128 arguments, so the
    inlined op keeps its result in a register (a u128 argument made the compiler store the result and reload it

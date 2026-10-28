@@ -91,9 +91,12 @@ Online multiplayer, if it comes, will only use a self-hosted server you choose.
 
 **Pre-release <!-- version -->[v0.1.1](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.1)<!-- /version -->:** a Windows installer (recommended) and
 a portable zip, on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) with a `.sha256` file for each and `SHA256SUMS`. They check your
-own disc dump, the 1.29 update and the decrypted EBOOT ([what each must contain](docs/GETTING-FILES.md)), then
+own disc dump (a folder or a decrypted ISO file), the 1.29 update and the decrypted EBOOT ([what each must
+contain](docs/GETTING-FILES.md)), then
 translate and build the game's code on your own machine with a bundled compiler. No game code, assets or keys are ever
-shipped or downloaded. You can also build the port yourself (below). It is partly playable: the first level can be
+shipped or downloaded. Do not install into a OneDrive folder (a precaution from a problem reported on Project Helghast: OneDrive would sync the build's thousands of files
+while they are written), and keep your game files on this device (in OneDrive: "Always keep on this device"); the
+setup refuses both. You can also build the port yourself (below). It is partly playable: the first level can be
 played with a pad (a scripted run gives about 23 frames per second, the PS3 30; hand play is not measured), and the
 rest of the campaign has not been tried. What changed in each
 version: [CHANGELOG.md](CHANGELOG.md).

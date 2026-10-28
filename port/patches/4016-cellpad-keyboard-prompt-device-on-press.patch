@@ -7,7 +7,7 @@ never saw), so every idle poll after a pad input switched the prompts back to ke
 (up at the previous poll) counts, and the flag is kept until pad_prompt_track reads it. A stuck key switches once at
 most (again after a focus change, when the keys read as up while unfocused). The keyboard's "last input" log line names
 the bits that went down (buttons/dirs masks of PadKbState) to find the phantom key. KZ3's 4011 has the same held-state
-rule (KZ3 9caa0d76), so this is also a note for KZ3.
+rule (Project Helghast), so this is also a note for KZ3.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

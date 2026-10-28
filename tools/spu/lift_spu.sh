@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lift Killzone 2's SPU code (the WWS job-manager policy module, the WWS job modules, the SPU ELFs) and write the
 # registration TU the port build picks up (port/kz2/CMakeLists.txt: SPU_DIR/<image>/spu_recomp.c + SPU_DIR/spu_workloads.c,
-# constructor-registered). Recipe from KZ3 78bf574 tools/spu/lift_spu.sh + lift_spu.py + gen_spu_register.py.
+# constructor-registered). Recipe from Project Helghast tools/spu/lift_spu.sh + lift_spu.py + gen_spu_register.py.
 #
 #   nix develop .#re --command tools/sandbox.sh -- env KZ2_OUT=work/spu tools/spu/lift_spu.sh [-j N] [--only NAME,...] [--kinds pm,job,elf]
 #

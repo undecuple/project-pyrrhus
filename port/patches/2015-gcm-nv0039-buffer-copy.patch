@@ -26,7 +26,7 @@ Verified with tools/smoke/test_nv0039.c under Proton (main->local copy then draw
 local->main with pitches, negative pitch, FP16 and RGBA8 surfaces copied out, all bit-exact).
 v0.17.0 rebase (ps3recomp a6d76c8): surface pitch field: upstream's (#395) one field, 2015's setter for MRT targets kept.
 Behaviour follows RPCS3 (GPL-2.0), the NV0039 buffer-copy engine of its RSX command processor; read, not copied.
-From KZ3 78bf574 port/patches/2015-gcm-nv0039-buffer-copy.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2015-gcm-nv0039-buffer-copy.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): SET_OBJECT tracking kept under upstream #548's wdiag gate; subchannel-1 3D methods go to #554's gcm_3d_method
 

@@ -1,4 +1,4 @@
-KZ2 patch 2095: display modes and scaled present, from KZ3 9caa0d76 port/patches/2095-display-modes-scaled-present.patch
+KZ2 patch 2095: display modes and scaled present, from Project Helghast port/patches/2095-display-modes-scaled-present.patch
 (KZ3 patch 2095; credit KZ3). ENHANCEMENT.
 
 - Windowed (default, as KZ3 ships), Borderless (WS_POPUP over the window's monitor) and Fullscreen (DXGI exclusive on

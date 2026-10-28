@@ -1,5 +1,5 @@
 /* Host coroutines for guest context switches in statically recompiled code (upstream candidate).
- * From KZ3 78bf574 port/spu/guest_fiber.h (unchanged).
+ * From Project Helghast port/spu/guest_fiber.h (unchanged).
  *
  * A lifted guest routine that saves r1/LR and later "returns" into another saved context (setjmp/longjmp-style
  * fiber switches) cannot run as plain C: the host stack and the host return address belong to whoever called

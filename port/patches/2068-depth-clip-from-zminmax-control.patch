@@ -8,7 +8,7 @@ mapped. A register the guest never wrote leaves clipping off, as before. render_
 PSO key and the pso_keys.bin record size change (an older preload file is skipped once). Log: [depth-clip] on/off.
 Upstream candidate (general: the zeroed rasterizer desc disables depth clipping for every title).
 
-From KZ3 dabb17c3 port/patches/2068-depth-clip-from-zminmax-control.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2068-depth-clip-from-zminmax-control.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

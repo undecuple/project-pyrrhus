@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the release launcher `Project Pyrrhus.exe` from installer/launcher/launcher.c with the MinGW-w64 gcc of the
-# .#win shell (from KZ3 78bf574 tools/release/build_launcher.sh). Run it through the sandbox:
+# .#win shell (from Project Helghast tools/release/build_launcher.sh). Run it through the sandbox:
 #   nix develop .#win --command tools/sandbox.sh -- tools/release/build_launcher.sh [OUTDIR] [--smoke] [--icons DIR]
 # OUTDIR defaults to build/launcher. Deterministic: -Os -s, no PE timestamp. ~20 KB, GUI subsystem, Unicode entry.
 # launcher.rc (icon + version strings from installer/VERSION) compiled with windres; the icon comes from --icons DIR (default

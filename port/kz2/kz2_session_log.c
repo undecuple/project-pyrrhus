@@ -48,7 +48,7 @@ const char* kz2_exe_dir(void)
     return s_exe_dir;
 }
 
-/* From KZ3 9caa0d76 port/kz3/main.cpp kz3_logging_start (KZ3_CONSOLE): a console only on request. */
+/* From Project Helghast port/kz3/main.cpp kz3_logging_start (KZ3_CONSOLE): a console only on request. */
 int kz2_console_open(void)
 {
     const char* c = getenv("KZ2_CONSOLE");

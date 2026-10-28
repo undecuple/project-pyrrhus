@@ -9,7 +9,7 @@ refreshed when the surface's colour_gen changes; its SRV maps the RSX remap like
 guest-memory Y16_X16_FLOAT decode of patch 2014 maps the FIRST half in memory to X, which this word order says is
 Y; KZ3 has no guest Y16_X16_FLOAT texture, so that path is left as it is (open item). Upstream candidate.
 
-From KZ3 dabb17c3 port/patches/2065-surface-read-as-y16x16-float.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; KZ3 54082992's v0.16.0 copy taken later.
+From Project Helghast port/patches/2065-surface-read-as-y16x16-float.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; Project Helghast's v0.16.0 copy taken later.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

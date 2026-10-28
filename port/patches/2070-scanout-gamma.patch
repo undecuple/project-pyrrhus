@@ -6,7 +6,7 @@ KZ3 patch 2070: scan-out gamma (cellVideoOutSetGamma), the RE notes.
    presented surface into the host-AA scratch texture, which the present copies to the back buffer (the surface itself is
    untouched). Gamma 1.0 skips the pass (bit-identical output); LD_GAMMA=0 turns it off. gamma > 1 darkens: the game's own Brightness page (DECREASE = LEFT) raises the value 1.04 -> 1.16 and INCREASE lowers it to 0.84.
 
-From KZ3 dabb17c3 port/patches/2070-scanout-gamma.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; KZ3 54082992's v0.16.0 copy taken later.
+From Project Helghast port/patches/2070-scanout-gamma.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; Project Helghast's v0.16.0 copy taken later.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

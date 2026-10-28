@@ -64,6 +64,7 @@ def make_copies(base):
     (pubr / "docs").mkdir(parents=True)
     shutil.copy2(REAL / "docs/requirements.md", pubr / "docs/requirements.md")
     shutil.copytree(REAL / "public", pubr, dirs_exist_ok=True, ignore=IGNORE)
+    (pubr / "docs/FEATURES.md").write_text("# Features\n")   # the export generates it from docs/features.tsv
     copy_release_tools(pubr)
     return {"public/": priv, "root (export)": pubr}
 
@@ -184,12 +185,46 @@ def units():
               ch.get("public/CITATION.cff"))
 
 
+def chain_round(name, root):
+    """The chain's tail: draft notes kept on request, a broken card fails the bump, an empty entry fails the notes."""
+    cur = release_version.read(str(root))
+    new = next_patch(next_patch(cur))
+    card = bump_version.at(root, "public/.recomp.json")
+    good = card.read_text(encoding="utf-8")
+    notes = root.parent / (root.name + "-draft-notes.md")   # outside the tree: test_version_agree reads every file in it
+    cl = bump_version.at(root, "public/CHANGELOG.md")
+
+    def unreleased_item():
+        t0 = cl.read_text(encoding="utf-8")
+        at_first = re.search(r"^## \[", t0, re.M).start()
+        cl.write_text(t0[:at_first] + "## [Unreleased]\n\n### Added\n\n- A test item.\n\n" + t0[at_first:], encoding="utf-8")
+
+    unreleased_item()
+    rc, out, err = run(root, new, "--date", "2030-02-03", "--notes", str(notes))
+    check(rc == 0 and "recomp_card: card is current" in out and "release_notes: draft" in out,
+          f"{name}: bump prints the notes and card steps", out[-300:] + err[-300:])
+    check(notes.is_file() and new in notes.read_text(encoding="utf-8"), f"{name}: --notes keeps the draft for {new}")
+    newer = next_patch(new)
+    unreleased_item()
+    card.write_text(good.replace('"BCUS98116"', '"BCUS00000"'), encoding="utf-8")
+    rc, out, err = run(root, newer, "--date", "2030-02-04")
+    check(rc == 1 and "C6" in err and "release_notes: draft" in out, f"{name}: a card that disagrees fails the bump (after the notes)",
+          out[-200:] + err[-300:])
+    card.write_text(good, encoding="utf-8")
+    text = cl.read_text(encoding="utf-8")
+    m = re.search(rf"^## \[{re.escape(newer)}\].*?(?=^## \[)", text, re.M | re.S)
+    cl.write_text(text.replace(m.group(0), m.group(0).split("\n", 1)[0] + "\n\n### Added\n\n"), encoding="utf-8")
+    rc, out, err = run(root, newer, "--date", "2030-02-04")
+    check(rc == 1 and "draft release notes refused" in err, f"{name}: an entry with no items fails at the notes step", err[-300:])
+
+
 def main():
     real_before = snapshot(REAL / "installer")
     units()
     with tempfile.TemporaryDirectory() as td:
         for name, root in make_copies(pathlib.Path(td)).items():
             layout_round(name, root)
+            chain_round(name, root)
     check(snapshot(REAL / "installer") == real_before, "the real tree was not touched")
     print("FAILED" if FAILS else "PASS test_bump_version")
     return 1 if FAILS else 0

@@ -1,4 +1,4 @@
-/* Killzone 2 port host. From KZ3 78bf574 port/kz3/main.cpp (itself based on ps3recomp templates/project, MIT
+/* Killzone 2 port host. From Project Helghast port/kz3/main.cpp (itself based on ps3recomp templates/project, MIT
  * licence: third_party/ps3recomp/LICENSE), cut to the game-independent boot: KZ3's keyboard page bridge, notice
  * window, keycap prompts (patch 2039, not carried over), PSARC VFS, KZ3 HLE glue and the file logger are left out;
  * KZ3_* switches are KZ2_* here. kz2_log.h is a stdio stand-in for the logger. */
@@ -54,6 +54,7 @@
 #include <sys/stat.h>
 #include "kz2_log.h"   /* stdio stand-in for KZ3's file logger */
 #include "ps3emu/split_file.h"   /* patch 6034: ps3_sf_has_parts for the update miss hook */
+#include "kz2_fios_stamp.h"       /* FIOS disk cache stamp (patch 6035 pre-open hook) */
 
 #ifdef _WIN32
 /* timeBeginPeriod: <windows.h> arrives with WIN32_LEAN_AND_MEAN set, which
@@ -215,7 +216,7 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location, uint32_t offs
     return (const uint8_t*)vm_base + ea;
 }
 
-/* Display modes (patch 2095, from KZ3 9caa0d76 port/kz3/main.cpp kz3_display_load/kz3_display_save; ENHANCEMENT): the
+/* Display modes (patch 2095, from Project Helghast port/kz3/main.cpp kz3_display_load/kz3_display_save; ENHANCEMENT): the
  * mode, scaling and filter are kept in display.ini beside keybinds.ini ([display] mode = windowed|borderless|fullscreen,
  * scaling = fit|stretch, filter = bilinear|nearest; rsx_display_mode.h), read here before the window opens and written
  * by the window's thread when Alt+Enter changes the mode. KZ2_DISPLAY, KZ2_DISPLAY_SCALING, KZ2_DISPLAY_FILTER win for
@@ -377,6 +378,50 @@ static void kz2_no_renderer_exit(void)
     TerminateProcess(GetCurrentProcess(), 2);
 }
 
+/* The message pump inside the vblank catch-up loop. From Project Helghast (the Killzone 3 PC port)
+ * v0.1.4 (port/kz3/main.cpp; same author, MIT), KZ3_ -> KZ2_. The inner loop below fires every
+ * vblank tick the clock is behind, and each tick drains the FIFO (the live renderer's walker: 29-30 ms a frame on
+ * Corinth River), so while a drain takes longer than the 16 ms tick the backlog grows and the loop
+ * runs on for up to 240 ticks without returning to the pump. The window's messages (WM_CLOSE, focus, size, the
+ * keyboard page's capture) then wait seconds, and Windows marks a window that has not pumped for 5 s as not responding.
+ * KZ3's player saw it as mouse look holding still then jumping. KZ2_PUMP_TICK=0 = the old pump (outer loop only).
+ * kz2_pump_note: the longest gap between two pumps, a line per gap over 250 ms (first 20) and a summary every 10 s. */
+static int kz2_pump_tick_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("KZ2_PUMP_TICK");
+        on = !(e && e[0] == '0');
+        fprintf(stderr, "[pump] message pump %s\n", on ? "on every vblank tick (default; KZ2_PUMP_TICK=0 = outer loop only)"
+                                                       : "in the outer loop only (KZ2_PUMP_TICK=0)");
+    }
+    return on;
+}
+static void kz2_pump_note(int fired)
+{
+    static LARGE_INTEGER s_qf, s_last, s_win;
+    static double s_max;
+    static unsigned s_n, s_long, s_lines;
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    if (!s_qf.QuadPart) { QueryPerformanceFrequency(&s_qf); s_last = s_win = q; return; }
+    const double gap = (double)(q.QuadPart - s_last.QuadPart) * 1e3 / (double)s_qf.QuadPart;
+    s_last = q;
+    s_n++;
+    if (gap > s_max) s_max = gap;
+    if (gap > 250.0) {
+        s_long++;
+        if (s_lines++ < 20)
+            fprintf(stderr, "[pump] gap %.0f ms between message pumps (flip=%u, %d vblank tick(s) in that pass)\n", gap,
+                    cellGcm_flip_request_count(), fired);
+    }
+    const double win = (double)(q.QuadPart - s_win.QuadPart) / (double)s_qf.QuadPart;
+    if (win >= 10.0) {
+        fprintf(stderr, "[pump] last %.1f s: %u pumps, longest gap %.0f ms, %u gap(s) over 250 ms\n", win, s_n, s_max, s_long);
+        s_win = q; s_n = s_long = 0; s_max = 0.0;
+    }
+}
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     kz2_log_set_thread_label("frame");
@@ -415,6 +460,14 @@ static DWORD WINAPI frame_clock(LPVOID)
              * labels the game's per-frame logic blocks on, so it has to keep
              * advancing at 60 Hz even while present() throttles. */
             if (rsx_ok) cellGcm_rsx_process_fifo();
+            /* pump on every tick too, so a catch-up pass does not hold the window's messages back */
+            if (rsx_ok && kz2_pump_tick_on()) {
+                if (kz2_rsx_pump() != 0) {
+                    kz2_exit_on_window_close();   /* does not return */
+                    rsx_ok = 0;
+                }
+                kz2_pump_note(fired + 1);
+            }
             next_tick += 16;             /* ~60 Hz */
             fired++;
         }
@@ -436,6 +489,7 @@ static DWORD WINAPI frame_clock(LPVOID)
                 rsx_ok = 0;
                 continue;
             }
+            kz2_pump_note(fired);
             /* Present on a guest flip. A present on a fixed clock can catch the
              * drain mid-frame and flash a partial one. Before the first flip
              * present freely, so the window is not blank during boot. */

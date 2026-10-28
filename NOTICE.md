@@ -33,7 +33,7 @@ ps3recomp.
 
 | Project | Author | Source | Licence | What was used |
 |---|---|---|---|---|
-| Project Helghast (the Killzone 3 PC port) | undecuple (the same author as this project) | [undecuple/project-helghast](https://github.com/undecuple/project-helghast) | MIT (Copyright (c) 2026 undecuple) | the runtime, SPU, RSX/D3D12 and pad patches 0001-5004 in `port/patches/` (headers carry "From KZ3 <commit>"), the split disc archive reader in patch 6034 and its test, the lift/build/installer tooling, the art and website generators and the AGENTS.md guide, adapted for Killzone 2 |
+| Project Helghast (the Killzone 3 PC port) | undecuple (the same author as this project) | [undecuple/project-helghast](https://github.com/undecuple/project-helghast) | MIT (Copyright (c) 2026 undecuple) | the runtime, SPU, RSX/D3D12 and pad patches 0001-5004 in `port/patches/` (headers carry "From KZ3 <commit>"), the split disc archive reader in patch 6034 and its test, the disk cache stamp in patch 6035 (`port/kz2/kz2_fios_stamp.h`) and the window icon in patch 2123, the per-tick message pump in `port/kz2/main.cpp`, the lift/build/installer tooling (including the ISO 9660 reader `tools/release/iso9660.py`), the art and website generators and the AGENTS.md guide, adapted for Killzone 2 |
 | A Ratchet & Clank PC port (not public yet) | undecuple (the same author as this project) | not public yet | MIT (Copyright (c) 2026 undecuple) | lv2 mutex and condition-variable rules (R&C patch 7007), adapted in [6027] |
 
 ## Libraries

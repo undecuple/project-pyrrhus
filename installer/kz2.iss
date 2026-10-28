@@ -1,4 +1,4 @@
-; Project Pyrrhus (Killzone 2 PC port): Inno Setup 6 script. From KZ3 78bf574 installer/kz3.iss (Project Helghast),
+; Project Pyrrhus (Killzone 2 PC port): Inno Setup 6 script. From Project Helghast installer/kz3.iss (Project Helghast),
 ; adapted to Killzone 2: the 1.29 update, no shader warm-up tasks, no SPU build steps.
 ;
 ; Compiled with ISCC 6.7.3 under Proton (tools/release/wizard_test.sh compile; tools/release/vm_kit.sh build), wizard
@@ -9,7 +9,7 @@
 ;   iscc /DPayload=<payload dir> installer\kz2.iss      (output: installer\Output\; AppVersion = the payload's VERSION.txt)
 ;
 ; Silent install (no pages, no boxes): setup /VERYSILENT /SUPPRESSMSGBOXES /LOG=<file> [/DIR=<folder>]
-;   [/DUMP=<folder with PS3_GAME> /UPDATE=<BCUS98116 folder> /EBOOT=<EBOOT.elf> [/JOBS=N]]: with /DUMP= the build runs
+;   [/DUMP=<folder with PS3_GAME, or a decrypted .iso> /UPDATE=<BCUS98116 folder> /EBOOT=<EBOOT.elf> [/JOBS=N]]: with /DUMP= the build runs
 ;   in setup as in the wizard (firstrun.py; the log goes next to setup.exe); without it nothing is built and the
 ;   first start asks. Silent uninstall (unins000.exe /VERYSILENT) keeps the saves.
 ;
@@ -89,6 +89,7 @@
 #define SiteURL "https://github.com/undecuple/project-pyrrhus"
 #define SiteText "github.com/undecuple/project-pyrrhus"
 #define LauncherExe "Project Pyrrhus.exe"
+#define FileBase "Project-Pyrrhus"
 #define SetupBase "Project-Pyrrhus-setup"
 
 [Setup]
@@ -275,6 +276,15 @@ Type: dirifempty; Name: "{app}\vfs"
 Type: filesandordirs; Name: "{app}\cache"
 Type: files; Name: "{app}\kz2-install.ini"
 Type: files; Name: "{app}\kz2-uninstall.ico"
+; What the launcher and firstrun.py write into {app} that Inno did not install (adapted from Project Helghast, KZ3
+; Project Helghast v0.1.1: an uninstall left the folder behind): the first-run log the launcher names (launch.FIRSTRUN_LOG) with its
+; time-stamped earlier copies (firstrun.rotate), and a setup log written here. tools/release/test_uninstall_covers.py
+; keeps this list complete.
+Type: files; Name: "{app}\{#FileBase}-firstrun*.log"
+Type: files; Name: "{app}\{#SetupBase}*.log"
+; A decrypted disc ISO's files, copied out of it by firstrun.py (iso_dest: {app}\game\disc). The player's ISO itself
+; stays where it is, so this copy goes with the port (vfs\PS3_GAME, the link to it, is removed first).
+Type: filesandordirs; Name: "{app}\game"
 ; KZ3's uninstall test: Python's byte-code caches (kz2-setup\release\__pycache__, written when the launcher imports
 ; firstrun.py) kept the install folder alive, and caches in the data folder outlived a "keep my saves" answer.
 ; Caches are not saves: they go either way; gamedata stays unless asked.
@@ -303,6 +313,9 @@ var
   EbootPage: TInputFileWizardPage;
   { Game paths used by the build: the pages' values, or what rpcs3_import.py found in the player's RPCS3 folder }
   DumpDir, UpdateDir, EbootFile, RpcsRoot: String;
+  DumpInfo: TNewStaticText;
+  DumpIsoBtn: TNewButton;
+  TrilogyNoted: Boolean;
   AllowOutside, BuildSkipped: Boolean;
   BuildOK, BuildStopped: Boolean;
   StopBtn: TNewButton;
@@ -475,6 +488,254 @@ begin
   WizardForm.PageDescriptionLabel.Top := WizardForm.PageDescriptionLabel.Top + ScaleY(2);
 end;
 
+{ '' when the disc archive is there, as USRDIR\data_ps3.psarc or as the parts a FAT32 drive makes of a file over
+  4 GiB (data_ps3.psarc.66600, .66601, ... in order, no gap; read as one file), else the message naming the missing
+  file. Usr = the dump's USRDIR with a trailing backslash. As firstrun_check.py split_parts (from Project Helghast v0.1.3). }
+function ArchiveProblem(Usr: String): String;
+var
+  N, K: Integer;
+begin
+  Result := '';
+  if FileExists(Usr + 'data_ps3.psarc') then Exit;
+  N := 66600;
+  while FileExists(Usr + 'data_ps3.psarc.' + IntToStr(N)) do N := N + 1;
+  if N > 66600 then begin
+    { parts 66600 up to N-1 exist; a later one means the numbering has a gap at N }
+    for K := N + 1 to N + 40 do
+      if FileExists(Usr + 'data_ps3.psarc.' + IntToStr(K)) then begin
+        Result := 'PS3_GAME\USRDIR\data_ps3.psarc.' + IntToStr(N) + ' is missing (the archive is split into parts ' +
+          'data_ps3.psarc.66600, .66601, ... that must be numbered without a gap).';
+        Exit;
+      end;
+    Exit;
+  end;
+  for K := 66601 to 66640 do
+    if FileExists(Usr + 'data_ps3.psarc.' + IntToStr(K)) then begin
+      Result := 'PS3_GAME\USRDIR\data_ps3.psarc.66600 is missing (the archive is split into parts ' +
+        'data_ps3.psarc.66600, .66601, ... that must be numbered without a gap).';
+      Exit;
+    end;
+  Result := 'PS3_GAME\USRDIR\data_ps3.psarc is missing.';
+end;
+
+{ True when Dir is OneDrive's folder or inside it (the OneDrive, OneDriveConsumer and OneDriveCommercial environment
+  variables, case-insensitive prefix match on whole path components; silent installs too). Adapted from Project
+  Helghast (the Killzone 3 PC port, same author, MIT), Project Helghast v0.1.2; the same rule as firstrun_check.py O1. }
+function InOneDrive(Dir: String): Boolean;
+var
+  D, B: String;
+  I: Integer;
+  Vars: array of String;
+begin
+  Result := False;
+  D := Lowercase(RemoveBackslashUnlessRoot(Dir));
+  SetArrayLength(Vars, 3);
+  Vars[0] := 'OneDrive';
+  Vars[1] := 'OneDriveConsumer';
+  Vars[2] := 'OneDriveCommercial';
+  for I := 0 to 2 do begin
+    B := Lowercase(RemoveBackslashUnlessRoot(GetEnv(Vars[I])));
+    if (B <> '') and ((D = B) or (Pos(B + '\', D) = 1)) then
+      Result := True;
+  end;
+end;
+
+{ '' when Dir (the final install folder) is acceptable, else the reason }
+function InstallDirProblem(Dir: String): String;
+var
+  D: String;
+begin
+  Result := '';
+  D := RemoveBackslashUnlessRoot(Dir);
+  if InOneDrive(D) then
+    Result := 'The folder ' + D + ' is inside OneDrive, which syncs the build''s thousands of files while it runs ' +
+      'and locks them. Choose a folder outside OneDrive (the default, %LOCALAPPDATA%\Programs\{#AppDirName}, is fine).';
+end;
+
+{ Before any file is written, for the wizard and for silent installs with /DIR= alike (a silent install never clicks
+  Next on the folder page) }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := InstallDirProblem(ExpandConstant('{app}'));
+  if Result <> '' then Log('install folder refused: ' + Result);
+end;
+
+{ Dump and update pages (adapted from Project Helghast v0.1.2): a pick one or two levels too deep is stepped
+  up, and the disc's TITLE_ID is read from PARAM.SFO and named. Quick checks only; firstrun_check.py (D1-D3, U1-U3,
+  E1) runs as the build's first step and repeats them. }
+function EndsWithName(Dir, Name: String): Boolean;
+begin
+  Result := CompareText(ExtractFileName(RemoveBackslashUnlessRoot(Dir)), Name) = 0;
+end;
+
+{ The pick is a decrypted disc ISO: an existing file whose name ends in .iso (adapted from Project Helghast, KZ3
+  v0.1.2). The page does not open it (Pascal here cannot seek in a 7 GB file); firstrun_check.py reads the image's
+  PARAM.SFO, EBOOT.BIN and data_ps3.psarc in the first build step and says "this ISO is encrypted; use a decrypted
+  dump" or what else is wrong, then firstrun.py copies its game files into the install folder (game\disc). }
+function IsIsoPick(Path: String): Boolean;
+begin
+  Path := Trim(Path);
+  Result := (Path <> '') and (CompareText(ExtractFileExt(Path), '.iso') = 0) and FileExists(Path) and not DirExists(Path);
+end;
+
+{ A pick of PS3_GAME or PS3_GAME\USRDIR becomes the folder that holds PS3_GAME (as firstrun_check.py resolve_dump) }
+function ResolveDump(Dir: String): String;
+var
+  D: String;
+begin
+  D := RemoveBackslashUnlessRoot(Trim(Dir));
+  Result := D;
+  if IsIsoPick(D) then Exit;
+  if (D = '') or FileExists(AddBackslash(D) + 'PS3_GAME\PARAM.SFO') then Exit;
+  if EndsWithName(D, 'USRDIR') and EndsWithName(ExtractFileDir(D), 'PS3_GAME') then D := ExtractFileDir(D);
+  if EndsWithName(D, 'PS3_GAME') then begin
+    D := RemoveBackslashUnlessRoot(ExtractFileDir(D));
+    if FileExists(AddBackslash(D) + 'PS3_GAME\PARAM.SFO') then Result := D;
+  end;
+end;
+
+{ A pick of USRDIR inside the update folder becomes the update folder (as firstrun_check.py resolve_update) }
+function ResolveUpdate(Dir: String): String;
+var
+  D: String;
+begin
+  D := RemoveBackslashUnlessRoot(Trim(Dir));
+  Result := D;
+  if (D <> '') and EndsWithName(D, 'USRDIR') and FileExists(AddBackslash(ExtractFileDir(D)) + 'PARAM.SFO') then
+    Result := RemoveBackslashUnlessRoot(ExtractFileDir(D));
+end;
+
+{ Little-endian integer of Bytes bytes at the 0-based offset P of S; 0 past the end (the same reader as
+  firstrun_check.py read_sfo) }
+function SfoInt(S: AnsiString; P, Bytes: Integer): Integer;
+var
+  B: Integer;
+begin
+  Result := 0;
+  if (P < 0) or (P + Bytes > Length(S)) then Exit;
+  for B := Bytes - 1 downto 0 do Result := Result * 256 + Ord(S[P + B + 1]);
+end;
+
+{ A NUL-terminated string at the 0-based offset P of S, at most Max bytes }
+function SfoText(S: AnsiString; P, Max: Integer): String;
+var
+  I: Integer;
+begin
+  Result := '';
+  I := P + 1;
+  while (I <= Length(S)) and (I <= P + Max) and (Ord(S[I]) <> 0) do begin
+    Result := Result + Chr(Ord(S[I]));
+    I := I + 1;
+  end;
+end;
+
+{ One field of a PARAM.SFO (magic NUL P S F, key table start at 8, data table start at 12, entry count at 16, 16-byte
+  entries from 20: key offset u16, format u16, length u32, max length u32, data offset u32); '' when absent }
+function SfoField(Path, Key: String): String;
+var
+  S: AnsiString;
+  KT, DT, N, I, E: Integer;
+begin
+  Result := '';
+  if not LoadStringFromFile(Path, S) then Exit;
+  if (Length(S) < 20) or (Ord(S[1]) <> 0) or (Ord(S[2]) <> 80) or (Ord(S[3]) <> 83) or (Ord(S[4]) <> 70) then Exit;
+  KT := SfoInt(S, 8, 4);
+  DT := SfoInt(S, 12, 4);
+  N := SfoInt(S, 16, 4);
+  if N > 200 then N := 200;
+  for I := 0 to N - 1 do begin
+    E := 20 + 16 * I;
+    if SfoText(S, KT + SfoInt(S, E, 2), 32) = Key then begin
+      Result := SfoText(S, DT + SfoInt(S, E + 12, 4), SfoInt(S, E + 4, 4));
+      Exit;
+    end;
+  end;
+end;
+
+function DiscSfo(Dump: String): String;
+begin
+  Result := AddBackslash(Dump) + 'PS3_GAME\PARAM.SFO';
+end;
+
+{ The Killzone Trilogy disc: its PS3_GAME is Killzone 2 itself (BCUS98116) with disc VERSION 02.00 (ASSUMPTION from
+  Project Helghast's read-only survey of that disc; untested here), so it is named, not refused }
+function IsTrilogy(Dump: String): Boolean;
+begin
+  Result := SfoField(DiscSfo(Dump), 'VERSION') = '02.00';
+end;
+
+{ '' when the folder holds the Killzone 2 US disc (BCUS98116) with its archive, else the message; Id = the title id
+  found ('' when none) }
+function DumpProblem(Dir: String; var Id: String): String;
+var
+  Title: String;
+begin
+  Id := '';
+  Result := '';
+  if IsIsoPick(Dir) then Exit
+  else if (CompareText(ExtractFileExt(Dir), '.iso') = 0) and not DirExists(Dir) then
+    Result := 'The ISO file ' + Dir + ' was not found.'
+  else if not FileExists(DiscSfo(Dir)) then
+    Result := 'This folder does not look like a Killzone 2 disc dump: PS3_GAME\PARAM.SFO is missing. Select the ' +
+      'folder that holds PS3_GAME (picking PS3_GAME itself also works), or a decrypted .iso file.'
+  else begin
+    Id := SfoField(DiscSfo(Dir), 'TITLE_ID');
+    Title := SfoField(DiscSfo(Dir), 'TITLE');
+    if Id = '' then
+      Result := 'PS3_GAME\PARAM.SFO in this folder has no readable TITLE_ID, so it is not a game dump.'
+    else if Id <> 'BCUS98116' then
+      Result := 'This is ' + Id + ' (' + Title + '), not Killzone 2. The port needs the Killzone 2 US disc ' +
+        '(BCUS98116); other releases are not supported.'
+    else
+      Result := ArchiveProblem(AddBackslash(Dir) + 'PS3_GAME\USRDIR\');
+    if (Id = 'BCUS98116') and (Result <> '') then
+      Result := 'This is Killzone 2 (BCUS98116) but the dump is incomplete: ' + Result + ' Copy the dump again.';
+  end;
+end;
+
+{ '' when the update's PARAM.SFO names the disc's TITLE_ID (as firstrun_check.py U1), else the message }
+function UpdateIdProblem(Dir, DiscId: String): String;
+var
+  Id: String;
+begin
+  Result := '';
+  Id := SfoField(AddBackslash(Dir) + 'PARAM.SFO', 'TITLE_ID');
+  if Id = '' then
+    Result := 'The update''s PARAM.SFO has no readable TITLE_ID.'
+  else if (DiscId <> '') and (Id <> DiscId) then
+    Result := 'This update is for ' + Id + ', but the disc dump is ' + DiscId + '. Pick the Killzone 2 update ' +
+      '(dev_hdd0\game\' + DiscId + ').';
+end;
+
+{ "Browse for ISO file...": the folder page's own Browse picks folders only }
+procedure DumpIsoClick(Sender: TObject);
+var
+  F: String;
+begin
+  F := DumpPage.Values[0];
+  if not IsIsoPick(F) then F := '';
+  if GetOpenFileName('Pick your decrypted Killzone 2 disc image', F, '', 'ISO images (*.iso)|*.iso|All files|*.*', 'iso') then
+    DumpPage.Values[0] := F;
+end;
+
+{ The page names what it found in the picked folder, so a wrong pick is clear before Next }
+procedure DumpEditChange(Sender: TObject);
+var
+  D, Id, Problem: String;
+begin
+  D := ResolveDump(DumpPage.Values[0]);
+  Problem := DumpProblem(D, Id);
+  if Trim(D) = '' then DumpInfo.Caption := ''
+  else if IsIsoPick(D) then
+    DumpInfo.Caption := 'ISO image ' + ExtractFileName(D) + '. Setup checks the disc inside it when the build starts, ' +
+      'then copies its game files (about 7 GB) into the install folder.'
+  else if (Problem = '') and IsTrilogy(D) then
+    DumpInfo.Caption := 'Found: ' + Id + ' (Killzone 2 from the Killzone Trilogy disc: untested)'
+  else if Problem = '' then DumpInfo.Caption := 'Found: ' + Id + ' (Killzone 2, US disc)'
+  else if Id <> '' then DumpInfo.Caption := 'Found: ' + Id + '. ' + Problem
+  else DumpInfo.Caption := 'No Killzone 2 dump found here: PS3_GAME\PARAM.SFO is missing.';
+end;
+
 procedure InitializeWizard;
 begin
   ApplyHeadingFonts;
@@ -492,8 +753,28 @@ begin
   RpcsPage.Add('RPCS3 folder:');
   DumpPage := CreateInputDirPage(RpcsPage.ID, 'Your disc dump',
     'Killzone 2, US disc (BCUS98116), decrypted.',
-    'Pick the folder that holds PS3_GAME. Setup reads it in place: never changed, never copied.', False, '');
-  DumpPage.Add('Disc dump folder (holds PS3_GAME):');
+    'Pick the folder that holds PS3_GAME (picking PS3_GAME itself also works), or a decrypted .iso file. Setup ' +
+    'never changes it; a folder is read in place, the files of an ISO are copied out of it into the install folder ' +
+    '(about 7 GB).', False, '');
+  DumpPage.Add('Disc dump folder (holds PS3_GAME) or decrypted ISO file:');
+  DumpIsoBtn := TNewButton.Create(DumpPage);
+  DumpIsoBtn.Parent := DumpPage.Surface;
+  DumpIsoBtn.Left := 0;
+  DumpIsoBtn.Top := DumpPage.Edits[0].Top + DumpPage.Edits[0].Height + ScaleY(8);
+  DumpIsoBtn.Width := ScaleX(150);
+  DumpIsoBtn.Height := ScaleY(24);
+  DumpIsoBtn.Caption := 'Browse for &ISO file...';
+  DumpIsoBtn.OnClick := @DumpIsoClick;
+  { What the picked folder holds (its title id), under the edit (adapted from Project Helghast v0.1.2) }
+  DumpInfo := TNewStaticText.Create(DumpPage);
+  DumpInfo.Parent := DumpPage.Surface;
+  DumpInfo.Left := 0;
+  DumpInfo.Top := DumpIsoBtn.Top + DumpIsoBtn.Height + ScaleY(10);
+  DumpInfo.AutoSize := False;
+  DumpInfo.WordWrap := True;
+  DumpInfo.Width := DumpPage.SurfaceWidth;
+  DumpInfo.Height := ScaleY(48);
+  DumpPage.Edits[0].OnChange := @DumpEditChange;
   UpdatePage := CreateInputDirPage(DumpPage.ID, 'Update 1.29',
     'The port is built on 1.29.',
     'Pick the folder named BCUS98116 that holds the 1.29 update (the update uses the disc''s own id).' + #13#10 +
@@ -580,7 +861,13 @@ begin
       Space + 'From your RPCS3 install: ';
     if RpcsPage.Values[0] <> '' then Result := Result + RpcsPage.Values[0]
     else Result := Result + 'found in the usual places when the build starts (setup asks first)';
-  end else
+  end else if IsIsoPick(DumpPage.Values[0]) then
+    Result := MemoDirInfo + NewLine + NewLine +
+      'Your game files (the ISO''s files are copied into the install, about 7 GB; the rest is read in place):' + NewLine +
+      Space + 'Disc image: ' + DumpPage.Values[0] + NewLine +
+      Space + '1.29 update: ' + UpdatePage.Values[0] + NewLine +
+      Space + 'Decrypted EBOOT: ' + EbootPage.Values[0]
+  else
     Result := MemoDirInfo + NewLine + NewLine +
       'Your game files (read in place, never copied):' + NewLine +
       Space + 'Disc dump: ' + DumpPage.Values[0] + NewLine +
@@ -655,44 +942,23 @@ begin
   if Result and (Msg = '') then Msg := 'This EBOOT is still encrypted.';
 end;
 
-{ '' when the disc archive is there, as USRDIR\data_ps3.psarc or as the parts a FAT32 drive makes of a file over
-  4 GiB (data_ps3.psarc.66600, .66601, ... in order, no gap; read as one file), else the message naming the missing
-  file. Usr = the dump's USRDIR with a trailing backslash. As firstrun_check.py split_parts (from KZ3 b1a6262). }
-function ArchiveProblem(Usr: String): String;
-var
-  N, K: Integer;
-begin
-  Result := '';
-  if FileExists(Usr + 'data_ps3.psarc') then Exit;
-  N := 66600;
-  while FileExists(Usr + 'data_ps3.psarc.' + IntToStr(N)) do N := N + 1;
-  if N > 66600 then begin
-    { parts 66600 up to N-1 exist; a later one means the numbering has a gap at N }
-    for K := N + 1 to N + 40 do
-      if FileExists(Usr + 'data_ps3.psarc.' + IntToStr(K)) then begin
-        Result := 'PS3_GAME\USRDIR\data_ps3.psarc.' + IntToStr(N) + ' is missing (the archive is split into parts ' +
-          'data_ps3.psarc.66600, .66601, ... that must be numbered without a gap).';
-        Exit;
-      end;
-    Exit;
-  end;
-  for K := 66601 to 66640 do
-    if FileExists(Usr + 'data_ps3.psarc.' + IntToStr(K)) then begin
-      Result := 'PS3_GAME\USRDIR\data_ps3.psarc.66600 is missing (the archive is split into parts ' +
-        'data_ps3.psarc.66600, .66601, ... that must be numbered without a gap).';
-      Exit;
-    end;
-  Result := 'PS3_GAME\USRDIR\data_ps3.psarc is missing.';
-end;
-
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  D, EbootMsg, Arch: String;
+  D, EbootMsg, Problem, Id: String;
+  FreeB, TotalB: Int64;
 begin
   Result := True;
   { A silent install simulates the Next clicks (Inno help, NextButtonClick); a box here would wait for a click
     nobody makes. The game paths then come from /DUMP= /UPDATE= /EBOOT= (RunBuild) and firstrun_check.py checks them. }
   if WizardSilent then Exit;
+  { OneDrive and the like: said on the folder page already; PrepareToInstall repeats it for silent installs }
+  if CurPageID = wpSelectDir then begin
+    Problem := InstallDirProblem(WizardDirValue);
+    if Problem <> '' then begin
+      MsgBox(Problem, mbError, MB_OK);
+      Result := False;
+    end;
+  end;
   if CurPageID = RpcsPage.ID then begin
     D := AddBackslash(RpcsPage.Values[0]);
     if (RpcsPage.Values[0] <> '') and not (FileExists(D + 'rpcs3.exe') or FileExists(D + 'config\games.yml') or
@@ -702,24 +968,42 @@ begin
       Result := False;
     end;
   end;
-  { Quick presence checks only; firstrun_check.py (D1-D3, U1-U3, E1) runs as the build's first step. }
+  { Quick checks only; firstrun_check.py (D1-D3, U1-U3, E1) runs as the build's first step. }
   if CurPageID = DumpPage.ID then begin
-    D := AddBackslash(DumpPage.Values[0]);
-    if not FileExists(D + 'PS3_GAME\PARAM.SFO') then begin
-      MsgBox('This folder does not look like a Killzone 2 disc dump: PS3_GAME\PARAM.SFO and ' +
-        'PS3_GAME\USRDIR\data_ps3.psarc are needed. Select the folder that holds PS3_GAME.', mbError, MB_OK);
+    { The folder that holds PS3_GAME is used from here on, whichever level was picked }
+    DumpPage.Values[0] := ResolveDump(DumpPage.Values[0]);
+    Problem := DumpProblem(DumpPage.Values[0], Id);
+    if Problem <> '' then begin
+      MsgBox(Problem, mbError, MB_OK);
       Result := False;
+    end else if IsIsoPick(DumpPage.Values[0]) then begin
+      Log('disc dump: decrypted ISO ' + DumpPage.Values[0] + ' (read by the build''s first step)');
+      { the copy out of the ISO: about 7 GB for the game files, room for the build }
+      if GetSpaceOnDisk64(ExtractFileDrive(WizardDirValue), FreeB, TotalB) and
+         (FreeB < Int64(10) * 1024 * 1024 * 1024) then
+        Result := MsgBox('The install folder''s drive has less than 10 GB free; copying the game files out of the ' +
+          'ISO needs about 7 GB and the build about 2 GB more. Go on anyway?', mbConfirmation,
+          MB_YESNO or MB_DEFBUTTON2) = IDYES;
     end else begin
-      Arch := ArchiveProblem(D + 'PS3_GAME\USRDIR\');
-      if Arch <> '' then begin
-        MsgBox('This disc dump is incomplete: ' + Arch + ' Copy the dump again, then select the folder that ' +
-          'holds PS3_GAME.', mbError, MB_OK);
-        Result := False;
+      Log('disc dump: ' + DumpPage.Values[0] + ', TITLE_ID ' + Id + ', disc VERSION ' +
+        SfoField(DiscSfo(DumpPage.Values[0]), 'VERSION'));
+      if IsTrilogy(DumpPage.Values[0]) and (not TrilogyNoted) then begin
+        TrilogyNoted := True;
+        MsgBox('This is Killzone 2 (BCUS98116) from the Killzone Trilogy disc. The port is built and tested on the ' +
+          'stand-alone US disc; the Trilogy copy is untested. The first-run check compares its game archive with ' +
+          'the known one. Setup goes on.', mbInformation, MB_OK);
       end;
     end;
   end else if CurPageID = UpdatePage.ID then begin
+    UpdatePage.Values[0] := ResolveUpdate(UpdatePage.Values[0]);
     D := AddBackslash(UpdatePage.Values[0]);
-    if not (FileExists(D + 'PARAM.SFO') and FileExists(D + 'USRDIR\EBOOT.BIN') and
+    Problem := '';
+    if FileExists(D + 'PARAM.SFO') then
+      Problem := UpdateIdProblem(UpdatePage.Values[0], SfoField(DiscSfo(DumpPage.Values[0]), 'TITLE_ID'));
+    if Problem <> '' then begin
+      MsgBox(Problem, mbError, MB_OK);
+      Result := False;
+    end else if not (FileExists(D + 'PARAM.SFO') and FileExists(D + 'USRDIR\EBOOT.BIN') and
             FileExists(D + 'USRDIR\added_data_ps3.psarc')) then begin
       { A missing 1.29 update stops here with the steps; Next again = check again.
         ASSUMPTION: the exact RPCS3/PS3 wording is to be checked against RPCS3's own docs before release. }
@@ -733,6 +1017,18 @@ begin
       Result := False;
     end;
   end else if CurPageID = EbootPage.ID then begin
+    { A folder typed in: its EBOOT.elf, else its USRDIR\EBOOT.elf (as the first run's console question, Project Helghast v0.1.4) }
+    D := AddBackslash(Trim(EbootPage.Values[0]));
+    if DirExists(EbootPage.Values[0]) then begin
+      if FileExists(D + 'EBOOT.elf') then EbootPage.Values[0] := D + 'EBOOT.elf'
+      else if FileExists(D + 'USRDIR\EBOOT.elf') then EbootPage.Values[0] := D + 'USRDIR\EBOOT.elf'
+      else begin
+        MsgBox('No EBOOT.elf in this folder (looked for ' + D + 'EBOOT.elf and ' + D + 'USRDIR\EBOOT.elf). ' +
+          'Select the decrypted EBOOT.elf file itself.', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+    end;
     if FileExists(EbootPage.Values[0]) and EbootEncrypted(EbootPage.Values[0], EbootMsg) then begin
       MsgBox(EbootMsg, mbError, MB_OK);
       Result := False;
@@ -924,8 +1220,8 @@ begin
       /DUMP=<folder with PS3_GAME> /UPDATE=<BCUS98116 folder> /EBOOT=<EBOOT.elf> (/JOBS=N limits the compile jobs);
       without /DUMP= nothing is built and the first start of Project Pyrrhus asks. The RPCS3 lookup asks questions,
       so it is never used here. }
-    DumpDir := ExpandConstant('{param:DUMP|}');
-    UpdateDir := ExpandConstant('{param:UPDATE|}');
+    DumpDir := ResolveDump(ExpandConstant('{param:DUMP|}'));
+    UpdateDir := ResolveUpdate(ExpandConstant('{param:UPDATE|}'));
     EbootFile := ExpandConstant('{param:EBOOT|}');
     if DumpDir = '' then begin
       BuildSkipped := True;
@@ -1040,7 +1336,7 @@ end;
 
 { The game folders the wizard resolved, written whether or not "Build now" is ticked: the launcher's first start
   (a build left for later, or one that stopped at a FAIL) checks these first (firstrun.py --check-first) instead of
-  asking again in a console (from KZ3 3d692df). From [Code], not [INI]: Inno's setup log prints every [INI] value.
+  asking again in a console (from Project Helghast v0.1.3). From [Code], not [INI]: Inno's setup log prints every [INI] value.
   Without a build the RPCS3 lookup is not run (it asks questions); the first start's own RPCS3 lookup finds them. }
 procedure WritePaths;
 var

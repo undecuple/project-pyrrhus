@@ -24,3 +24,6 @@ nix develop .#re --command python3 tools/release/test_version_agree.py
 nix develop .#re --command python3 tools/release/test_install_rules.py
 nix develop .#re --command python3 tools/release/test_bump_version.py
 nix develop .#re --command python3 tools/release/test_release_notes.py
+nix develop .#re --command python3 tools/release/test_uninstall_covers.py
+nix develop .#re --command python3 tools/release/test_iso9660.py
+nix develop .#re --command python3 tools/release/test_recomp_card.py

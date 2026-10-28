@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1100-spu-ls-wws-gates.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1100-spu-ls-wws-gates.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1100: the WWS LS range probes behind the per-function LS gates.
 
 spu_ls_read_probe's bufferSetArray reads (raw lsa 0xDF0..0xEAF) and spu_ls_write_probe_pre's code-buffer writes

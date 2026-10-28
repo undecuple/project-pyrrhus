@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1099-spu-sysv-abi.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1099-spu-sysv-abi.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1099: lifted SPU functions use the System V calling convention on Win64 (SPU_ABI).
 
 The Microsoft x64 convention makes xmm6-xmm15, rsi and rdi callee-saved. A lifted SPU function that uses them

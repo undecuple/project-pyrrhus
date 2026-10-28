@@ -2,7 +2,7 @@ Opt-in feature counter LD_FEAT_LOG=1: which of PR #6 (one-channel crossbar), #30
 
 Per sampled unit of each draw it counts one-channel formats (base 0x90-0x94, 0x9C) with a non-identity crossbar, non-zero TEXTURE_ADDRESS gamma fields (with the alpha bit and the source-signed filter bits apart), keyed by format, remap, zalias kind and colour target; and per draw the non-zero values of SET_SHADER_PACKER at 0x1FEC (the PR's address) and 0x1FBC (patch 2009's). `[feat]` table every 40,000 draws. No behaviour change.
 
-From KZ3 dabb17c3 port/patches/2054-feature-counter-ld-feat-log.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2054-feature-counter-ld-feat-log.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

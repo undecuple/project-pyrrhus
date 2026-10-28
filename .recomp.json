@@ -17,7 +17,8 @@
   "links": [
     {"label": "Features", "url": "https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md"},
     {"label": "Release criteria", "url": "https://github.com/undecuple/project-pyrrhus/blob/main/docs/RELEASE-CRITERIA.md"},
-    {"label": "Screenshots", "url": "https://github.com/undecuple/project-pyrrhus/blob/main/docs/SCREENSHOTS.md"}
+    {"label": "Screenshots", "url": "https://github.com/undecuple/project-pyrrhus/blob/main/docs/SCREENSHOTS.md"},
+    {"label": "Releases", "url": "https://github.com/undecuple/project-pyrrhus/releases"}
   ],
   "help": ["Testing on real Windows with NVIDIA GPUs", "Testing with real PlayStation and Xbox pads", "Speed: the first level ran at 23.3 frames per second in one scripted run (PS3: 30)"],
   "tags": ["cell", "spurs", "d3d12"],

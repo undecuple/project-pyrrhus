@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test (from KZ3 78bf574) for tools/release/lift_fixups.py and its use in firstrun.py's PPU lift step, on synthetic files in a
+"""Host test (from Project Helghast) for tools/release/lift_fixups.py and its use in firstrun.py's PPU lift step, on synthetic files in a
 temp folder (no game data, no EBOOT, no work/). Exit 0 = PASS, 1 = FAIL.
 
     python3 tools/release/test_lift_fixups.py

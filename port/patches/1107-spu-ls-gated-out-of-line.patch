@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1107-spu-ls-gated-out-of-line.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1107-spu-ls-gated-out-of-line.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1107: the gated LS accessors out of line.
 
 spu_ls_read128/write128 are always_inline (patch 1035), so every LS access of a lifted function (spu_ls_read128_l /

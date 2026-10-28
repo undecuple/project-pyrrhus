@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_mfc_slots.c (plus weak stubs for KZ2 patch 7002 at the end). */
+/* From Project Helghast tools/spu/test_mfc_slots.c (plus weak stubs for KZ2 patch 7002 at the end). */
 /* MFC engine host test (patch 1083's until v0.15.0; now checks upstream PR #290's slot list): every SPU context keeps its own MFC engine past 64 live contexts (seen in KZ3: with five
  * real SPUs per instance the KZ3 levels passed 64, the rest shared one fallback engine, a peer's DMA reset a waiting
  * context's tag bit, and the jm policy module spun forever in its tag wait).

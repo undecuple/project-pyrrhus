@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test for tools/release/installer_art.py (from KZ3 78bf574; no game data, no work/, no network): renders with Pillow's built-in
+"""Host test for tools/release/installer_art.py (from Project Helghast; no game data, no work/, no network): renders with Pillow's built-in
 font into a temp folder, then checks the image sizes Inno expects, the icon sizes and entry kinds, the site palette
 in the pixels, determinism (two renders, same bytes), --check (passes fresh; fails on an edited image, a manifest
 from another generator, a palette colour gone from the stylesheet, a missing file), that stand-in fonts never write

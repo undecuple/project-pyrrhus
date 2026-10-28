@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_hop.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_hop.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1096 host test (tools/spu/test_spu_hop.c): direct hops between lifted SPU functions (SPU_HOP / SPU_IB_HOP).
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_hop.sh
 set -uo pipefail

@@ -1,4 +1,4 @@
-/* Killzone 2: CPU check for the lifted SPU code (from KZ3 78bf574+ port/spu/kz3_cpu_check.c,
+/* Killzone 2: CPU check for the lifted SPU code (from Project Helghast+ port/spu/kz3_cpu_check.c,
  * adapted: own CPUID/XGETBV reads instead of __builtin_cpu_supports, a pure decision function for
  * the host test, and a forced-fail switch).
  *

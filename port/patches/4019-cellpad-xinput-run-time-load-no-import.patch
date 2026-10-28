@@ -1,4 +1,4 @@
-KZ2 patch 4019. From KZ3 755fcd8b port/patches/4019-cellpad-xinput-run-time-load-no-import.patch (Project Helghast,
+KZ2 patch 4019. From Project Helghast port/patches/4019-cellpad-xinput-run-time-load-no-import.patch (Project Helghast,
 undecuple, MIT). Host guard: tools/runtime/test_pe_imports.py. KZ3 header follows.
 
 KZ3 patch 4019: cellPad loads XInput at run time instead of importing it, and the runtime no longer links xinput.

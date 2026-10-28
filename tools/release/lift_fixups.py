@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the PPU lift fixups on the player's machine. From KZ3 78bf574 tools/release/lift_fixups.py (unchanged logic;
+"""Apply the PPU lift fixups on the player's machine. From Project Helghast tools/release/lift_fixups.py (unchanged logic;
 KZ2 has no fixups file yet: firstrun.py runs this only when port/kz2/ppu_lift_fixups-<ver>.txt exists).
 
 The same work KZ3's tools/lift.sh did inline for its update EBOOT, as a step the first-run runner

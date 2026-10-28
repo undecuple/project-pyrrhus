@@ -13,7 +13,7 @@ decode exactly as before (2039 re-encoded shared blocks: 2,030 HUD and 73 menu t
 to 156 / 223 levels, measured on the real atlases). BC3 colour blocks decode in four-colour mode always (2039 used
 BC1's c0 <= c1 rule). Host test tools/smoke/test_keycaps.sh case 8 (flips).
 
-From KZ3 dabb17c3 port/patches/2058-pso-await-keycap-cells-exact.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2058-pso-await-keycap-cells-exact.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: the rsx_keycaps.h hunks (KZ3 2039 keycap atlas, not carried) are dropped; the PSO await part is whole.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

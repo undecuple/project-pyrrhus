@@ -1,7 +1,7 @@
 /* Killzone 2 port: hand-play boot helpers. ENHANCEMENT (port-only).
  *
  *  - kz2_console_open: KZ2_CONSOLE=1 opens a console window for kz2.exe, which is a GUI-subsystem program (no console
- *    by default; idea and code shape from KZ3 9caa0d76 port/kz3/main.cpp kz3_logging_start, KZ3_CONSOLE).
+ *    by default; idea and code shape from Project Helghast port/kz3/main.cpp kz3_logging_start, KZ3_CONSOLE).
  *  - kz2_session_log_start: every run writes <exe dir>/logs/kz2-YYYYMMDD-HHMMSS.log (the newest KZ2_LOG_KEEP kept).
  *    stdout and stderr (the CRT descriptors and the Win32 std handles) are pointed at a pipe; a thread copies what
  *    arrives to the log file and to the original stdout, so a redirected stdout (tools/proton-test.sh, kz2-check.sh)
@@ -60,7 +60,7 @@ static inline int kz2_log_prune_select(const char* const* names, int count, int 
 
 /* The EBOOT to load (no launch option needed): argv[1] when given (an explicit argument wins), else
  * <exe dir>/PS3_GAME/USRDIR/EBOOT.elf, a dump folder with kz2.exe dropped into it (Steam: a non-Steam game pointing at
- * kz2.exe). KZ3 does the same last step (KZ3 9caa0d76 port/kz3/main.cpp kz3_boot_inputs); its kz3.ini and built-in
+ * kz2.exe). KZ3 does the same last step (Project Helghast port/kz3/main.cpp kz3_boot_inputs); its kz3.ini and built-in
  * EBOOT steps are not here. -> 1 = from the command line, 0 = beside the exe, -1 = the path did not fit. */
 static inline int kz2_eboot_path(const char* exe_dir, int argc, char** argv, char* out, size_t n)
 {

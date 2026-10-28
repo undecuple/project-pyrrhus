@@ -6,7 +6,7 @@ them into intervals when the list completes and credits each to the PSO and the 
 it. Every 10 s: `[perf-gt]` (GPU ms/frame by kind), `[perf-gt-pass]` (top 8 passes) and `[perf-gt-pso]` (top
 12 PSOs) with draws/frame, us/draw, Mpx/frame and the RT formats and sizes. Default off.
 
-From KZ3 dabb17c3 port/patches/2052-perf-gpu-timestamps.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2052-perf-gpu-timestamps.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1096-spu-direct-hops.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1096-spu-direct-hops.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1096: direct hops between lifted SPU functions, and a memo for spu_lookup.
 
 Every cross-function transfer in lifted SPU code set the pending trampoline and returned to the enclosing drain

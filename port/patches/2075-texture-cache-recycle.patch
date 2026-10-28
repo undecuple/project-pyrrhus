@@ -8,7 +8,7 @@ comes from an exact LRU list (libs/video/rsx_tex_lru.h, same order as the serial
 offered to the decode as patch 2035's in-place target (reused when the description matches). [tex-hash] gains
 evict=N recycle=N entries=N. Host test tools/smoke/test_tex_lru.sh.
 
-From KZ3 dabb17c3 port/patches/2075-texture-cache-recycle.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2075-texture-cache-recycle.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: one hunk rebased by hand (2039 keycap lines absent).
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

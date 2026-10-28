@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch the pinned release toolchain (tools/release/toolchain.json) into a local cache: download, check SHA-256,
 unpack. Standard library only, Python 3.8+. Run it outside the sandbox (it needs the network);
-assemble_payload.py --toolchain CACHE then copies the trees into the payload (from KZ3 78bf574 tools/release/fetch_toolchain.py).
+assemble_payload.py --toolchain CACHE then copies the trees into the payload (from Project Helghast tools/release/fetch_toolchain.py).
 
     fetch_toolchain.py [--manifest FILE] [--cache DIR] [--only NAME[,NAME]] [--fill | --offline]
     fetch_toolchain.py --check [--strict] [--manifest FILE]

@@ -5,7 +5,7 @@ uses rsx_compact_be_f16_nb: (h & 0x7FFF) << 13 plus a rebias selected by the exp
 for Inf/NaN), the sign alone for exponent 0 (zero and denormals flush, as before). Same bits for all 65,536 inputs
 (tools/smoke/test_vtx_batch.sh checks every one). LD_VTX_F16=0 = the old decode (default on).
 
-From KZ3 dabb17c3 port/patches/2074-vtx-half-branch-free.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2074-vtx-half-branch-free.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): f16_fast HALF case added to upstream #458's rsx_vertex_fetch_many
 

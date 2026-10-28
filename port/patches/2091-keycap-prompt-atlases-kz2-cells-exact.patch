@@ -1,4 +1,4 @@
-KZ2 patch 2091: prompt atlases and keycap prompts. From KZ3 55b2d073 port/patches/2039-keycap-prompts-atlas-cells.patch
+KZ2 patch 2091: prompt atlases and keycap prompts. From Project Helghast port/patches/2039-keycap-prompts-atlas-cells.patch
 (rsx_keycaps.h: atlas fingerprint, cell tables, BC3 codec, keycaps; live-draw upload hook and in-place refresh; cellPad
 pad_kb_key_for_input), with the rsx_keycaps.h half of KZ3 2058 (cells exact) re-done: KZ2 2058 carried only its PSO part.
 KZ2 changes: the fingerprints and cells are Killzone 2's (HUD ButtonIconCollection #198 Texture #363
@@ -52,7 +52,7 @@ index 0000000..a31d899
 --- /dev/null
 +++ b/libs/video/rsx_keycaps.h
 @@ -0,0 +1,509 @@
-+/* KZ2 patch 2091, from KZ3 55b2d073 patch 2039 (hook D/E) with the cell-exact
++/* KZ2 patch 2091, from Project Helghast patch 2039 (hook D/E) with the cell-exact
 + * BC3 re-encode of KZ3 2058 (its rsx_keycaps.h half, re-done here): keycap prompts and the prompt-atlas codec.
 + *
 + * Killzone 2 draws its button prompts as cells of two DXT5 atlases (the RE notes): the HUD atlas

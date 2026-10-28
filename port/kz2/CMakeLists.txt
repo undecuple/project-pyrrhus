@@ -1,4 +1,4 @@
-# Killzone 2 port. From KZ3 78bf574 port/kz3/CMakeLists.txt, KZ3-only parts removed (PSARC VFS, KZ3 HLE glue,
+# Killzone 2 port. From Project Helghast port/kz3/CMakeLists.txt, KZ3-only parts removed (PSARC VFS, KZ3 HLE glue,
 # file logger, port/spu and port/net subprojects).
 # Killzone 3 port host. Based on ps3recomp templates/project (MIT licence: third_party/ps3recomp/LICENSE).
 # Lifted code: work/recomp (tools/lift.sh, not committed). Toolkit: third_party/ps3recomp (pinned).
@@ -204,7 +204,7 @@ add_executable(${PROJECT_NAME}
     kz2_ppu_overrides.cpp  # host bodies for port/kz2/ppu_overrides.txt
     kz2_probe.cpp       # ppu_probe for a lift made with KZ2_PROBES (patch 6017)
     kz2_watch.cpp       # KZ2_WATCH guest region poll and write trap
-    guest_fiber.c       # host coroutines for the PPU job-fiber scheduler (from KZ3 78bf574 port/spu)
+    guest_fiber.c       # host coroutines for the PPU job-fiber scheduler (from Project Helghast port/spu)
     kz2_cpu_check.c     # KZ2_SPU_FMA: refuses to start without AVX/FMA3/OS AVX state, with a message
     kz2_pad_layout.c    # KZ2_PAD_LAYOUT=original|modern: Modern pad preset through the profile map
     kz2_prompts.cpp     # prompt glyph source for patches 2091-2093: keys, label fonts
@@ -229,7 +229,7 @@ if(SPU_SOURCES)
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # ISA flags for the lifted SPU code (KZ3 78bf574+ port/spu/CMakeLists.txt):
+        # ISA flags for the lifted SPU code (Project Helghast+ port/spu/CMakeLists.txt):
         #   -msse4.1  the helpers' pshufb shufb and SSE4.1 lane ops (KZ3 1035/1041/1097; x86-64-v2);
         #   -mfma     spu__fma4 as one hardware fused multiply-add per vector, same bits (KZ3 1097/1106; AVX + FMA3);
         #   -ffp-contract=off  no spontaneous contraction once FMA instructions exist (SPU fma/fms are explicit);
@@ -288,7 +288,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX)
 # through the #pragma comment(lib) in libs/video/rsx_d3d12_backend.c.
 if(WIN32)
     # GUI subsystem: no console window beside the game (KZ2_CONSOLE=1 opens one, kz2_session_log.c). The entry stays
-    # main(). From KZ3 9caa0d76 port/kz3/CMakeLists.txt.
+    # main(). From Project Helghast port/kz3/CMakeLists.txt.
     if(MSVC)
         target_link_options(${PROJECT_NAME} PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
     else()

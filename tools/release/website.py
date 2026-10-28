@@ -2,7 +2,7 @@
 """Project site: docs/features.tsv + docs/requirements.md + public/CHANGELOG.md + installer/VERSION
 -> public/site/index.html.
 
-From KZ3 78bf574 tools/release/website.py, adapted to Project Pyrrhus (Killzone 2); the layout follows Project
+From Project Helghast tools/release/website.py, adapted to Project Pyrrhus (Killzone 2); the layout follows Project
 Helghast's later site (the Killzone 3 PC port, same author, MIT: logo band, tab bar, screens gallery, news column with
 a sidebar, changelog and objectives boxes, version and download block, four-column footer) with this project's own
 art, palette (public/site/style.css, the installer art's tokens), screenshots and wording.

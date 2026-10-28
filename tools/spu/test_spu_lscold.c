@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_lscold.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_lscold.c (unchanged). */
 /* Patch 1107 host test: the lifted code's LS accessors (spu_ls_read128_l / spu_ls_write128_l, patches 1082/1100) with
  * the gated side out of line (SPU_LS_COLD=1, the default) or inlined (=0, the old form; the .sh builds both) give the
  * same values and the same LS image as a byte-wise big-endian reference, on randomised LS images, with the debug gate

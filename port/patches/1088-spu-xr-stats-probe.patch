@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1088-spu-xr-stats-probe.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1088-spu-xr-stats-probe.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1088 (diagnostic, opt-in): KZ3_SPU_XRSTATS=1 counts the exponent-255 recompute lanes of
 patch 1071/1079 (spu__xr_fix, and the fma family's slow path) by op and operand class, by call site (the cold
 function's return address, i.e. the lifted function) and by exponent-255 word; kz3_spu_xr_note in spu_drain.c prints a

@@ -1,4 +1,4 @@
-KZ2 patch 2092: button prompt glyph sets PS4/PS5, Xbox, keyboard/mouse. From KZ3 55b2d073
+KZ2 patch 2092: button prompt glyph sets PS4/PS5, Xbox, keyboard/mouse. From Project Helghast
 port/patches/2090-prompt-glyph-sets-ps4-xbox-kbm.patch (rsx_prompt_glyphs.h, new). KZ2 changes: the ink boxes are
 Killzone 2's (HUD as KZ3's but Triangle, R2, SELECT, START; menu boxes new for its 34x35 cells; measured with
 tools/runtime/prompt_atlas_raw.py boxes), cells are written through 2091's cell-exact overlay (pg_put_cell removed).
@@ -11,7 +11,7 @@ index 0000000..8b8dde0
 --- /dev/null
 +++ b/libs/video/rsx_prompt_glyphs.h
 @@ -0,0 +1,413 @@
-+/* KZ2 patch 2092, from KZ3 55b2d073 patch 2090 (stage 1): button prompt glyph
++/* KZ2 patch 2092, from Project Helghast patch 2090 (stage 1): button prompt glyph
 + * sets for other pads. KZ3 patch numbers in the comments below: 2039 = KZ2 2091 (rsx_keycaps.h), 2090 = this patch,
 + * 2094 = KZ2 2093, 4011-4013 = KZ2 4011-4013. KZ2 changes: the ink boxes are Killzone 2's (measured on its own atlases,
 + * tools/runtime/prompt_atlas_raw.py boxes); cells are written through 2091's cell-exact overlay.

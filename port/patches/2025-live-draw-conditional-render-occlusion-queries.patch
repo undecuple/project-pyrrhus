@@ -20,7 +20,7 @@ Host test tools/smoke/test_cond_render.c (PASS; LD_COND_RENDER=0 FAIL).
 
 Rebased on ps3recomp v0.15.0: context only, upstream immediate_vertex sink member added next to ours (PR292), both kept.
 Behaviour follows RPCS3 (GPL-2.0), the conditional-rendering (SET_RENDER_ENABLE) and ZPASS report handling of its RSX backend; read, not copied.
-From KZ3 78bf574 port/patches/2025-live-draw-conditional-render-occlusion-queries.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2025-live-draw-conditional-render-occlusion-queries.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

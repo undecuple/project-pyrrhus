@@ -19,7 +19,7 @@ write (page bitmap) still forces the next bind's hash in every mode (patch 2033 
 content changes, not page flags (64 KB pages flag neighbours). Host test tools/smoke/test_guest_write.c runs in
 three modes (KZ3_GW_TIER=0/1/2) with the new case Q5.
 
-From KZ3 dabb17c3 port/patches/2046-texture-decode-totals-argb-direct-tiered-hash-span.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2046-texture-decode-totals-argb-direct-tiered-hash-span.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: rebased by hand (two hunks around KZ3-only 2039 keycap lines); hunk placements checked.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

@@ -1,7 +1,7 @@
 /* Killzone 2 port: host replacements for lifted PPU functions (ps3recomp patch 1018, `ppu_lifter --overrides`).
  * Each address in port/kz2/ppu_overrides.txt gets its lifted body renamed func_X__lifted and PPU_OVERRIDE_X defined
  * in ppu_overrides.h; the host's func_X lives here, inside #ifdef PPU_OVERRIDE_X, so a lift without the row still
- * builds. Pattern from KZ3 78bf574 port/net/kz3_net_hooks.h (wrap the lifted body, keep r1/r2/lr). */
+ * builds. Pattern from Project Helghast port/net/kz3_net_hooks.h (wrap the lifted body, keep r1/r2/lr). */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -618,7 +618,7 @@ KZ2_HAVOK_TRACE(008DAD20, "type-1 handler(ctx,queue,buf)", 5, 0)     // @0x008DA
 
 #if defined(PPU_OVERRIDE_00072FB0) && defined(PPU_OVERRIDE_00073178) && defined(PPU_OVERRIDE_000732D8)
 /* The PPU job-fiber scheduler that runs the world's entity updates (1.29 addresses; names
- * ASSUMPTION, from behaviour). Same design as KZ3's (KZ3 78bf574 port/spu/kz3_ppu_overrides.cpp @0x000C3A54, KZ3
+ * ASSUMPTION, from behaviour). Same design as KZ3's (Project Helghast port/spu/kz3_ppu_overrides.cpp @0x000C3A54, KZ3
  * the RE notes), different code: KZ2's run_all and finish are compiled C around four asm helpers.
  *   @0x00072988 save(buf)     r14-r31 (+0), r1 (+0x90), r2 (+0x98), r0=LR (+0xA0 word), r3 (+0xA8), f14-f31 (+0xB0),
  *                             v20-v31 (+0x140), r4 (+0x200), r5 (+0x208), CR (+0x210)

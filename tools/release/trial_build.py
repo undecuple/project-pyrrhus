@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llvm-mingw trial driver (from KZ3 78bf574 tools/release/trial_build.py): configure and compile the port with the payload's bundled
+"""llvm-mingw trial driver (from Project Helghast tools/release/trial_build.py): configure and compile the port with the payload's bundled
 toolchain, from lift outputs made elsewhere, and time it. Runs firstrun.py's own configure and compile commands
 (the same payload_tools / cmd_configure / cmd_compile), so the trial tests what a player's machine will run, minus
 the lift. Standard library only. Meant for Windows (under Proton) with the payload tree; also runs on Linux.

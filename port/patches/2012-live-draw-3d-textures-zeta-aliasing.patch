@@ -22,7 +22,7 @@ tex3d 4/4 voxels, shadow-cmp 3/3, depth-argb 1/1 (remap 0xAAE4) and 1/1 (0xAA93)
 
 Rebased on ps3recomp v0.15.0: context only, upstream shadow-compare branch (PR302) kept before the 3D test.
 Behaviour follows RPCS3 (GPL-2.0), the shadow-compare zfunc reversal and the depth-format texture aliasing in its RSX texture and fragment-program code; read, not copied.
-From KZ3 78bf574 port/patches/2012-live-draw-3d-textures-zeta-aliasing.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2012-live-draw-3d-textures-zeta-aliasing.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): rsx_fp_apply_unnorm_scale keeps upstream #482's body and skips cube units only when not a volume
 

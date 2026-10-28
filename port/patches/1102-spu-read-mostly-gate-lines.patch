@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1102-spu-read-mostly-gate-lines.patch (taken 2026-10-20); hand-rebased: the spu_drain.c head hunk without KZ3 1095's lines (1095 not ported: opt-in, its hunks need 1066/1072).
+From Project Helghast port/patches/1102-spu-read-mostly-gate-lines.patch (taken 2026-10-20); hand-rebased: the spu_drain.c head hunk without KZ3 1095's lines (1095 not ported: opt-in, its hunks need 1066/1072).
 KZ3 patch 1102: the read-mostly SPU dispatch gates in cache lines of their own (PE builds).
 
 Every direct hop, computed-hop guess and lifted function entry reads ~25 runtime flags (spu_hop_ok,

@@ -7,7 +7,7 @@ version and download block follows installer/VERSION and its CHANGELOG entry (re
 marker spans; the changelog box and the release news come from the whole CHANGELOG (newest first, capped on the page
 only, internal wording skipped, [Unreleased] left out), checked on the real CHANGELOG too; both layouts; the lint
 refuses scripts, event handlers and outside resources other than Google Fonts; the forbidden third-party service name
-appears nowhere. From KZ3 78bf574 tools/release/test_website.py and Project Helghast's later one (same author, MIT).
+appears nowhere. From Project Helghast tools/release/test_website.py and Project Helghast's later one (same author, MIT).
 Exit 0 = PASS.
 
     python3 tools/release/test_website.py

@@ -19,9 +19,11 @@ a literal (test_version_agree.py is the list of places that state it):
   - public/CHANGELOG.md: "## [Unreleased]" becomes "## [X.Y.Z] - DATE (pre-release)"; with no Unreleased section an
     empty stub with "### Added" goes above the newest entry; left alone when X.Y.Z already has a section.
 Then it regenerates the site (website.py; only where its data, docs/features.tsv, is present: the public repository
-has only the generated page, where the marker spans move and the rest waits for the next export) and runs
-test_version_agree.py; exit 1 when either
-fails. Running it with the current version changes nothing. It refuses a version that is not X.Y.Z or is older than
+has only the generated page, where the marker spans move and the rest waits for the next export), then runs the
+release chain's checks in order: test_version_agree.py; the draft release notes (release_notes.py --tag vX.Y.Z from the
+CHANGELOG entry just made; --notes FILE keeps the text, otherwise it is only checked); and last recomp_card.py, the
+public/.recomp.json card check. Exit 1 when any of them fails (the files are already written; fix and run again, a
+second run with the same version changes nothing). Running it with the current version changes nothing. It refuses a version that is not X.Y.Z or is older than
 installer/VERSION. --check lists what would change and writes nothing.
 
 Public layout: the public repository has public/'s files at its root (no public/ folder); `at()` maps every public/
@@ -167,6 +169,7 @@ def main(argv=None):
     ap.add_argument("version", help="the new version, X.Y.Z, not older than installer/VERSION")
     ap.add_argument("--check", action="store_true", help="list what would change; write nothing")
     ap.add_argument("--date", default=datetime.date.today().isoformat(), help="CHANGELOG/CITATION date (default today)")
+    ap.add_argument("--notes", metavar="FILE", help="keep the draft release notes here (default: checked, not written)")
     ap.add_argument("--root", default=str(ROOT), help="repository root (the tests use a copy)")
     a = ap.parse_args(argv)
     root = pathlib.Path(a.root)
@@ -213,6 +216,28 @@ def main(argv=None):
     if r.returncode:
         print(r.stdout[-2000:], file=sys.stderr)
         return 1
+    return chain_checks(root, a.version, a.notes)
+
+
+def chain_checks(root, version, notes_out):
+    """The draft notes, then the card check. 1 on the first that fails."""
+    tools = pathlib.Path(root) / "tools/release"
+    if (tools / "release_notes.py").is_file():
+        cmd = [sys.executable, str(tools / "release_notes.py"), "--tag", "v" + version, "--root", str(root)]
+        if notes_out:
+            cmd += ["--out", notes_out]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode:
+            print("bump_version: draft release notes refused: " + (r.stderr or r.stdout)[-600:], file=sys.stderr)
+            return 1
+        print("release_notes: draft for v" + version + (f" kept in {notes_out}" if notes_out else " checked"))
+    if (tools / "recomp_card.py").is_file():
+        r = subprocess.run([sys.executable, str(tools / "recomp_card.py"), "--repo", str(root)],
+                           capture_output=True, text=True)
+        print((r.stdout.strip().splitlines() or ["recomp_card: no output"])[-1])
+        if r.returncode:
+            print(r.stderr[-1500:], file=sys.stderr)
+            return 1
     return 0
 
 

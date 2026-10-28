@@ -8,7 +8,7 @@ RSX_DRAW_CSV_GATE window (no partial frame) and LD_DRAW_INPUTS frame 0 is that s
 draw and the draw's inputs come from one frame. LD_DRAW_INPUTS entries may be ranges (a-b, at most 16 entries).
 Without LD_DRAW_DUMP_SURF nothing changes. Log: [draw-dump] surface filter <offset>.
 
-From KZ3 dabb17c3 port/patches/2066-draw-dump-surface-filter.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2066-draw-dump-surface-filter.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

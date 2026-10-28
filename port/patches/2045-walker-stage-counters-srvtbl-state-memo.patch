@@ -19,7 +19,7 @@ it: no lookup, no hash, and the 16-slot sampler table varies only with the sampl
 shader-visible sampler ring (D3D12's 2,048-sampler heap limit) stops wrapping twice per frame (each wrap was a
 descriptor-ring flush with a full GPU wait, 6.9 ms per frame).
 
-From KZ3 dabb17c3 port/patches/2045-walker-stage-counters-srvtbl-state-memo.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2045-walker-stage-counters-srvtbl-state-memo.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 KZ2: rebased by hand (the new-entry ld_redecode_note sits before the decode, as in KZ3; 2039 lines absent).
 
 Rebased on ps3recomp v0.18.0 (hand-merged): both sides kept (meth_t0 after upstream's fast path)

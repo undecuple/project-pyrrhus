@@ -10,7 +10,7 @@ renderer changes. Log: [window]. Host test: tools/smoke/test_window_size.sh.
 
 diff -ruN a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
 
-From KZ3 dabb17c3 port/patches/2062-window-size-scaled-present.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2062-window-size-scaled-present.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

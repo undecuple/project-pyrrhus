@@ -11,7 +11,7 @@ RSX_COLOR_MASK_RESERVED=ignore applies the PR's rule. Flip the default only when
 Host test: tools/smoke/test_color_mask.sh (builds rsx_dispatch.c alone; default keeps the write, ignore keeps the old
 mask, clean values always apply).
 
-From KZ3 dabb17c3 port/patches/2085-color-mask-reserved-bits-diag.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2085-color-mask-reserved-bits-diag.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 Licence: MIT. Source: JonathanDC64/ps3recomp PR #47 (MIT); the KZ3 copy is MIT (undecuple).
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

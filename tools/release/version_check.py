@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot, opt-in check for a newer release of the port. From KZ3 78bf574 tools/release/version_check.py. Standard library only,
+"""One-shot, opt-in check for a newer release of the port. From Project Helghast tools/release/version_check.py. Standard library only,
 Python 3.8+, Windows and Linux.
 
     version_check.py --current X.Y.Z [--url URL] [--timeout S] [--json] [--result-file FILE] [--log FILE]

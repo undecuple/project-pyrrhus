@@ -1,4 +1,4 @@
-# From KZ3 78bf574 cmake/mingw-w64.cmake (unchanged below this line).
+# From Project Helghast cmake/mingw-w64.cmake (unchanged below this line).
 # Cross-compile to Windows x64 with MinGW-w64 from `nix develop .#win`.
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)

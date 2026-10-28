@@ -13,7 +13,7 @@ LD_VTX_CACHE_MB (256). verify = fetch every hit as before and compare byte for b
 LD_VTX_CACHE_FULL=1 (default) validates a hit with a full compare of the source bytes against a copy kept at
 the fill (spans merged per location; the copy counts against the budget); 0 = the earlier sampled hash.
 
-From KZ3 dabb17c3 port/patches/2047-vertex-payload-cache.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2047-vertex-payload-cache.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

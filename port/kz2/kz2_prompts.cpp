@@ -2,13 +2,13 @@
  * for: the bound keys (cellPad.c, patches 2037/2038/2091), whether the prompts are keycaps (4011), the pad variant
  * (a DualSense, 4011) and the label text as an 8-bit coverage mask.
  *
- * From KZ3 78bf574 port/kz3/main.cpp (kz3_notice_face, kz3_notice_face_exists, kz3_notice_font, kz3_keycap_text,
+ * From Project Helghast port/kz3/main.cpp (kz3_notice_face, kz3_notice_face_exists, kz3_notice_font, kz3_keycap_text,
  * kz3_keycaps_register), adapted: KZ2 has no error notice yet, so the fonts are loaded here. Rajdhani Bold and Medium
  * (SIL OFL 1.1) from <exe dir>\fonts\, privately (FR_PRIVATE: this process only, never installed); the payload ships
  * them there (tools/release/assemble_payload.py FONTS, firstrun/launcher copy them next to kz2.exe). Without them GDI
  * would substitute a serif face under Wine, so the fallback is the first installed of Segoe UI, Tahoma, Arial.
  * The thin face (2093: the PS3 icon labels' look) is Rajdhani Medium (GDI family "Rajdhani Medium") with one pixel of letter spacing per 12 px of em
- * (ASSUMPTION: KZ3 55b2d073's own value for the spacing was not in the import; this matches its description).
+ * (ASSUMPTION: Project Helghast's own value for the spacing was not in the import; this matches its description).
  * ENHANCEMENT. KZ2_KEYCAPS=0 turns the atlas replacement off (rsx_keycaps.h). */
 #ifdef _WIN32
 #include <windows.h>

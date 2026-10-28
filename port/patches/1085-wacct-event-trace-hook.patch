@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1085-wacct-event-trace-hook.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1085-wacct-event-trace-hook.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1085 (diagnostic, opt-in): event trace hook for a per-frame timeline. kz3_wait_acct
 gains g_kz3_wtrace (NULL by default): every accounted bracket and note (HLE calls, syscalls, usleeps, label waits,
 kernel sleeps, policy-module runs, GCM parks), every job-module change, every flip and every WWS job call (the jm

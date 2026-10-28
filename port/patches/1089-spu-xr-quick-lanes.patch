@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1089-spu-xr-quick-lanes.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1089-spu-xr-quick-lanes.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1089: the common exponent-255 lanes of fa/fs/fm (patches 1071/1079) resolved inline inside
 the unlikely branch, without the call to spu__xr_fixv: an exponent-0 operand (fm -> +0, fa/fs -> the other word),
 fm products >= 2^129 (biased exponents summing to >= 383 -> sign | Smax), fa/fs operands more than 28 exponents apart

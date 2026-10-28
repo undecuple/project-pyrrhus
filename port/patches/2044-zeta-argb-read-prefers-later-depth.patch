@@ -12,7 +12,7 @@ downsample (SHADER_CONTROL 0x300840E) rebuilt depth 0 everywhere, the DoF depth 
 Diagnostic: LD_DRAW_INPUTS=0:<idx>,... (patch 2043) = the first full frame after the gated LD_DRAW_DUMP frame.
 Host test tools/smoke/test_zeta_argb.c. Upstream candidate (general aliasing rule).
 
-From KZ3 dabb17c3 port/patches/2044-zeta-argb-read-prefers-later-depth.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2044-zeta-argb-read-prefers-later-depth.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

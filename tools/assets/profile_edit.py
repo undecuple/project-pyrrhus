@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read and edit a Killzone 2 PROFILE.DAT. Method and CLI from KZ3 78bf574
+"""Read and edit a Killzone 2 PROFILE.DAT. Method and CLI from Project Helghast
 tools/assets/profile_edit.py; the layout is KZ2's own (the RE notes "PROFILE.DAT layout").
 
 PROFILE.DAT is a raw copy of PlayerProfile object bytes [0x24, 0x5B10): 23,276 (0x5AEC) bytes, big-endian. The only load

@@ -15,7 +15,7 @@ Fix: a fragment program built for an antialiased target reads WPOS as the centre
 (floor(p.xy / aa) + 0.5, p.z, p.w) (text substitution of input.position after decompilation). The sample grid is
 in the pipeline key only when it is not 1x1, so other pipelines keep their keys (warm caches stay warm). PSO template
 records (patch 2071) carry it in flags bits 8-23 (RSX_PT_WPOS_AA_SHIFT), so the template prewarm builds the same key
-(from KZ3 b7b09ffc; without it the prewarm's key check failed for every antialiased record).
+(from Project Helghast; without it the prewarm's key check failed for every antialiased record).
 ASSUMPTION: the guest does not shade per sample (NV47 runs one fragment per pixel).
 
 Upstream candidate (general: any title that reads WPOS while rendering into a multisampled surface).

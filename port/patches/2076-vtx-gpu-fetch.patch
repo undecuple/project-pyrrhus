@@ -12,7 +12,7 @@ fetch; [vtx-gpu] prints both counts and the reasons per frame (mean of 60). Inde
 The GPU variant is PSO packed mode 2 (own key, one R32_UINT input); the template prewarm builds it from packed
 records when the switch is on; it is never recorded. 16 failed GPU-fetch pipelines with none built turn it off.
 
-From KZ3 dabb17c3 port/patches/2076-vtx-gpu-fetch.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2076-vtx-gpu-fetch.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): live-draw both sides kept
 

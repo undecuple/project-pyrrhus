@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1098-spu-ib-guess.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1098-spu-ib-guess.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1098: lift-time guesses for computed hops between lifted SPU functions.
 
 Software-pipelined SPU loops close with `bi rX`, rX = selb(head, exit, cond), the head loaded by `ila` before the

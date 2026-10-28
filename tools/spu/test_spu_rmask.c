@@ -1,4 +1,4 @@
-/* From KZ3 0c2e770b tools/spu/test_spu_rmask.c (unchanged). */
+/* From Project Helghast tools/spu/test_spu_rmask.c (unchanged). */
 /* Patch 1105 host test: spu_fa/spu_fs/spu_fm take their exponent-255 lane mask from the result alone
  * (SPU__XRM_AR = spu__xr_mask(r)) instead of spu__xr_mask3(a, b, r). Checks, for every MXCSR rounding mode with
  * FTZ and DAZ on and off, that the two masks are equal and that the new ops give the same bits as the old form

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Inno Setup under Proton, headless (from KZ3 78bf574 tools/release/wizard_test.sh; not run for KZ2 yet): install
+# Inno Setup under Proton, headless (from Project Helghast tools/release/wizard_test.sh; not run for KZ2 yet): install
 # ISCC into a private prefix, compile
 # installer/kz2.iss, and walk the produced setup wizard page by page with screenshots. Never ships; ISCC is an
 # approved build tool (KZ3) that is never committed and never in the payload. No network, Xvfb only, muted.

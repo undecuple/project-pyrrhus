@@ -7,7 +7,7 @@ the fields sign-extended by shifts (the same integers as rsx_vertex_decode_eleme
 outside the mapping still take the per-vertex path. Output bytes identical (tools/smoke/test_vtx_batch.sh).
 LD_VTX_CMP32=0 = the old path (default on).
 
-From KZ3 dabb17c3 port/patches/2073-vtx-cmp32-block-loop.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2073-vtx-cmp32-block-loop.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): the CMP32 block loop moved into upstream #458's rsx_vertex_fetch_many (its element index honours #547's modulo rule)
 

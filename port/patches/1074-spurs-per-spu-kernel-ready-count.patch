@@ -1,4 +1,4 @@
-KZ3 patch 1074 (from KZ3 a4ef4360 port/patches/1074-spurs-per-spu-kernel-ready-count.patch, ported to
+KZ3 patch 1074 (from Project Helghast port/patches/1074-spurs-per-spu-kernel-ready-count.patch, ported to
 KZ2, DEFAULT ON, KZ3_SPURS_KERNEL=0 = the old poll kernel of patches 1006/1034): the SPURS kernel as one host
 thread per SPU of the instance, running a workload only while it is wanted, from ps3recomp PR #213
 (libs/spurs/spurs_kernel.c, kselect) by NoahBPeterson (MIT). The selection rule and weight are his; the port keeps

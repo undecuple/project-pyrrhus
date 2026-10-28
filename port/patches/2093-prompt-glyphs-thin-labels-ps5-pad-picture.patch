@@ -1,4 +1,4 @@
-KZ2 patch 2093: thin labels and the PS5 (CREATE) variant of the prompt glyphs. From KZ3 55b2d073
+KZ2 patch 2093: thin labels and the PS5 (CREATE) variant of the prompt glyphs. From Project Helghast
 port/patches/2094-prompt-glyphs-thin-labels-ps5-pad-picture.patch. KZ2 changes: the controls-page pad picture (KC_CTL) is
 kept but off (KC_CTL_FNV 0): KZ2's picture (512x256 DXT5, be320eaa2d2c91e4) has its own legend places, which 2094's leader
 lines do not match; with LD_KEYCAP_DBG=1 512x256 DXT5 uploads are hashed for the log only.

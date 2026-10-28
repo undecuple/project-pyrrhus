@@ -1,4 +1,4 @@
-/* Host coroutines for guest context switches (see guest_fiber.h). Upstream candidate. From KZ3 78bf574 port/spu/guest_fiber.c (unchanged). */
+/* Host coroutines for guest context switches (see guest_fiber.h). Upstream candidate. From Project Helghast port/spu/guest_fiber.c (unchanged). */
 #include "guest_fiber.h"
 #include <stdint.h>
 #include <stdio.h>

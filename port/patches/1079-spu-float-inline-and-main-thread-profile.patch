@@ -1,7 +1,7 @@
 KZ3 patch 1079: SPU float ops fa/fs/fm inline with one exponent-255 test (spu__xr_mask3) and the
 cold recompute out of line; KZ3_PROF_FILTER takes a '|'-separated list and the main PPU thread is named "ppu-main".
 (KZ3's file has no header; this summary is KZ2's, from KZ3's SPU notes.)
-From KZ3 0c2e770b port/patches/1079-spu-float-inline-and-main-thread-profile.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1079-spu-float-inline-and-main-thread-profile.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

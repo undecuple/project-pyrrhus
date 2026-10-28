@@ -19,7 +19,7 @@ Verified with tools/smoke/test_tex_float.c (host test under Proton): 4x4 FP16 te
 and negatives, three remaps, FP16 and F_X32 surfaces, all texels compared bit-exactly.
 v0.17.0 rebase (ps3recomp a6d76c8): upstream's surface pitch store (#395) kept with 2014's ld_color_dxgi format.
 Behaviour follows RPCS3 (GPL-2.0), the FP16 and Y16_X16 texture channel mapping in its RSX texture code; read, not copied.
-From KZ3 78bf574 port/patches/2014-live-draw-float-textures-x32-surface.patch (Project Helghast, undecuple, MIT), rebased for this port.
+From Project Helghast port/patches/2014-live-draw-float-textures-x32-surface.patch (Project Helghast, undecuple, MIT), rebased for this port.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

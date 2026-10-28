@@ -1,4 +1,4 @@
-/* Killzone 2 port: HLE for the imports ps3recomp leaves unresolved. From KZ3 78bf574 port/kz3/hle_kz3.cpp: the four
+/* Killzone 2 port: HLE for the imports ps3recomp leaves unresolved. From Project Helghast port/kz3/hle_kz3.cpp: the four
  * handlers whose NIDs KZ2 v1.01 also imports (EBOOT.imports.json of the first lift: cellKbRead in sys_io,
  * cellFontInitializeWithRevision in cellFont, cellFontInitLibraryFreeTypeWithRevision in cellFontFT, cellSpurs
  * 0x94034C95); KZ3's cellCameraSetNotifyEventQueue2 is left out (KZ2 imports no cellCamera). The behaviour is what

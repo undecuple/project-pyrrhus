@@ -1,0 +1,33 @@
+KZ2 patch 6035: a cellFsOpen pre-open hook. From Project Helghast (the Killzone 3 PC port) patch
+4024, v0.1.4 (4024-cellfs-preopen-hook.patch; same author, MIT). A port hook is told the guest path and the
+resolved host path before cellFsOpen stats or opens anything. port/kz2/kz2_fios_stamp.h uses it on the first open of
+FIOS's disk cache (/dev_hdd1/cache/BCUS98116/fios/cache.idx or cache.dat): a cache built by another port build (or
+against another update folder) is removed first, as FIOS does with a cache it rejects (patch 4018), so FIOS builds a
+new one. KZ3 met the failure as error 20000 on settings pages after an update. The hook must be
+quick and must not block. General: the hook itself has no policy (upstream candidate together with a use).
+
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -85,6 +85,13 @@
+ /* Host root that the PS3 mount points map into (dir containing PS3_GAME). */
+ extern "C" const char* ppu_vfs_root = ".";
+ 
++/* KZ2 patch 6035 (from Project Helghast patch 4024, v0.1.4): called with the guest path and the resolved
++ * host path before cellFsOpen opens anything, so a port hook can put the host side in order first (KZ2:
++ * port/kz2/kz2_fios_stamp.h removes a FIOS disk cache built by another port build before FIOS opens it). Quick,
++ * non-blocking; it must not change the path. */
++extern "C" void (*g_ps3_fs_preopen_hook)(const char* guest_path, const char* host_path);
++void (*g_ps3_fs_preopen_hook)(const char* guest_path, const char* host_path) = NULL;
++
+ /* CELL_FS return / mode / flag constants. */
+ #define CELL_OK              0
+ #define CELL_FS_ENOENT       (-2147418106)   /* 0x80010006 -- was -2147418090, which is 0x80010016 = CELL_ENOTCONN, not ENOENT */
+@@ -335,6 +342,7 @@
+     { char dec_path[1200];
+       const char* use = edat_resolve(hpath, dec_path, sizeof dec_path);
+       if (use != hpath) snprintf(hpath, sizeof hpath, "%s", use); }
++    if (g_ps3_fs_preopen_hook) g_ps3_fs_preopen_hook(gpath, hpath);   /* KZ2 patch 6035 */
+ 
+     /* fopen() mode strings can't express the PS3/POSIX open semantics (e.g.
+      * O_WRONLY without create+truncate, or O_CREAT without O_TRUNC), so build

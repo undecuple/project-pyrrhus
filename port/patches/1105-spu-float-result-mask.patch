@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1105-spu-float-result-mask.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1105-spu-float-result-mask.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1105: fa/fs/fm test only the result for exponent-255 lanes.
 
 Patch 1079 gave spu_fa/spu_fs/spu_fm one exponent-255 test over both operands and the result (spu__xr_mask3: three

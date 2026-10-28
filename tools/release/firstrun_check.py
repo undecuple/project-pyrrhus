@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """First-run checks for the release installer and the portable zip: is the player's own Killzone 2 dump, 1.29 update
-and decrypted EBOOT what the port can lift and build from? From KZ3 78bf574 tools/release/firstrun_check.py.
+and decrypted EBOOT what the port can lift and build from? From Project Helghast tools/release/firstrun_check.py.
 Standard library only, Python 3.8+, runs on the bundled Windows Python and on Linux; reads nothing of the game beyond PARAM.SFO, the first bytes of each file (magic),
 file sizes and the hashes (H1: the decrypted EBOOT; A1: the disc archive, unless --skip-archive-hash).
 
     firstrun_check.py --dump DIR [--update DIR] [--eboot FILE] [--json] [--min-psarc-bytes N] [--hashes FILE]
-                      [--psarc-hashes FILE] [--build DIR] [--progress] [--skip-archive-hash]
+                      [--psarc-hashes FILE] [--root DIR] [--build DIR] [--progress] [--skip-archive-hash]
 
-  --dump    the decrypted disc dump folder (holds PS3_GAME/PARAM.SFO)
+  --dump    the decrypted disc dump folder (holds PS3_GAME/PARAM.SFO), or a decrypted disc ISO file (adapted from
+            Project Helghast v0.1.2): PARAM.SFO, EBOOT.BIN and data_ps3.psarc are then read from inside the image
+            (iso9660.py) with the same D1-D3 checks and an INFO line "dump: decrypted ISO <name>". I1 FAIL: the ISO is
+            encrypted ("this ISO is encrypted; use a decrypted dump"); I2 FAIL: the ISO cannot be read (not an ISO,
+            damaged, truncated). No A1 here: firstrun.py hashes the archive while copying it out of the image.
   --update  the installed 1.29 update folder, where a PS3 or RPCS3 keeps it: .../dev_hdd0/game/BCUS98116 (the update
             installs under the disc's own title id; holds PARAM.SFO and USRDIR/EBOOT.BIN)
   --eboot   the decrypted EBOOT (an ELF); default: <update>/USRDIR/EBOOT.elf, else <dump>/PS3_GAME/USRDIR/EBOOT.elf
@@ -20,9 +24,20 @@ file sizes and the hashes (H1: the decrypted EBOOT; A1: the disc archive, unless
             when the file says fail_on_mismatch, else a WARN (one copy checked so far); any other disc = WARN. A
             different size is a mismatch without reading the file. Cached in <build>/psarc-sha256-cache.json by path,
             size and mtime of every part (no cache without --build). --progress prints "ARCHIVE-HASH done=X total=Y"
-            lines (firstrun.py turns them into PROGRESS lines); --skip-archive-hash leaves A1 out (from KZ3 2f45a2b).
+            lines (firstrun.py turns them into PROGRESS lines); --skip-archive-hash leaves A1 out (from Project Helghast v0.1.3).
 
-Split archives (from KZ3 b1a6262): a dump copied to a FAT32 drive stores a file over 4 GiB as parts
+  --root / --build  the install and build folders: O1 FAIL when either is inside OneDrive (env OneDrive,
+            OneDriveConsumer, OneDriveCommercial). O2 FAIL: a game file is an online-only OneDrive placeholder (file
+            attributes 0x400000, 0x40000 or 0x1000); checked before any file is read, so nothing downloads. O3 (OK,
+            INFO): the dump or update is inside OneDrive but fully local. Adapted from Project Helghast (the Killzone 3
+            PC port, same author, MIT), Project Helghast v0.1.2.
+
+Folder picks (adapted from Project Helghast v0.1.2): --dump may name PS3_GAME or PS3_GAME/USRDIR and --update
+its USRDIR (resolve_dump, resolve_update step up to the right folder). D1 names the TITLE_ID found: anything but
+BCUS98116 is refused by name and title; a disc VERSION other than 01.01 warns (02.00 = the Killzone Trilogy disc,
+whose PS3_GAME is Killzone 2 itself: untested). U1 fails when the update's TITLE_ID is not the disc's.
+
+Split archives (from Project Helghast v0.1.3): a dump copied to a FAT32 drive stores a file over 4 GiB as parts
 <name>.66600, .66601, ... (data_ps3.psarc is 6.5 GiB). D3 accepts the parts in place of data_ps3.psarc (sizes added
 up, magic from the first part) and names the first missing part when the numbering has a gap; A1 hashes the parts in
 order as one stream.
@@ -38,7 +53,19 @@ import os
 import struct
 import sys
 
-TITLE_ID = "BCUS98116"                 # US disc (the RE notes); other regions are untested
+TITLE_ID = "BCUS98116"                 # US disc (the RE notes); the only id accepted (no other region tested)
+TITLE = "Killzone 2"
+DISC_VERSION = "01.01"                 # PARAM.SFO VERSION of the US disc we checked (the RE notes)
+# ASSUMPTION (KZ3's read-only survey of the Trilogy disc, BCUS99075, 2026-10-26; not checked on our own copy): its
+# PS3_GAME is Killzone 2 itself, TITLE_ID BCUS98116 with disc VERSION 02.00. Untested here (re-data 23 compares it).
+TRILOGY_DISC_VERSION = "02.00"
+ONEDRIVE_VARS = ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+# st_file_attributes bits of a OneDrive "files on demand" placeholder (an online-only file)
+ATTR_OFFLINE = 0x1000
+ATTR_RECALL_ON_OPEN = 0x40000
+ATTR_RECALL_ON_DATA_ACCESS = 0x400000
+ONLINE_ONLY_MASK = ATTR_OFFLINE | ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS
+DEFAULT_INSTALL = "%LOCALAPPDATA%\\Programs\\Project Pyrrhus"
 DISC_EBOOT_BIN_SIZE = 16_384_360       # PS3_GAME/USRDIR/EBOOT.BIN on the disc, encrypted SELF (the RE notes)
 EBOOT_ELF_SIZES = {                    # decrypted EBOOTs (of a disc dump and the 1.29 update)
     16_381_928: "1.01",
@@ -62,7 +89,12 @@ PSARC_NAME = "data_ps3.psarc"
 
 def read_sfo(path):
     """PARAM.SFO -> dict (same decoder as tools/disc_info.py)."""
-    d = open(path, "rb").read()
+    with open(path, "rb") as f:
+        return parse_sfo(f.read())
+
+
+def parse_sfo(d):
+    """The bytes of a PARAM.SFO -> dict (a folder's file or one read from inside an ISO)."""
     if d[:4] != b"\0PSF":
         raise ValueError("not a PARAM.SFO (bad magic)")
     _, _, kt, dt, n = struct.unpack("<4sIIII", d[:20])
@@ -78,6 +110,106 @@ def read_sfo(path):
 def head(path, n):
     with open(path, "rb") as f:
         return f.read(n)
+
+
+def _is_name(path, name):
+    return os.path.basename(os.path.normpath(path)).lower() == name.lower()
+
+
+def resolve_dump(path):
+    """A pick of PS3_GAME or PS3_GAME/USRDIR (one or two levels too deep) -> the folder that holds PS3_GAME; any other
+    path is returned as given. The same rule as installer/kz2.iss ResolveDump (from Project Helghast v0.1.2)."""
+    if not path or os.path.isfile(os.path.join(path, "PS3_GAME", "PARAM.SFO")):
+        return path
+    d = os.path.normpath(path)
+    if _is_name(d, "USRDIR") and _is_name(os.path.dirname(d), "PS3_GAME"):
+        d = os.path.dirname(d)
+    if _is_name(d, "PS3_GAME") and os.path.isfile(os.path.join(os.path.dirname(d), "PS3_GAME", "PARAM.SFO")):
+        return os.path.dirname(d)
+    return path
+
+
+def resolve_update(path):
+    """A pick of the update's USRDIR -> the update folder (the one with PARAM.SFO); else the path as given."""
+    if path and _is_name(path, "USRDIR"):
+        up = os.path.dirname(os.path.normpath(path))
+        if os.path.isfile(os.path.join(up, "PARAM.SFO")):
+            return up
+    return path
+
+
+def _norm(p):
+    return os.path.abspath(p).replace("/", "\\").rstrip("\\").lower()
+
+
+def onedrive_root_of(path, env=None):
+    """The OneDrive folder (from OneDrive, OneDriveConsumer, OneDriveCommercial) that holds `path`, else ''.
+    Prefix match on whole path components, case-insensitive; the same rule as installer/kz2.iss InOneDrive."""
+    env = os.environ if env is None else env
+    p = _norm(path)
+    for var in ONEDRIVE_VARS:
+        base = (env.get(var) or "").strip().strip('"')
+        if not base:
+            continue
+        b = _norm(base)
+        if b and (p == b or p.startswith(b + "\\")):
+            return base
+    return ""
+
+
+def file_attributes(path):
+    """Windows st_file_attributes of `path` (0 elsewhere or when unreadable). Reads no file content."""
+    try:
+        return getattr(os.stat(path), "st_file_attributes", 0)
+    except OSError:
+        return 0
+
+
+def check_onedrive_tree(r, root, build, env=None):
+    """O1 (FAIL): the install folder or the build folder is inside OneDrive, which syncs the build's thousands of files
+    while the compiler writes them (locked files, a churning build). Silent when fine."""
+    for what, path in (("install folder", root), ("build folder", build)):
+        od = onedrive_root_of(path, env) if path else ""
+        if od:
+            r.fail("O1", f"the {what} {path} is inside OneDrive ({od}), which syncs the build's thousands of files "
+                         "while it runs and locks them. Choose a folder outside OneDrive (for the installer the "
+                         f"default, {DEFAULT_INSTALL}, is fine) and run the setup again")
+
+
+def game_files(dump, update, eboot):
+    """The game files the build reads (the disc archive as one file or its FAT32 parts)."""
+    f = []
+    if dump and os.path.isfile(dump):    # a decrypted disc ISO
+        f.append(dump)
+    elif dump:
+        u = os.path.join(dump, "PS3_GAME", "USRDIR")
+        f += [os.path.join(dump, "PS3_GAME", "PARAM.SFO"), os.path.join(u, "EBOOT.BIN")]
+        f += split_parts(os.path.join(u, PSARC_NAME))[0]
+    if update:
+        f += [os.path.join(update, "PARAM.SFO"), os.path.join(update, "USRDIR", "EBOOT.BIN"),
+              os.path.join(update, "USRDIR", UPDATE_DATA), os.path.join(update, "USRDIR", "EBOOT.elf")]
+    if eboot:
+        f.append(eboot)
+    return f
+
+
+def check_online_only(r, dump, update, eboot, env=None, attrs=None):
+    """O2 (FAIL): a game file is a OneDrive online-only placeholder (RECALL_ON_DATA_ACCESS, RECALL_ON_OPEN or OFFLINE):
+    reading the 6.5 GiB archive would download it or fail with a cloud-provider error. O3 (OK, an INFO line): a folder
+    inside OneDrive whose files are all local. Runs before any content is read; True when O2 failed."""
+    attrs = attrs or file_attributes
+    online = [p for p in game_files(dump, update, eboot) if os.path.exists(p) and attrs(p) & ONLINE_ONLY_MASK]
+    if online:
+        names = ", ".join(os.path.basename(p) for p in online[:4]) + (" ..." if len(online) > 4 else "")
+        r.fail("O2", f"{len(online)} game file(s) exist only online in OneDrive ({names}; first: {online[0]}). "
+                     "Right-click the game folder (the disc dump, the update and the EBOOT's folder), choose "
+                     "\"Always keep on this device\", wait until OneDrive has downloaded it, then run the setup again")
+        return True
+    for what, path in (("disc dump", dump), ("1.29 update", update)):
+        od = onedrive_root_of(path, env) if path else ""
+        if od:
+            r.ok("O3", f"INFO: the {what} folder is inside OneDrive ({od}) but its files are on this device")
+    return False
 
 
 class Report:
@@ -102,8 +234,9 @@ class Report:
         return not any(c["level"] == "FAIL" for c in self.checks)
 
 
-def check_sfo(r, path, code, what):
-    """Shared PARAM.SFO check for the dump and the update. Returns the fields or None."""
+def check_sfo(r, path, code, what, expect=None):
+    """Shared PARAM.SFO check for the dump and the update. Returns the fields or None. Any TITLE_ID but BCUS98116 is a
+    FAIL naming the id and title found; `expect` (the disc's id, for the update) must match too."""
     if not os.path.isfile(path):
         r.fail(code, f"{what}: no PARAM.SFO at {path}")
         return None
@@ -112,9 +245,19 @@ def check_sfo(r, path, code, what):
     except (ValueError, struct.error, IndexError) as e:
         r.fail(code, f"{what}: PARAM.SFO unreadable ({e})")
         return None
+    return sfo_report(r, sfo, code, what, expect)
+
+
+def sfo_report(r, sfo, code, what, expect=None):
+    """The TITLE_ID verdict on parsed PARAM.SFO fields (check_sfo, and the ISO's own PARAM.SFO). -> the fields."""
     tid = sfo.get("TITLE_ID")
-    if tid != TITLE_ID:
-        r.fail(code, f"{what}: TITLE_ID is {tid!r}, the port needs {TITLE_ID} (US disc); other releases are untested")
+    if not tid:
+        r.fail(code, f"{what}: PARAM.SFO has no TITLE_ID, so this is not a game folder")
+    elif tid != TITLE_ID:
+        r.fail(code, f"{what}: this is {tid} ({sfo.get('TITLE', '?')}), not {TITLE}: the port needs the US disc "
+                     f"{TITLE_ID} (other releases are not supported)")
+    elif expect and tid != expect:
+        r.fail(code, f"{what}: TITLE_ID {tid} differs from the disc's {expect}: use the update of the same release")
     else:
         r.ok(code, f"{what}: TITLE_ID {tid} ({sfo.get('TITLE', '?')})")
     return sfo
@@ -159,24 +302,9 @@ def psarc_info(path):
 
 def check_dump(r, dump, min_psarc):
     sfo = check_sfo(r, os.path.join(dump, "PS3_GAME", "PARAM.SFO"), "D1", "disc dump")
-    if sfo:
-        r.facts["disc"] = {k: sfo.get(k) for k in ("TITLE_ID", "TITLE", "VERSION", "APP_VER", "CATEGORY")}
-        if sfo.get("CATEGORY") != "DG":
-            r.warn("D1", f"disc dump: CATEGORY {sfo.get('CATEGORY')!r}, a disc game is 'DG' (an installed copy?)")
+    disc_facts(r, sfo)
     eboot = os.path.join(dump, "PS3_GAME", "USRDIR", "EBOOT.BIN")
-    if not os.path.isfile(eboot):
-        r.fail("D2", "disc dump: no PS3_GAME/USRDIR/EBOOT.BIN (dump incomplete)")
-    else:
-        magic, size = head(eboot, 4), os.path.getsize(eboot)
-        r.facts["disc_eboot_bin"] = {"size": size, "magic": magic.hex()}
-        if magic == SELF_MAGIC:
-            r.ok("D2", f"disc EBOOT.BIN is an encrypted SELF ({size:,} bytes; expected: the disc one is never used directly)")
-        elif magic == ELF_MAGIC:
-            r.ok("D2", f"disc EBOOT.BIN is already a decrypted ELF ({size:,} bytes)")
-        else:
-            r.fail("D2", f"disc EBOOT.BIN has magic {magic!r}: neither SELF nor ELF (bad dump)")
-        if magic == SELF_MAGIC and size != DISC_EBOOT_BIN_SIZE:
-            r.warn("D2", f"disc EBOOT.BIN is {size:,} bytes, the US disc's is {DISC_EBOOT_BIN_SIZE:,} (another version?)")
+    check_disc_eboot(r, (os.path.getsize(eboot), head(eboot, 4)) if os.path.isfile(eboot) else None)
     psarc = os.path.join(dump, "PS3_GAME", "USRDIR", PSARC_NAME)
     parts, missing, size, magic = psarc_info(psarc)
     if missing and missing != PSARC_NAME:
@@ -188,13 +316,103 @@ def check_dump(r, dump, min_psarc):
         r.facts["psarc"] = {"size": size}
         if len(parts) > 1 or parts[0] != psarc:
             r.facts["psarc"]["parts"] = [os.path.basename(p) for p in parts]
-        if magic != PSARC_MAGIC:
-            r.fail("D3", f"data_ps3.psarc does not start with PSAR (magic {magic!r}): not a PSARC, or still encrypted")
-        elif size < min_psarc:
-            r.fail("D3", f"data_ps3.psarc is {size:,} bytes, less than {min_psarc:,}: the dump looks truncated")
-        else:
-            r.ok("D3", f"data_ps3.psarc present ({size / 2**30:.2f} GiB"
-                       + (f", {len(parts)} split parts .66600 ...)" if parts[0] != psarc else ")"))
+        check_psarc_head(r, size, magic, min_psarc,
+                         f", {len(parts)} split parts .66600 ...)" if parts[0] != psarc else ")")
+
+
+def disc_facts(r, sfo):
+    """D1 facts and notes of the disc's PARAM.SFO (folder or ISO): CATEGORY, disc VERSION (Trilogy)."""
+    if sfo:
+        r.facts["disc"] = {k: sfo.get(k) for k in ("TITLE_ID", "TITLE", "VERSION", "APP_VER", "CATEGORY")}
+        if sfo.get("CATEGORY") != "DG":
+            r.warn("D1", f"disc dump: CATEGORY {sfo.get('CATEGORY')!r}, a disc game is 'DG' (an installed copy?)")
+        ver = sfo.get("VERSION")
+        if sfo.get("TITLE_ID") == TITLE_ID and ver == TRILOGY_DISC_VERSION:
+            r.warn("D1", f"disc dump: disc VERSION {ver}: the Killzone Trilogy disc, whose PS3_GAME is {TITLE} "
+                         f"({TITLE_ID}). Untested: the port is built on the stand-alone disc (VERSION {DISC_VERSION}); "
+                         "A1 says whether its archive is the same")
+        elif sfo.get("TITLE_ID") == TITLE_ID and ver != DISC_VERSION:
+            r.warn("D1", f"disc dump: disc VERSION {ver!r}, the known US disc is {DISC_VERSION} (another printing?)")
+
+
+def check_disc_eboot(r, eboot):
+    """D2 from (size, first four bytes) of the disc's EBOOT.BIN, or None when it is absent."""
+    if eboot is None:
+        r.fail("D2", "disc dump: no PS3_GAME/USRDIR/EBOOT.BIN (dump incomplete)")
+        return
+    size, magic = eboot
+    r.facts["disc_eboot_bin"] = {"size": size, "magic": magic.hex()}
+    if magic == SELF_MAGIC:
+        r.ok("D2", f"disc EBOOT.BIN is an encrypted SELF ({size:,} bytes; expected: the disc one is never used directly)")
+    elif magic == ELF_MAGIC:
+        r.ok("D2", f"disc EBOOT.BIN is already a decrypted ELF ({size:,} bytes)")
+    else:
+        r.fail("D2", f"disc EBOOT.BIN has magic {magic!r}: neither SELF nor ELF (bad dump)")
+    if magic == SELF_MAGIC and size != DISC_EBOOT_BIN_SIZE:
+        r.warn("D2", f"disc EBOOT.BIN is {size:,} bytes, the US disc's is {DISC_EBOOT_BIN_SIZE:,} (another version?)")
+
+
+def check_psarc_head(r, size, magic, min_psarc, tail=")"):
+    """D3 verdict from the archive's total size and first four bytes."""
+    if magic != PSARC_MAGIC:
+        r.fail("D3", f"data_ps3.psarc does not start with PSAR (magic {magic!r}): not a PSARC, or still encrypted")
+    elif size < min_psarc:
+        r.fail("D3", f"data_ps3.psarc is {size:,} bytes, less than {min_psarc:,}: the dump looks truncated")
+    else:
+        r.ok("D3", f"data_ps3.psarc present ({size / 2**30:.2f} GiB" + tail)
+
+
+ISO_ENCRYPTED = "this ISO is encrypted; use a decrypted dump"
+
+
+def check_dump_iso(r, path, min_psarc):
+    """D1-D3 from inside a decrypted disc ISO (iso9660.py; adapted from Project Helghast v0.1.2). I1 FAIL = the
+    ISO is encrypted (no file table behind a region table, or a file whose first bytes are not its format's magic);
+    I2 FAIL = the image cannot be read (not an ISO, damaged, truncated). A1 is not run here: firstrun.py hashes the
+    archive while it copies it out of the image."""
+    import iso9660
+    r.ok("D0", f"INFO: dump: decrypted ISO {os.path.basename(path)}")
+    r.facts["iso"] = os.path.abspath(path)
+    try:
+        with iso9660.Iso(path) as im:
+            sfo = None
+            se = im.lookup("PS3_GAME/PARAM.SFO")
+            if se is None or se.is_dir or not im.in_image(se):
+                r.fail("D1", "disc dump: no PS3_GAME/PARAM.SFO inside the ISO")
+            else:
+                im.check_magic("PS3_GAME/PARAM.SFO", b"\0PSF")
+                try:
+                    sfo = sfo_report(r, parse_sfo(im.read("PS3_GAME/PARAM.SFO")), "D1", "disc dump")
+                except (ValueError, struct.error, IndexError) as e:
+                    r.fail("D1", f"disc dump: PARAM.SFO unreadable ({e})")
+            disc_facts(r, sfo)
+            info, cut = {}, False
+            for key, rel in (("eboot", "PS3_GAME/USRDIR/EBOOT.BIN"), ("psarc", "PS3_GAME/USRDIR/" + PSARC_NAME)):
+                e = im.lookup(rel)
+                if e is None or e.is_dir:
+                    info[key] = None
+                    continue
+                inside = im.in_image(e)
+                if key == "psarc":
+                    cut = not inside
+                info[key] = (e.size, im.read(rel, 4) if inside else b"")
+                if inside and info[key][1] not in ((SELF_MAGIC, ELF_MAGIC) if key == "eboot" else (PSARC_MAGIC,)):
+                    raise iso9660.IsoEncrypted(ISO_ENCRYPTED)
+            check_disc_eboot(r, info.get("eboot"))
+            if info.get("psarc") is None:
+                r.fail("D3", "disc dump: no PS3_GAME/USRDIR/data_ps3.psarc inside the ISO (the game's data archive)")
+            else:
+                size, magic = info["psarc"]
+                r.facts["psarc"] = {"size": size}
+                if cut:
+                    r.fail("D3", f"data_ps3.psarc ({size:,} bytes) reaches past the end of the ISO file: the ISO "
+                                 "looks truncated (copy it again)")
+                else:
+                    check_psarc_head(r, size, magic, min_psarc, ", inside the ISO)")
+    except iso9660.IsoEncrypted:
+        r.fail("I1", ISO_ENCRYPTED)
+    except iso9660.IsoError as e:
+        r.fail("I2", f"disc ISO unreadable: {e}")
 
 
 def hash_file(path, progress=None):
@@ -217,10 +435,12 @@ def hash_file(path, progress=None):
     return h.hexdigest()
 
 
-def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_dir=None, progress=None):
+def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_dir=None, progress=None, known_sha=None):
     """A1: data_ps3.psarc (one file or its split parts) against the known disc archive (psarc_sha256.json: sha256,
     size, discs, fail_on_mismatch). A different size is a mismatch without reading the file. The hash is cached in
-    <cache_dir>/psarc-sha256-cache.json keyed by the path, the total size and every part's path, size and mtime."""
+    <cache_dir>/psarc-sha256-cache.json keyed by the path, the total size and every part's path, size and mtime.
+    known_sha: the archive's SHA-256 already computed (firstrun.py hashes it while copying it out of an ISO): used
+    and cached instead of a second read."""
     try:
         with open(hashes_file, encoding="utf-8") as f:
             known = json.load(f)
@@ -251,7 +471,7 @@ def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_di
     if isinstance(ent, dict) and ent.get("size") == size and ent.get("parts") == sig and ent.get("sha256"):
         got, cached = ent["sha256"], True
     elif size == want_size:
-        got = hash_file(parts[0] if len(parts) == 1 else parts, progress)
+        got = known_sha or hash_file(parts[0] if len(parts) == 1 else parts, progress)
         if cache_path:
             cache[key] = {"size": size, "parts": sig, "sha256": got}
             try:
@@ -274,13 +494,13 @@ def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_di
         r.warn("A1", f"data_ps3.psarc is not a known archive ({title_id or 'no title id'}; {detail})")
 
 
-def check_update(r, upd):
-    sfo = check_sfo(r, os.path.join(upd, "PARAM.SFO"), "U1", "1.29 update")
+def check_update(r, upd, disc_id=None):
+    sfo = check_sfo(r, os.path.join(upd, "PARAM.SFO"), "U1", "1.29 update", disc_id)
     if sfo:
         ver = sfo.get("APP_VER")
         r.facts["update"] = {k: sfo.get(k) for k in ("TITLE_ID", "APP_VER", "VERSION", "CATEGORY")}
         if ver != UPDATE_APP_VER:
-            r.warn("U1", f"update APP_VER is {ver!r}, the port is built for {UPDATE_APP_VER} (unverified expectation)")
+            r.warn("U1", f"update APP_VER is {ver!r}, the port is built on {UPDATE_APP_VER}")
         else:
             r.ok("U1", f"update APP_VER {ver}")
     eb = os.path.join(upd, "USRDIR", "EBOOT.BIN")
@@ -393,7 +613,8 @@ def main(argv=None):
     ap.add_argument("--min-psarc-bytes", type=int, default=MIN_PSARC_BYTES)
     ap.add_argument("--hashes", default=HASHES_FILE)
     ap.add_argument("--psarc-hashes", default=PSARC_HASHES_FILE)
-    ap.add_argument("--build", help="the build folder: A1 caches the archive's SHA-256 there")
+    ap.add_argument("--build", help="the build folder: A1 caches the archive's SHA-256 there; refused (O1) inside OneDrive")
+    ap.add_argument("--root", help="the install folder; refused (O1) when inside OneDrive")
     ap.add_argument("--progress", action="store_true", help="print ARCHIVE-HASH progress lines while A1 hashes")
     ap.add_argument("--skip-archive-hash", action="store_true", help="leave A1 (the archive's SHA-256) out")
     ap.add_argument("--target", choices=("1.01", "1.29"), default="1.29",
@@ -408,7 +629,18 @@ def main(argv=None):
     if not a.dump:
         ap.error("--dump is required")
     r = Report()
-    if not os.path.isdir(a.dump):
+    a.dump = resolve_dump(a.dump)
+    if a.update:
+        a.update = resolve_update(a.update)
+    check_onedrive_tree(r, a.root, a.build)
+    iso = os.path.isfile(a.dump)       # a decrypted disc ISO instead of a folder
+    # before anything is read: opening an online-only placeholder would start a download of the 6.5 GiB archive
+    if check_online_only(r, a.dump if os.path.exists(a.dump) else "",
+                         a.update if a.update and os.path.isdir(a.update) else "", a.eboot or ""):
+        return finish(r, a)
+    if iso:
+        check_dump_iso(r, a.dump, a.min_psarc_bytes)
+    elif not os.path.isdir(a.dump):
         r.fail("D0", f"dump folder not found: {a.dump}")
     else:
         check_dump(r, a.dump, a.min_psarc_bytes)
@@ -423,17 +655,23 @@ def main(argv=None):
         if not os.path.isdir(a.update):
             r.fail("U0", f"update folder not found: {a.update}")
         else:
-            check_update(r, a.update)
+            check_update(r, a.update, (r.facts.get("disc") or {}).get("TITLE_ID"))
     else:
         r.warn("U0", "no --update given: the 1.29 update is required (the port is built on its EBOOT)")
     elf = a.eboot
     if not elf:
         # EBOOT.elf sits next to EBOOT.BIN; a dump may also hold an ELF as EBOOT.BIN.
         cand = [os.path.join(a.update, "USRDIR", n) for n in ("EBOOT.elf", "EBOOT.BIN")] if a.update else []
-        cand += [os.path.join(a.dump, "PS3_GAME", "USRDIR", n) for n in ("EBOOT.elf", "EBOOT.BIN")]
+        if not iso:
+            cand += [os.path.join(a.dump, "PS3_GAME", "USRDIR", n) for n in ("EBOOT.elf", "EBOOT.BIN")]
+        cand = cand or [os.path.join(os.path.dirname(os.path.abspath(a.dump)), "EBOOT.elf")]
         elf = next((c for c in cand if os.path.isfile(c) and head(c, 4) == ELF_MAGIC), cand[0])
     check_eboot_elf(r, elf, a.target)
     check_eboot_hash(r, elf, a.hashes)
+    return finish(r, a)
+
+
+def finish(r, a):
     if a.json:
         print(json.dumps({"ok": r.passed, "checks": r.checks, "facts": r.facts}, indent=2))
     else:

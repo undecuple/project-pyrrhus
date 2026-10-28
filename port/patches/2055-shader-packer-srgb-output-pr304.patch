@@ -4,7 +4,7 @@ KZ3 sets 0x1FEC in ~15 % of the draws that sample a texture (patch 2054's counte
 
 Rebased on ps3recomp v0.15.0: partly absorbed, PR304 sRGB output in the decompiler, the D3D12 live-draw call site kept.
 
-From KZ3 dabb17c3 port/patches/2055-shader-packer-srgb-output-pr304.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
+From Project Helghast port/patches/2055-shader-packer-srgb-output-pr304.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2.
 Licence: MIT. PR #304 is by tekulvw (sp00nznet/ps3recomp, MIT); the KZ3 copy is MIT (undecuple). Semantics follow RPCS3's RSXROPEpilogue (GPL-2.0); read, not copied.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_shufh.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_shufh.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1108 host test: tools/spu/test_spu_shufh.c (the hoisted shufb1 decode against the byte-loop reference; built
 # with -msse4.1 and with -DSPU_SHUFB_HOIST=0) and tools/spu/test_spu_shufh.py (the lifter pass). No game data.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_shufh.sh

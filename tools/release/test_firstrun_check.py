@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test for tools/release/firstrun_check.py (from KZ3 78bf574) on synthetic fixtures (no game data: a temp dir
+"""Host test for tools/release/firstrun_check.py (from Project Helghast) on synthetic fixtures (no game data: a temp dir
 holds a made-up PARAM.SFO, a 4-byte 'SCE' EBOOT.BIN, a 'PSAR' header and a 64-byte PPC64 ELF header). Exit 0 = PASS, 1 = FAIL.
 
     python3 tools/release/test_firstrun_check.py
@@ -60,10 +60,10 @@ def write_elf(path, size, machine=fc.EM_PPC64, cls=2, data=2):
         f.truncate(size)
 
 
-def make_dump(root, title_id="BCUS98116", eboot_magic=fc.SELF_MAGIC, psarc_bytes=4096):
+def make_dump(root, title_id="BCUS98116", eboot_magic=fc.SELF_MAGIC, psarc_bytes=4096, version="01.01"):
     d = os.path.join(root, "dump")
     write_sfo(os.path.join(d, "PS3_GAME", "PARAM.SFO"),
-              {"APP_VER": "01.01", "CATEGORY": "DG", "TITLE": "Synthetic", "TITLE_ID": title_id, "VERSION": "01.01"})
+              {"APP_VER": "01.01", "CATEGORY": "DG", "TITLE": "Synthetic", "TITLE_ID": title_id, "VERSION": version})
     os.makedirs(os.path.join(d, "PS3_GAME", "USRDIR"))
     if eboot_magic == fc.ELF_MAGIC:
         write_elf(os.path.join(d, "PS3_GAME", "USRDIR", "EBOOT.BIN"), 64)
@@ -75,10 +75,10 @@ def make_dump(root, title_id="BCUS98116", eboot_magic=fc.SELF_MAGIC, psarc_bytes
     return d
 
 
-def make_update(root, app_ver="01.29", elf_size=16_455_144):
-    u = os.path.join(root, "hdd0", "game", "BCUS98116")
+def make_update(root, app_ver="01.29", elf_size=16_455_144, title_id="BCUS98116"):
+    u = os.path.join(root, "hdd0", "game", title_id)
     write_sfo(os.path.join(u, "PARAM.SFO"),
-              {"APP_VER": app_ver, "CATEGORY": "GD", "TITLE": "Synthetic", "TITLE_ID": "BCUS98116"})
+              {"APP_VER": app_ver, "CATEGORY": "GD", "TITLE": "Synthetic", "TITLE_ID": title_id})
     os.makedirs(os.path.join(u, "USRDIR"))
     open(os.path.join(u, "USRDIR", "EBOOT.BIN"), "wb").write(fc.SELF_MAGIC + b"\0" * 60)
     open(os.path.join(u, "USRDIR", fc.UPDATE_DATA), "wb").write(fc.PSARC_MAGIC + b"\0" * 60)
@@ -134,6 +134,162 @@ def main():
 
         rc, out = run(["--dump", make_dump(os.path.join(tmp, "eu"), title_id="BCES01070"), "--update", u] + small)
         check("wrong TITLE_ID fails", rc == 1 and "FAIL D1" in out, out)
+        check("wrong TITLE_ID is named with its title (Project Helghast v0.1.2)",
+              "this is BCES01070 (Synthetic), not Killzone 2" in out and "BCUS98116" in out, out)
+
+        # disc VERSION: 01.01 is the known disc; 02.00 = the Killzone Trilogy disc (KZ2 inside, untested): WARN only
+        tri = make_dump(os.path.join(tmp, "tri"), version="02.00")
+        rc, out = run(["--dump", tri, "--update", u] + small)
+        check("Trilogy disc (VERSION 02.00) warns, named, no FAIL", rc == 0 and levels(out, "D1") == {"OK", "WARN"}
+              and "Killzone Trilogy disc" in out and "Untested" in out, out)
+        rc, out = run(["--dump", make_dump(os.path.join(tmp, "v102"), version="01.02"), "--update", u] + small)
+        check("another disc VERSION warns", rc == 0 and "another printing?" in out, out)
+        check("the known disc VERSION gives no version note",
+              "VERSION" not in run(["--dump", d, "--update", u] + small)[1])
+
+        # the update must carry the disc's title id
+        ux_id = make_update(os.path.join(tmp, "uid"), title_id="BCES00081")
+        rc, out = run(["--dump", d, "--update", ux_id] + small)
+        check("update of another title fails U1 naming it", rc == 1 and "FAIL" in levels(out, "U1")
+              and "BCES00081" in out, out)
+        rc, out = run(["--dump", make_dump(os.path.join(tmp, "eu2"), title_id="BCES00081"), "--update", ux_id] + small)
+        check("a non-US disc with its own update still fails D1", rc == 1 and levels(out, "D1") == {"FAIL"}, out)
+
+        # folder picks one or two levels too deep (Project Helghast v0.1.2)
+        for sub in (("PS3_GAME",), ("PS3_GAME", "USRDIR"), ("ps3_game", "usrdir")):
+            pick = os.path.join(d, *[s if os.path.isdir(os.path.join(d, *sub[:i], s)) else s.upper()
+                                     for i, s in enumerate(sub)])
+            check(f"resolve_dump: {'/'.join(sub)} -> the folder above PS3_GAME", fc.resolve_dump(pick) == d,
+                  fc.resolve_dump(pick))
+        check("resolve_dump leaves the right folder and unknown ones alone",
+              fc.resolve_dump(d) == d and fc.resolve_dump(tmp) == tmp and fc.resolve_dump("") == "")
+        check("resolve_update: USRDIR -> the update folder", fc.resolve_update(os.path.join(u, "USRDIR")) == u
+              and fc.resolve_update(u) == u)
+        rc, out = run(["--dump", os.path.join(d, "PS3_GAME", "USRDIR"), "--update", os.path.join(u, "USRDIR")] + small)
+        check("a check given PS3_GAME/USRDIR and the update's USRDIR passes", rc == 0 and "FAIL" not in out, out)
+
+        # OneDrive (adapted from Project Helghast v0.1.2): O1 install/build folder, O2 online-only files, O3 INFO
+        env = {"OneDrive": "C:\\Users\\someone\\OneDrive", "OneDriveCommercial": "D:\\Work\\OneDrive - Corp"}
+        check("O1 prefix match, case-insensitive",
+              fc.onedrive_root_of("c:\\users\\SOMEONE\\onedrive\\Desktop\\Project Pyrrhus", env) == env["OneDrive"]
+              and fc.onedrive_root_of("D:/Work/OneDrive - Corp/x", env) == env["OneDriveCommercial"])
+        check("O1 whole components only, empty env is nothing",
+              fc.onedrive_root_of("C:\\Users\\someone\\OneDrive2\\x", env) == ""
+              and fc.onedrive_root_of("C:\\Users\\someone\\Programs", {}) == "")
+        r = fc.Report()
+        fc.check_onedrive_tree(r, "C:\\Users\\someone\\OneDrive\\Desktop\\Project Pyrrhus", "C:\\b\\build", env)
+        check("O1 fails for a root inside OneDrive only", [(c["code"], c["level"]) for c in r.checks] == [("O1", "FAIL")]
+              and "outside OneDrive" in r.checks[0]["message"] and "Project Pyrrhus" in r.checks[0]["message"], r.checks)
+        r = fc.Report()
+        fc.check_onedrive_tree(r, "C:\\ok\\Project Pyrrhus", "D:\\Work\\OneDrive - Corp\\build", env)
+        check("O1 fails for a build dir inside OneDrive", len(r.checks) == 1 and "build folder" in r.checks[0]["message"])
+        old = os.environ.get("OneDrive")
+        os.environ["OneDrive"] = os.path.join(tmp, "hdd0")      # the update folder sits inside the fake OneDrive
+        real_attr = fc.file_attributes
+        try:
+            rc, out = run(["--dump", d, "--update", u] + small)
+            check("O3 INFO only when inside OneDrive but local", rc == 0 and levels(out, "O3") == {"OK"}
+                  and "INFO" in out and "O2" not in out, out)
+            fc.file_attributes = lambda p: 0x400000 if p.endswith("data_ps3.psarc") else 0
+            rc, out = run(["--dump", d, "--update", u, "--json"] + small)
+            j = json.loads(out)
+            o2 = [c for c in j["checks"] if c["code"] == "O2"]
+            check("O2 fails for an online-only psarc, with the fix, and reads nothing else",
+                  rc == 1 and not j["ok"] and len(o2) == 1 and o2[0]["level"] == "FAIL"
+                  and "Always keep on this device" in o2[0]["message"] and "data_ps3.psarc" in o2[0]["message"]
+                  and not any(c["code"] in ("D1", "D3", "A1", "E1") for c in j["checks"]), out)
+            for bit in (0x40000, 0x1000):
+                fc.file_attributes = lambda p, b=bit: b if p.endswith("PARAM.SFO") else 0
+                rc, out = run(["--dump", d, "--update", u] + small)
+                check(f"O2 fails for attribute 0x{bit:x}", rc == 1 and levels(out, "O2") == {"FAIL"}, out)
+        finally:
+            fc.file_attributes = real_attr
+            if old is None:
+                del os.environ["OneDrive"]
+            else:
+                os.environ["OneDrive"] = old
+        sp = make_dump(os.path.join(tmp, "od-split"))
+        pp = os.path.join(sp, "PS3_GAME", "USRDIR", "data_ps3.psarc")
+        os.replace(pp, pp + ".66600")
+        open(pp + ".66601", "wb").write(b"\0" * 16)
+        check("O2 looks at every split part of the archive",
+              [os.path.basename(x) for x in fc.game_files(sp, "", "")][2:] == ["data_ps3.psarc.66600", "data_ps3.psarc.66601"])
+        rc, out = run(["--dump", d, "--update", u] + small + ["--root", "/x/OneDrive/p", "--build", os.path.join(tmp, "bx")])
+        check("--root without OneDrive env passes", rc == 0 and "O1" not in out, out)
+
+        # decrypted ISO as --dump (adapted from Project Helghast v0.1.2; iso_fixture.py builds tiny images): the same D-codes
+        # from inside the image; I1 = encrypted, I2 = unreadable; no A1 here (firstrun.py hashes while copying)
+        from iso_fixture import build_iso
+        i = os.path.join(tmp, "iso")
+        os.makedirs(i)
+        sfo = os.path.join(i, "p.sfo")
+
+        def sfo_of(**kw):
+            f = {"APP_VER": "01.01", "CATEGORY": "DG", "TITLE": "Synthetic", "TITLE_ID": "BCUS98116", "VERSION": "01.01"}
+            f.update(kw)
+            write_sfo(sfo, f)
+            return open(sfo, "rb").read()
+        files = {"PS3_DISC.SFB": b".SFB" + b"\0" * 8, "PS3_GAME/PARAM.SFO": sfo_of(),
+                 "PS3_GAME/USRDIR/EBOOT.BIN": fc.SELF_MAGIC + b"\0" * 60,
+                 "PS3_GAME/USRDIR/data_ps3.psarc": fc.PSARC_MAGIC + b"\0" * 6000}
+        iso = build_iso(os.path.join(i, "game.iso"), files, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 2048})
+        rc, out = run(["--dump", iso, "--update", u] + small)
+        check("ISO: complete decrypted ISO passes", rc == 0 and "OK   D1:" in out and "OK   D3:" in out
+              and "inside the ISO" in out and "A1" not in out, out)
+        check("ISO: INFO line names the image", "dump: decrypted ISO game.iso" in out, out)
+        rc, out = run(["--dump", iso, "--update", u, "--json"] + small)
+        j = json.loads(out)
+        check("ISO: facts read from inside", j["facts"]["disc"]["TITLE_ID"] == "BCUS98116"
+              and j["facts"]["psarc"]["size"] == 6004 and j["facts"]["iso"] == os.path.abspath(iso), out)
+        rc, out = run(["--dump", iso, "--update", u, "--min-psarc-bytes", "99999"])
+        check("ISO: small psarc fails D3", rc == 1 and "FAIL D3" in out, out)
+        tri = dict(files, **{"PS3_GAME/PARAM.SFO": sfo_of(VERSION="02.00")})
+        rc, out = run(["--dump", build_iso(os.path.join(i, "tri.iso"), tri), "--update", u] + small)
+        check("ISO: Trilogy disc warns D1", rc == 0 and "WARN D1" in out and "Killzone Trilogy disc" in out, out)
+        other = dict(files, **{"PS3_GAME/PARAM.SFO": sfo_of(TITLE_ID="NPUB30001", TITLE="Other")})
+        rc, out = run(["--dump", build_iso(os.path.join(i, "o.iso"), other)] + small)
+        check("ISO: another title id fails D1 naming it", rc == 1 and "FAIL D1" in out and "NPUB30001 (Other)" in out, out)
+        nofile = {k: v for k, v in files.items() if "psarc" not in k}
+        rc, out = run(["--dump", build_iso(os.path.join(i, "n.iso"), nofile)] + small)
+        check("ISO: no psarc fails D3", rc == 1 and "FAIL D3" in out and "no PS3_GAME/USRDIR/data_ps3.psarc" in out, out)
+        rc, out = run(["--dump", build_iso(os.path.join(i, "e.iso"), {"PS3_DISC.SFB": b"x"})] + small)
+        check("ISO: no PARAM.SFO fails D1", rc == 1 and "FAIL D1" in out, out)
+        scrambled = dict(files, **{"PS3_GAME/USRDIR/data_ps3.psarc": bytes(range(200)) * 30})
+        rc, out = run(["--dump", build_iso(os.path.join(i, "s.iso"), scrambled)] + small)
+        check("ISO: unreadable files are 'encrypted' (I1)",
+              rc == 1 and "FAIL I1: this ISO is encrypted; use a decrypted dump" in out, out)
+        scrambled = dict(files, **{"PS3_GAME/PARAM.SFO": bytes(range(100))})
+        rc, out = run(["--dump", build_iso(os.path.join(i, "s2.iso"), scrambled)] + small)
+        check("ISO: unreadable PARAM.SFO is 'encrypted' (I1)", rc == 1 and "FAIL I1" in out, out)
+        reg = bytearray(2048 * 40)
+        reg[0:4] = struct.pack(">I", 2)
+        reg[8:24] = struct.pack(">IIII", 0, 15, 16, 30)
+        open(os.path.join(i, "r.iso"), "wb").write(bytes(reg))
+        rc, out = run(["--dump", os.path.join(i, "r.iso")] + small)
+        check("ISO: region table image is I1", rc == 1 and "FAIL I1" in out, out)
+        open(os.path.join(i, "x.iso"), "wb").write(b"hello" * 100000)
+        rc, out = run(["--dump", os.path.join(i, "x.iso")] + small)
+        check("ISO: not an ISO is I2, not 'encrypted'", rc == 1 and "FAIL I2" in out and "I1" not in out, out)
+        data = open(iso, "rb").read()
+        open(os.path.join(i, "t.iso"), "wb").write(data[:len(data) - 3000])
+        rc, out = run(["--dump", os.path.join(i, "t.iso")] + small)
+        check("ISO: truncated image fails D3", rc == 1 and "FAIL D3" in out and "truncated" in out, out)
+        old = os.environ.get("OneDrive")
+        os.environ["OneDrive"] = i
+        real_attr = fc.file_attributes
+        fc.file_attributes = lambda p: 0x400000 if p.endswith(".iso") else 0
+        try:
+            rc, out = run(["--dump", iso, "--update", u] + small)
+            check("ISO: an online-only ISO fails O2 before it is opened", rc == 1 and "FAIL O2" in out
+                  and "decrypted ISO" not in out, out)
+        finally:
+            fc.file_attributes = real_attr
+            if old is None:
+                del os.environ["OneDrive"]
+            else:
+                os.environ["OneDrive"] = old
+        rc, out = run(["--dump", d, "--update", u] + small)
+        check("folder dump: no ISO line", "decrypted ISO" not in out, out)
 
         # A1: the archive's SHA-256 against a known one (psarc_sha256.json format), injected with --psarc-hashes
         import hashlib

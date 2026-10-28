@@ -1,4 +1,4 @@
-From KZ3 0c2e770b port/patches/1086-spu-depth-guard-ring-per-context.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
+From Project Helghast port/patches/1086-spu-depth-guard-ring-per-context.patch (taken 2026-10-20); applies unchanged on KZ2's stack.
 KZ3 patch 1086: spu_depth_guard (spu_drain.c, on every full drain of every SPU host thread) wrote a
 24-entry ring of drain sites and its counter as process-wide statics: a data race, and a cache line bouncing between
 the cores of the five HiPrio kernel threads. spu_depth_guard was 2.3 % of the K4 SPU samples (one trace run,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# From KZ3 0c2e770b tools/spu/test_spu_ls_gate.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
+# From Project Helghast tools/spu/test_spu_ls_gate.sh (the patched toolkit is $KZ2_PATCHED_DIR or $KZ2_OUT/ps3recomp-patched, default work/).
 # Patch 1100 host test (tools/spu/test_spu_ls_gate.c): LS gates and the WWS range probes. Self-contained.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_spu_ls_gate.sh   (KZ2_PATCHED_DIR = another patched tree)
 set -uo pipefail

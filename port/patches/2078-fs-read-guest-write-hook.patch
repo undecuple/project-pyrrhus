@@ -10,7 +10,7 @@ the RE notes; the RE notes.
 Host test: tools/smoke/test_fs_write_hook.sh (Linux); tools/smoke/test_guest_write.c case C4 (Proton).
 Upstream candidate: a generic guest-write hook in the fs layer.
 
-From KZ3 dabb17c3 port/patches/2078-fs-read-guest-write-hook.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; KZ3 54082992's v0.16.0 copy taken later.
+From Project Helghast port/patches/2078-fs-read-guest-write-hook.patch (KZ3's last ps3recomp v0.15.0 stack), imported by KZ2; Project Helghast's v0.16.0 copy taken later.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): fs_set_dir plus the open-file note fs_note_guest_write
 

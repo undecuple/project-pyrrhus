@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test (from KZ3 78bf574) for tools/release/launch.py (the logic behind `Project Pyrrhus.exe`) and firstrun.py's per-step
+"""Host test (from Project Helghast) for tools/release/launch.py (the logic behind `Project Pyrrhus.exe`) and firstrun.py's per-step
 fingerprints, on a synthetic install tree in a temp folder (no game data, no toolchain, no network, no Windows).
 Exit 0 = PASS, 1 = FAIL.
 
@@ -524,8 +524,8 @@ def main():
                          {"path": "kz2-setup/release/gone.py", "size": 1, "sha256": "0" * 64},
                          {"path": "run.cmd", "size": 1, "sha256": "0" * 64}]}
         write(os.path.join(root, "manifest.json"), json.dumps(man))
-        check(la.verify_install(root) == (3, ["kz2-setup/release/gone.py (missing)"]),
-              "10 verify: one missing; the zip-only run.cmd absent from an install is fine")
+        check(la.verify_install(root) == (2, ["kz2-setup/release/gone.py (missing)"]),
+              "10 verify: one missing; the zip-only run.cmd absent from an install is fine and not counted")
         man["files"] = man["files"][:2]
         write(os.path.join(root, "manifest.json"), json.dumps(man))
         write(good, "0.1.9")
@@ -541,6 +541,21 @@ def main():
         rc = la.main(["--root", root, "--repair"], ui=FakeUI([True]), run=lambda a, **k: fails.append(a) or 1,
                      environ=env)
         check(rc == 1 and len(fails) == 1, "10 failed repair -> 1")
+        # a console closed with its X before the first check wrote a log (adapted from Project Helghast v0.1.1)
+        check("window was closed" in la.did_not_finish(0xC000013A, "The build did not finish")
+              and "code" not in la.did_not_finish(0xC000013A - 2**32, "x")
+              and "(code 1)" in la.did_not_finish(1, "The build did not finish"), "10 console closed: its own wording")
+        nl = os.path.join(tmp, "lognote")
+        os.makedirs(nl, exist_ok=True)
+        check("No log was written yet" in la.log_note(nl) and nl not in la.log_note(nl),
+              "10 no first-run log yet: the dialog says so, no path")
+        open(os.path.join(nl, la.FIRSTRUN_LOG), "w").close()
+        check(la.FIRSTRUN_LOG in la.log_note(nl) and "issues" in la.log_note(nl), "10 first-run log present: path and report line")
+        ui = FakeUI([True])
+        rc = la.main(["--root", root, "--repair"], ui=ui, run=lambda a, **k: 0xC000013A, environ=env)
+        has_log = os.path.isfile(os.path.join(root, la.FIRSTRUN_LOG))
+        check(rc == 0xC000013A and "window was closed" in ui.infos[-1]
+              and (("No log was written yet" in ui.infos[-1]) != has_log), f"10 closed repair console: {ui.infos}")
         shutil.rmtree(os.path.join(root, "build"))
         calls.clear()
         ui = FakeUI([True])

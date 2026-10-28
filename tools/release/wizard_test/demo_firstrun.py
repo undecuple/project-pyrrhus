@@ -1,4 +1,4 @@
-"""Wizard test fixture (never shipped; from KZ3 78bf574): stands in for kz2-setup/release/firstrun.py in the payload that
+"""Wizard test fixture (never shipped; from Project Helghast): stands in for kz2-setup/release/firstrun.py in the payload that
 tools/release/wizard_test.sh compiles, so the setup wizard's build page can be screenshotted without game data.
 
 It takes firstrun.py's command line, writes the same --status-file lines (LOG, then PROGRESS ..., then RESULT) with
