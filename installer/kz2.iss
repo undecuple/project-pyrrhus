@@ -278,6 +278,13 @@ Type: filesandordirs; Name: "{app}\vfs\psarc-cache"
 Type: filesandordirs; Name: "{app}\vfs\cache"
 Type: files; Name: "{app}\vfs\link.json"
 Type: dirifempty; Name: "{app}\vfs"
+; The second VFS place (launch.py alt_vfs_root, issue #20): used when the install folder's drive cannot hold the
+; link. Its PS3_GAME link is removed as a link in CurUninstallStepChanged first, as above.
+Type: filesandordirs; Name: "{localappdata}\{#AppDirName}\vfs\psarc-cache"
+Type: filesandordirs; Name: "{localappdata}\{#AppDirName}\vfs\cache"
+Type: files; Name: "{localappdata}\{#AppDirName}\vfs\link.json"
+Type: dirifempty; Name: "{localappdata}\{#AppDirName}\vfs"
+Type: dirifempty; Name: "{localappdata}\{#AppDirName}"
 ; Portable layout: the runtime's caches sit in the install folder (saves: AskDeleteSaves).
 Type: filesandordirs; Name: "{app}\cache"
 Type: files; Name: "{app}\kz2-install.ini"
@@ -1720,6 +1727,7 @@ begin
   if CurUninstallStep = usUninstall then begin
     { The junction to the dump: RemoveDirectory on a junction removes the link only, never the target. }
     RemoveDir(ExpandConstant('{app}\vfs\PS3_GAME'));
+    RemoveDir(ExpandConstant('{localappdata}\{#AppDirName}\vfs\PS3_GAME'));
     Exit;
   end;
   if CurUninstallStep <> usPostUninstall then Exit;

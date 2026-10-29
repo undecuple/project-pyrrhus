@@ -246,7 +246,7 @@ static void kz2_display_save(int mode, int scaling, int filter)
     FILE* f = _wfopen(p, L"wb");
     const bool ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
     if (f) fclose(f);
-    char shown[1200];   /* an earlier change (issue #16): %APPDATA%\..., never the user name */
+    char shown[1200];   /* issue #16: %APPDATA%\..., never the user name */
     printf("[display] %s: mode %s, scaling %s, filter %s %s\n", kz2_log_path_w(p, shown, sizeof shown),
            rsx_dm_name(mode), rsx_dm_scaling_name(scaling),
            rsx_dm_filter_name(filter), ok ? "saved" : "NOT saved");
@@ -267,7 +267,7 @@ static void kz2_display_load(void)
             mode = rsx_dm_ini_parse(t);
             scaling = rsx_dm_ini_scaling(t);
             filter = rsx_dm_ini_filter(t);
-            char shown[1200];   /* an earlier change (issue #16): %APPDATA%\..., never the user name */
+            char shown[1200];   /* issue #16: %APPDATA%\..., never the user name */
             printf("[display] %s: mode %s, scaling %s, filter %s\n", kz2_log_path_w(p, shown, sizeof shown), mode >= 0 ? rsx_dm_name(mode) : "(none)",
                    scaling >= 0 ? rsx_dm_scaling_name(scaling) : "(none)", filter >= 0 ? rsx_dm_filter_name(filter) : "(none)");
         } else {
@@ -400,7 +400,7 @@ static void kz2_no_renderer_exit(void)
  * keyboard page's capture) then wait seconds, and Windows marks a window that has not pumped for 5 s as not responding.
  * KZ3's player saw it as mouse look holding still then jumping. KZ2_PUMP_TICK=0 = the old pump (outer loop only).
  * kz2_pump_note: the longest gap between two pumps, a line per gap over 250 ms (first 20) and a summary every 10 s.
- * Since an earlier change the live renderer's window has a thread of its own (patch 2124, KZ2_WINDOW_THREAD=0 = off):
+ * Since patch 2124 the live renderer's window has a thread of its own (patch 2124, KZ2_WINDOW_THREAD=0 = off):
  * kz2_rsx_pump then only hands over a swap-chain request and reads window_closed, so a [pump] gap is the length of a
  * frame-thread pass, and the window's own message gaps are the [wpump] lines. */
 static int kz2_pump_tick_on(void)
@@ -441,8 +441,8 @@ static void kz2_pump_note(int fired)
 
 /* Frame-thread call timing: each present, FIFO drain and pump call of frame_clock is timed; a call
  * over 250 ms gets a [frame-call] line (first 40) with the live renderer's pipeline-build waits inside it
- * (rsx_live_draw_pso_await_totals, patch 2124), and every 10 s a summary names the longest call of each kind. An earlier change
- * saw single passes of 8.4-9.2 s at the Corinth River start; this says which call it was and what it waited on. */
+ * (rsx_live_draw_pso_await_totals, patch 2124), and every 10 s a summary names the longest call of each kind. Scripted
+ * runs saw single passes of 8.4-9.2 s at the Corinth River start; this says which call it was and what it waited on. */
 extern "C" void rsx_live_draw_pso_await_totals(unsigned long long* n, unsigned long long* us);
 extern "C" const char* cellGcm_last_drain_why(void);   /* patch 6037: why the last FIFO drain pass stopped */
 enum { KZ2_FC_PRESENT, KZ2_FC_DRAIN, KZ2_FC_PUMP, KZ2_FC_N };
@@ -915,9 +915,9 @@ int main(int argc, char** argv)
      * writes <exe dir>/logs/kz2-<date>-<time>.log (KZ2_LOG_FILE=0: off). kz2_session_log.h has the details. */
     kz2_console_open();
     kz2_session_log_start();
-    kz2_stdio_buffer_start();   /* an earlier change switches for ppu_run's buffered stdio (upstream #524; kz2_session_log.h) */
-    /* PS3_VERBOSE=0 quiets the per-event diagnostics (patch 6030 and upstream's ps3_log_verbose sites, ~2,000
-     * lines/s in a level). The default since an earlier change (kz2_env below): the load stop it exposed (SPU assert in
+    kz2_stdio_buffer_start();   /* switches for ppu_run's buffered stdio (upstream #524; kz2_session_log.h) */
+    /* PS3_VERBOSE=0 (patch 6030) quiets the per-event diagnostics (patch 6030 and upstream's ps3_log_verbose sites, ~2,000
+     * lines/s in a level). The default since the Exit-to-desktop and Keyboard page change (kz2_env below): the load stop it exposed (SPU assert in
      * Gfx.PB.ShadowMap, a SPURS task-id race) is fixed by 7004. PS3_VERBOSE=1 brings every line back. */
 #endif
 
@@ -976,12 +976,12 @@ int main(int argc, char** argv)
      *                   page stamps and a full byte compare of the sources) replays the payload it built before.
      *                   KZ2 keeps its vertex buffers in main memory (with local only, 0 hits). The New Sun: 85 % of
      *                   draws hit; LD_VTX_CACHE=verify checked 6.17 M hits byte for byte, 0 bad; A/B in
-     *                   the RE notes "An earlier change". LD_VTX_CACHE=0 turns it off.
-     *  PS3_VERBOSE=0    quiet log: per-event lines are counted, not printed (patch 6030; ~26 MB/min
+     *                   the RE notes, 2026-10-22 (the walker's vertex path). LD_VTX_CACHE=0 turns it off.
+     *  PS3_VERBOSE=0    quiet log (default since 2026-10-26): per-event lines are counted, not printed (patch 6030; ~26 MB/min
      *                   verbose). Upstream's default is verbose whenever stderr is redirected, which a session log
      *                   always is. Set before the first ps3_log_verbose() call (each translation unit caches it).
-     *                   With 7004: 0 of 4 load stops, 0 of 10 level starts quiet; an earlier change's quiet
-     *                   level loads: the RE notes "An earlier change". */
+     *                   With 7004: 0 of 4 load stops, 0 of 10 level starts quiet; the first quiet level
+     *                   loads: the RE notes, 2026-10-26 (quiet logs). */
     static const char* const kz2_env[][2] = { {"PS3_CAMERA", "0"}, {"RSX_LIVE_DRAW", "1"},
                                               {"GCM_PARK_WAIT_MS", "86400000"},
                                               {"LD_VTX_CACHE", "1"}, {"LD_VTX_CACHE_MAIN", "1"},
@@ -1025,7 +1025,7 @@ int main(int argc, char** argv)
     ppu_fs_register();       /* cellFs over the game directory */
     lv2_init_syscalls();     /* the lv2 syscall table */
     kz2_hle_register();      /* imports the runtime leaves unresolved (hle_kz2.cpp) */
-    kz2_menu_install();      /* EXIT TO DESKTOP, Keyboard page: ExitAll and the Lua bridge (kz2_menu_pages.cpp, an earlier change) */
+    kz2_menu_install();      /* EXIT TO DESKTOP, Keyboard page: ExitAll and the Lua bridge (kz2_menu_pages.cpp) */
     kz2_prompts_register();  /* prompt glyph sets and keycaps: keys and label fonts for patches 2091-2093 */
     cellSaveData_register_ctx_handlers();   /* 9-argument User*Auto{Load,Save} (patch 3001) */
     {   /* title id from PARAM.SFO (BCUS98116) instead of the runtime default: save directory and SysCache id */

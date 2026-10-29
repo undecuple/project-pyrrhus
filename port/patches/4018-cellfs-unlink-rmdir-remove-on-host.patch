@@ -8,7 +8,7 @@ stubs the rejected cache.idx stayed and FIOS went round open / read 512 / close 
 2026-10-21: 17-51 thousand rounds, black screen). Only the writable mounts (/dev_hdd0, /dev_hdd1, /dev_usb*) can be
 changed (else CELL_EROFS), a ".." component is refused (CELL_EINVAL), errors map to CELL_ENOENT/EISDIR/ENOTDIR/
 ENOTEMPTY/EBUSY/EACCES/EIO, and every call logs one "[fs] unlink|rmdir" line. Test: tools/net/test_fs_cache.sh
-(KZ3 an earlier change, the RE notes s.26). Upstream candidate.
+(from KZ3, the RE notes s.26). Upstream candidate.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.
 

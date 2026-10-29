@@ -1,0 +1,39 @@
+KZ2 patch 7008: complete a pending iret before taking the next SPU interrupt.
+
+KZ3's SPU found by replay (its patch 1142; ../shared-docs/spu-native-jobs.md "back-to-back interrupts lose the
+iret restore") that the runtime restores an interrupted SPU's registers only when the first interrupts-enabled
+dispatch lands at srr0 (spu_indirect_branch -> spu_irq_regs_maybe_restore), while the drain loop checks for pending
+events right after each hop: when the handler's iret hop returns with another event pending, spu_take_interrupt runs
+before that dispatch and spu_irq_regs_save stores the handler's registers as the interrupted code's; the second iret
+then gives them to the job (KZ3: r0 = 0xBAD00000 in a control run). KZ2's runtime has the same code (spu_drain.c
+spu_take_interrupt, unchanged since Project Helghast), and the WWS policy module runs jobs with interrupts on. Written
+here from that description (KZ3's patch itself was not copied): spu_take_interrupt first completes a pending iret
+the way the dispatch would (restore; pop the frame, or unwind to the taking frame, whose loop then takes the
+still-pending event), and counts it as "[irq] back-to-back" (the first 8, then every 4096th).
+
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -574,6 +574,23 @@
+         if (--g_sn_defer == 0) g_sn_defer_ctx = 0;
+         return tf;
+     }
++    /* KZ2 patch 7008 (after KZ3's finding in its patch 1142; written here, not
++     * copied): the handler's iret leaves pc = srr0 with interrupts on, and the register restore runs only at the next
++     * dispatch (spu_indirect_branch -> spu_irq_regs_maybe_restore). An event already pending is taken first, by the
++     * drain loop right after the iret's hop: spu_irq_regs_save below then saved the HANDLER's registers as the
++     * interrupted code's, and the second iret handed them to the job (KZ3's replay: r0 = 0xBAD00000). Complete the
++     * pending iret first, exactly as the dispatch would (restore, pop or unwind to the taking frame; after an unwind
++     * that frame's loop takes the still-pending event with the right registers). [irq] back-to-back counts it. */
++    if (ctx->irq_saved && ctx->int_enable &&
++        (ctx->pc & SPU_LS_MASK) == (ctx->irq_resume_pc & SPU_LS_MASK)) {
++        static volatile long s_b2b = 0;
++        const long n = __atomic_add_fetch(&s_b2b, 1, __ATOMIC_RELAXED);
++        if (n <= 8 || (n & 4095) == 0)
++            fprintf(stderr, "[irq] back-to-back: pending iret restored before the next take (n=%ld img=%d srr0=0x%05X)\n",
++                    n, ctx->image_id, ctx->irq_resume_pc & SPU_LS_MASK);
++        extern int spu_irq_regs_maybe_restore(spu_context*);
++        spu_irq_regs_maybe_restore(ctx);
++    }
+     const uint8_t* v = ctx->ls;      /* vector word at LS 0, big-endian */
+     uint32_t w = ((uint32_t)v[0] << 24) | ((uint32_t)v[1] << 16) |
+                  ((uint32_t)v[2] << 8) | v[3];

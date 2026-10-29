@@ -434,7 +434,7 @@ FFMPEG_INCLUDE_DEV = (("work", "ffmpeg-win", "include"), ("work", "ffmpeg-header
 def ffmpeg_include(root):
     """FFmpeg's headers for the run-time FFmpeg loader (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): the payload's
     <root>/ffmpeg/include, else a source tree's work/ffmpeg-win/include or work/ffmpeg-headers; "" when none holds
-    libavcodec/avcodec.h. Release an earlier change (issue #16): v0.1.2 passed nothing, so every player's kz2.exe was built
+    libavcodec/avcodec.h. Issue #16: v0.1.2 passed nothing, so every player's kz2.exe was built
     without movie pictures and AC-3 sound although the DLLs were installed beside it."""
     for rel in (FFMPEG_INCLUDE,) + FFMPEG_INCLUDE_DEV:
         d = os.path.join(root, *rel)
@@ -764,8 +764,19 @@ def place_decoders(root, build, obj=None):
 
 def cmd_stamp(c):
     """Fail the last step, with a message in the log, when the build left no at3_standalone.dll (firstrun_check B1) or
-    kz2.exe lacks the FFmpeg loader (B2, an earlier change: issue #16)."""
+    kz2.exe lacks the FFmpeg loader (B2, since issue #16)."""
     return [[*c.py, c.tool("release", "firstrun_check.py"), "--build-dir", c.b("obj")]]
+
+
+def cache_root_supported(root):
+    """The payload's runtime reads KZ2_CACHE_ROOT (port/kz2/kz2_cache_root.h names it): the dump is the VFS root, read
+    in place, and every write goes to the cache root, so no folder link is needed. From Project Helghast (KZ3
+    tools/release/firstrun.py cache_root_supported, kz3_ini.h; same author, MIT)."""
+    try:
+        with open(os.path.join(root, "port", "kz2", "kz2_cache_root.h"), encoding="utf-8", errors="replace") as f:
+            return "KZ2_CACHE_ROOT" in f.read()
+    except OSError:
+        return False
 
 
 def after_stamp(c):
@@ -777,6 +788,7 @@ def after_stamp(c):
     place_sdl3(c.root, c.build)
     record_sources(c)
     stamp = {"inputs": c.fingerprint(("lift", "runtime")), "parts": c.parts(), "version": port_version(c.root),
+             "cache_root": cache_root_supported(c.root),
              "eboot_stat": eboot_stat(c.eboot), "facts": c.facts, "jobs": c.jobs,
              "toolchain": c.toolchain or "cross", "built": datetime.datetime.now().isoformat(timespec="seconds")}
     pf = os.path.join(c.ps3recomp, ".kz2-patchset")
@@ -801,6 +813,41 @@ STEPS = [   # weights (ASSUMPTION): from the developer build on Linux (-j4: lift
 
 
 # ----------------------------------------------------------------------------------------------------- helpers
+def volume_fs(path, k32=None):
+    """(volume root, file system name) of the drive holding path, e.g. ("D:\\", "NTFS"), from GetVolumePathNameW and
+    GetVolumeInformationW's file system name; ("", "") when unknown (not Windows, or the call failed); (root, "") when
+    only the name is missing. Never raises: Linux logs nothing, Proton logs what Wine reports. k32: a stand-in for
+    kernel32 (host test)."""
+    try:
+        import ctypes
+        if k32 is None:
+            if os.name != "nt":
+                return "", ""
+            k32 = ctypes.windll.kernel32
+        vol = ctypes.create_unicode_buffer(300)
+        if not k32.GetVolumePathNameW(os.path.abspath(path), vol, 300):
+            return "", ""
+        fs = ctypes.create_unicode_buffer(64)
+        if not k32.GetVolumeInformationW(vol.value, None, 0, None, None, None, fs, 64):
+            return vol.value, ""
+        return vol.value, fs.value
+    except Exception:   # noqa: BLE001 - a log line must never stop the build or the launcher
+        return "", ""
+
+
+def file_systems(paths, k32=None):
+    """"install, game files D:\\ NTFS; update E:\\ exFAT": the file system of each drive holding one of the labelled
+    paths, one entry per drive, or "" when nothing is known (issue #20: the next report answers the question itself)."""
+    drives = {}
+    for label, p in paths:
+        if not p:
+            continue
+        vol, fs = volume_fs(p, k32)
+        if vol:
+            drives.setdefault(vol.lower(), [vol, fs, []])[2].append(label)
+    return "; ".join(f"{', '.join(labels)} {vol} {fs or '(file system unknown)'}" for vol, fs, labels in drives.values())
+
+
 def available_ram():
     """Available RAM in bytes, or None. /proc/meminfo on Linux, GlobalMemoryStatusEx on Windows."""
     try:
@@ -1334,7 +1381,9 @@ def header(ctx, log_path, fallback):
             f"# firstrun.py, Python {platform.python_version()}, {platform.platform()}",
             f"# cores {os.cpu_count()}, available RAM {ram / GIB:.1f} GiB" if ram else f"# cores {os.cpu_count()}",
             f"# free disk {du.free / GIB:.1f} GiB on the build drive, jobs {ctx.jobs}",
-            f"# root {ctx.root}", f"# build {ctx.build}",
+            f"# root {ctx.root}", f"# build {ctx.build}"] + \
+        ([f"# file systems: {fsl}"] if (fsl := file_systems([("install", ctx.root), ("game files", ctx.dump),
+                                                              ("update", ctx.update)])) else []) + [
             f"# toolchain {ctx.toolchain or 'port/cmake/mingw-w64.cmake (cross)'}, cmake {ctx.cmake}, "
             f"ninja {ctx.ninja or '(PATH)'}, python {ctx.python}",
             f"# dump {ctx.dump}" + (f" (decrypted ISO; its files are copied to {iso_dest(ctx)})"

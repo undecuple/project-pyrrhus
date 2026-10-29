@@ -24,7 +24,13 @@ well the game starts. A "No" starts nothing.
 
 Game environment: PS3_VFS_ROOT=<root>/vfs, a writable folder whose PS3_GAME is a directory junction to
 <dump>/PS3_GAME (ensure_vfs; KZ3: its runtime writes a psarc cache and /dev_hdd1 under the VFS root, so a read-only
-or untouched dump as the root made every asset open fail); KZ2_UPDATE_DIR=<update>/USRDIR (port/kz2/main.cpp reads it:
+or untouched dump as the root made every asset open fail; reading the dump in place is no fallback: every mount,
+/dev_hdd0 and /dev_usb included, maps under the VFS root, so the game would write into the dump). Before any build the
+launcher makes and removes a test link there (probe_link), so a drive that cannot hold one is named within seconds; a
+failed junction leaves no folder behind. When <root>/vfs cannot hold the link, the VFS root is
+%LOCALAPPDATA%/Project Pyrrhus/vfs instead (alt_vfs_root; issue #20), and stays there. Link-free (link_free; the
+main path once the runtime reads KZ2_CACHE_ROOT, Project Helghast's design): PS3_VFS_ROOT=<dump>, KZ2_CACHE_ROOT=
+<root>/vfs, no link at all; the link is then the path for builds from older payloads only. KZ2_UPDATE_DIR=<update>/USRDIR (port/kz2/main.cpp reads it:
 the 1.29 update's added_data_ps3.psarc and patch_data_ps3/ are served through it);
 PS3_HDD0_ROOT=<...>/dev_hdd0 only when the update folder sits in an RPCS3 dev_hdd0/game/<id> tree;
 PS3_EDAT_CACHE=<root>/build/cache/edat (port/patches/5002); VKD3D_SHADER_CACHE_PATH=<data>/cache/vkd3d (Proton's
@@ -53,6 +59,7 @@ launcher.log (<root>/logs): one "start: <action>" line and one "version: X.Y.Z (
 """
 import argparse
 import configparser
+import contextlib
 import datetime
 import json
 import os
@@ -75,7 +82,7 @@ ISSUES_URL = "https://github.com/undecuple/project-pyrrhus/issues"
 # every failure message says where to report it (the log holds no personal folders)
 REPORT = f"\n\nTo report a problem, attach this log on the issues page: {ISSUES_URL}"
 GAME_VARS = ("KZ2_PAD_LAYOUT", "KZ2_PROMPTS", "KZ2_DISPLAY", "PS3_VFS_ROOT", "KZ2_UPDATE_DIR", "PS3_HDD0_ROOT", "PS3_EDAT_CACHE",
-             "VKD3D_SHADER_CACHE_PATH")
+             "VKD3D_SHADER_CACHE_PATH", "KZ2_CACHE_ROOT")
 # firstrun.py --status-file: its last RESULT line and, after RESULT ok=0, the REASON lines (why it stopped), shown in
 # the launcher's dialog (after Project Helghast PR #11 did the same for its setup's box)
 FIRSTRUN_STATUS = os.path.join("logs", "firstrun-status.txt")
@@ -126,7 +133,7 @@ def version_line(root):
 
 def note(root, text):
     """One line in <root>/logs/launcher.log (what the launcher decided; pythonw has no console). Never fails. The user's
-    home folder becomes %USERPROFILE% (firstrun.redactor; an earlier change, issue #16: logs get attached to public
+    home folder becomes %USERPROFILE% (firstrun.redactor; issue #16: logs get attached to public
     issues, and a vfs/prepare error can name a path)."""
     try:
         text = fr.redactor()(text)
@@ -202,53 +209,233 @@ def _is_dir_link(p):
     return bool(isj and isj(p))
 
 
-def _make_dir_link(target, link):
-    """Directory junction on Windows (no admin rights or developer mode needed), else a symlink. -> error or ""."""
-    errs = []
-    if os.name == "nt":
-        try:
-            import _winapi
-            _winapi.CreateJunction(target, link)
-            return ""
-        except (ImportError, AttributeError, OSError) as e:
-            errs.append(f"junction: {e}")
+def _junction_api():
+    if os.name != "nt":
+        return None
     try:
-        os.symlink(target, link, target_is_directory=True)
+        import _winapi
+        return _winapi.CreateJunction
+    except (ImportError, AttributeError):
+        return None
+
+
+# The link makers, module-level so a host test can stand in for Windows (a junction that fails half-way).
+create_junction = _junction_api()
+make_symlink = os.symlink
+
+
+def _remove_empty_dir(p):
+    """os.rmdir only: it refuses a folder with anything in it, and on a link or junction it removes the link and never
+    its target. So this can never delete a player's files. -> True when p is gone."""
+    if _is_dir_link(p):
+        try:
+            os.unlink(p)            # a symlink (POSIX rmdir refuses one); Windows removes the link only
+            return True
+        except OSError:
+            pass
+    try:
+        os.rmdir(p)
+        return True
+    except OSError:
+        return False
+
+
+def _make_dir_link(target, link):
+    """Directory junction on Windows (no admin rights or developer mode needed), else a symlink. -> error or "".
+
+    _winapi.CreateJunction makes the folder first and then sets its reparse point; when the second step fails (seen as
+    WinError 1392 on a player's drive) the empty folder stayed behind, the symlink then failed with WinError 183 and
+    every later start refused it as a real folder. A failed attempt now removes what it made (only a folder that did
+    not exist before that attempt, and only when empty or a link). Same rule as Project Helghast's _undo_link (KZ3
+    tools/release/launch.py, same author, MIT; read on the maintainer's pointer 2026-10-29)."""
+    errs = []
+    if create_junction is not None:
+        existed = os.path.lexists(link)
+        try:
+            create_junction(target, link)
+            return ""
+        except OSError as e:
+            errs.append(f"junction: {e}")
+            if not existed and os.path.lexists(link):
+                _remove_empty_dir(link)
+    existed = os.path.lexists(link)
+    try:
+        make_symlink(target, link, target_is_directory=True)
         return ""
     except (OSError, NotImplementedError) as e:
         errs.append(f"symlink: {e}")
+        if not existed and os.path.lexists(link):
+            _remove_empty_dir(link)
     return "; ".join(errs)
 
 
-def ensure_vfs(root, dump):
-    """Make <root>/vfs with PS3_GAME -> <dump>/PS3_GAME. -> (vfs folder, error text or "").
+CACHE_ROOT_HEADER = ("port", "kz2", "kz2_cache_root.h")   # the runtime's cache-root support (KZ2_CACHE_ROOT)
 
-    The player's dump is read in place and never written: the runtime's writes (psarc-cache, /dev_hdd1 cache) land
-    in <root>/vfs. A real folder already named PS3_GAME there is never removed (error instead); a link to another
-    dump (the player picked a new folder) is replaced; removing a link leaves its target alone."""
+
+def link_free(root, build=None):
+    """True when the installed kz2.exe takes the game folder and the writable folder apart (build-stamp.json
+    "cache_root", set by firstrun.after_stamp when the payload has port/kz2/kz2_cache_root.h naming KZ2_CACHE_ROOT):
+    PS3_VFS_ROOT = the dump, read in place, and KZ2_CACHE_ROOT = <root>/vfs takes every write, so no folder link is
+    made. The design is Project Helghast's (KZ3 tools/release/launch.py link_free, kz3.ini cache_root, same author,
+    MIT); its reason: a native Windows install could not open anything through the junction. Until the runtime
+    reads KZ2_CACHE_ROOT (requested), every build stamps False and the link below stays the path."""
+    stamp = load_json(os.path.join(build or os.path.join(root, "build"), "build-stamp.json")) or {}
+    return bool(stamp.get("cache_root"))
+
+
+def drop_link(root):
+    """Link-free start: remove the PS3_GAME link an older start left in <root>/vfs (the link only, never its target;
+    a real folder is left alone) and its record. -> error text or ""."""
     v = vfs_root(root)
     link = os.path.join(v, "PS3_GAME")
-    target = os.path.join(dump, "PS3_GAME")
+    if _is_dir_link(link):
+        try:
+            try:
+                os.unlink(link)
+            except OSError:
+                os.rmdir(link)
+        except OSError as e:
+            return f"Could not remove the old link {link} ({e})"
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(v, VFS_LINK))
+    os.makedirs(v, exist_ok=True)
+    return ""
+
+
+def alt_vfs_root(environ):
+    """The second place for the VFS root when the install folder's drive cannot hold the link: %LOCALAPPDATA%\\Project
+    Pyrrhus\\vfs (the Windows drive, which is NTFS). "" without LOCALAPPDATA (Linux host tests, odd setups)."""
+    la = (environ or {}).get("LOCALAPPDATA", "")
+    return os.path.join(la, SAVE_FOLDER, VFS) if la else ""
+
+
+def drive_systems(root, dump):
+    """'install, game files D:\\ NTFS' (one entry per drive) for the log and the link error, or "" (fr.file_systems)."""
+    return fr.file_systems([("install", root), ("game files", dump)])
+
+
+def link_help(places, detail, fs="", dump=""):
+    """The player's text for a folder link that could not be made in any of places (vfs folders). The 1392 sentence
+    is Project Helghast's gated wording (KZ3 tools/release/launch.py _link_error_words, same author, MIT): possible
+    causes, never damage as the cause."""
+    where = " or in ".join(places)
+    why = (" WinError 1392: the drive's file system may not support folder junctions, or it may be damaged; the safe "
+           "step is an install folder on an NTFS drive such as C:." if "1392" in detail else
+           " Folder links need a drive whose file system supports them, such as NTFS (FAT32 and exFAT, common on USB drives and SD cards, cannot hold them); the "
+           "safe step is an install folder on an NTFS drive such as C:.")
+    return (f"Project Pyrrhus could not link your game folder into {where}. The game reads your game folder through "
+            f"that link and writes its caches in the install folder, never into your game folder.{why} Your game "
+            f"folder can stay where it is." + (f" Drives: {fs}." if fs else "") + f" (Details: {detail})")
+
+
+LINK_TEST = "link-test"     # <vfs>/link-test(-target): the early link check's own folders
+
+
+def _probe_in(v):
+    t = os.path.join(v, LINK_TEST + "-target")
+    lk = os.path.join(v, LINK_TEST)
+    os.makedirs(t, exist_ok=True)
+    if _is_dir_link(lk) or os.path.isdir(lk):
+        _remove_empty_dir(lk)       # a test link left by a stopped start (never anything with files in it)
+    err = _make_dir_link(t, lk)
+    if not err:
+        _remove_empty_dir(lk)
+    _remove_empty_dir(t)
+    return err
+
+
+def probe_link(root, alt="", fs_of=None, dump=""):
+    """Make and remove a test link in <root>/vfs (else in alt), before a long build, so a drive that cannot hold the
+    game's link is named within seconds instead of after the build. -> player text or "" (one of them works)."""
+    v = vfs_root(root)
+    err = _probe_in(v)
+    if not err:
+        return ""
+    if alt and os.path.normcase(alt) != os.path.normcase(v):
+        err2 = _probe_in(alt)
+        if not err2:
+            note(root, f"vfs: link check: no link possible in {v} ({err}); the game's VFS folder will be {alt}")
+            return ""
+        return link_help([v, alt], f"{err}; {alt}: {err2}", (fs_of or drive_systems)(root, dump))
+    return link_help([v], err, (fs_of or drive_systems)(root, dump))
+
+
+def _linked(v, target):
+    """v/PS3_GAME is the recorded link to target."""
+    link = os.path.join(v, "PS3_GAME")
+    rec = load_json(os.path.join(v, VFS_LINK)) or {}
+    return (rec.get("target") == target and os.path.isdir(link)
+            and (_is_dir_link(link) or rec.get("link") == link))
+
+
+def _link_in(v, target):
+    """Make v/PS3_GAME -> target (v made first). -> error text or ""."""
+    link = os.path.join(v, "PS3_GAME")
     rec = os.path.join(v, VFS_LINK)
     os.makedirs(v, exist_ok=True)
     if _is_dir_link(link) or (os.path.isdir(link) and (load_json(rec) or {}).get("link") == link):
         if (load_json(rec) or {}).get("target") == target and os.path.isdir(link):
-            return v, ""
+            return ""
         try:
             try:
                 os.unlink(link)
             except OSError:
                 os.rmdir(link)      # a junction on older Pythons; RemoveDirectory removes the link only
         except OSError as e:
-            return v, f"Could not replace the old link {link} ({e})"
-    elif os.path.lexists(link):
-        return v, f"{link} is a real folder, not a link to the game folder; move it away and start again"
+            return f"Could not replace the old link {link} ({e})."
+    elif os.path.lexists(link) and not _remove_empty_dir(link):
+        return f"{link} is a real folder with files in it, not a link to the game folder; move it away and start again."
     err = _make_dir_link(target, link)
     if err:
-        return v, f"Could not link {target} into {v} ({err})"
+        return f"linking {target}: {err}"
     with open(rec, "w", encoding="utf-8") as f:
         json.dump({"link": link, "target": target}, f, indent=1)
-    return v, ""
+    return ""
+
+
+def _inside(path, folder):
+    a, b = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return a == b or a.startswith(b.rstrip("\\/") + os.sep)
+
+
+def current_vfs(root, dump, alt=""):
+    """The VFS root the game uses now: alt when only alt holds the link (sticky, so caches and trophies stay put)."""
+    target = os.path.join(dump, "PS3_GAME") if dump else ""
+    if alt and target and _linked(alt, target) and not _linked(vfs_root(root), target):
+        return alt
+    return vfs_root(root)
+
+
+def ensure_vfs(root, dump, alt="", fs_of=None):
+    """Make a VFS root with PS3_GAME -> <dump>/PS3_GAME. -> (vfs folder, error text or "").
+
+    The player's dump is read in place and never written: the runtime's writes (psarc-cache, /dev_hdd1 cache, trophies)
+    land in the VFS folder, <root>/vfs, or alt (%LOCALAPPDATA%\\Project Pyrrhus\\vfs) when <root>/vfs cannot hold the
+    link (a drive without junctions; issue #20) and alt can; once alt is used it stays in use. Reading the dump in
+    place without a link is no fallback: ps3recomp maps every mount (/dev_hdd0 without PS3_HDD0_ROOT, /dev_usb*,
+    /host_root, any path with "USRDIR/" in the sys_fs layer) and cellGame's content root under the VFS root, so the
+    game would write into the dump. A real folder already named PS3_GAME is never removed while it holds anything; an
+    empty one (what a failed junction left in launcher 0.1.2 and earlier) is removed and the link made again. A link to
+    another dump is replaced; removing a link leaves its target alone. An install folder inside the dump's PS3_GAME
+    is refused (the link would contain itself and the game would write into the dump)."""
+    v = vfs_root(root)
+    target = os.path.join(dump, "PS3_GAME")
+    if _inside(v, target):
+        return v, (f"The install folder {root} is inside the game's own PS3_GAME folder ({target}); the game would "
+                   "write into your game files. Install Project Pyrrhus in a folder outside PS3_GAME and start again.")
+    other = alt if alt and os.path.normcase(alt) != os.path.normcase(v) else ""
+    if other and current_vfs(root, dump, other) == other:
+        return other, ""
+    err = _link_in(v, target)
+    if not err:
+        return v, ""
+    if other:
+        err2 = _link_in(other, target)
+        if not err2:
+            note(root, f"vfs: no link possible in {v} ({err}); using {other}")
+            return other, ""
+        return v, link_help([v, other], f"{err}; {other}: {err2}", (fs_of or drive_systems)(root, dump))
+    return v, link_help([v], err, (fs_of or drive_systems)(root, dump))
 
 
 def game_env(root, paths, portable, environ, appdata=None, layout="original", prompts="auto", display=None):
@@ -256,12 +443,15 @@ def game_env(root, paths, portable, environ, appdata=None, layout="original", pr
     cwd = data_dir(root, portable, environ, appdata)
     # KZ2_PAD_LAYOUT: read by the runtime's SetFunctionButton hook (until the hook is in, no effect)
     added = {"KZ2_PAD_LAYOUT": fr.pad_layout(layout)[0],
-             "PS3_VFS_ROOT": vfs_root(root), "PS3_EDAT_CACHE": os.path.join(root, "build", "cache", "edat"),
+             "PS3_VFS_ROOT": current_vfs(root, paths.get("dump", ""), alt_vfs_root(environ)), "PS3_EDAT_CACHE": os.path.join(root, "build", "cache", "edat"),
              # Under Proton/Wine, vkd3d-proton writes its pipeline cache (vkd3d-proton.cache) into the working folder
              # unless this names a folder (it must exist; main() makes it). ENHANCEMENT for Linux players: one per-user
              # place. Native Windows has no vkd3d and ignores the variable. Not a stable vkd3d-proton API: if a later
              # Proton drops it, the cache lands in the working folder (also per user) as before.
              "VKD3D_SHADER_CACHE_PATH": os.path.join(cwd, VKD3D_CACHE)}
+    if link_free(root) and paths.get("dump"):   # the dump read in place, every write under <root>/vfs (no link)
+        added["PS3_VFS_ROOT"] = paths["dump"]
+        added["KZ2_CACHE_ROOT"] = vfs_root(root)
     ps = fr.prompt_set(prompts)[0]
     if ps != "auto":   # patch 4011: ps3|ps4|xbox|keyboard win over keybinds.ini [prompts]; auto leaves the variable unset
         added["KZ2_PROMPTS"] = ps
@@ -673,6 +863,16 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         return repair(root, action, reason, paths, ini, ui, run)
 
     if action != "run":
+        # The game needs a folder link in <root>/vfs; check the drive can hold one now, not after a long build.
+        try:
+            perr = "" if fr.cache_root_supported(root) else \
+                probe_link(root, alt_vfs_root(environ), dump=paths.get("dump") or setup_paths(root).get("dump", ""))
+        except OSError as e:
+            perr = f"Could not write in {vfs_root(root)} ({e})."
+        if perr:
+            note(root, f"vfs: link check: {perr}")
+            ui.info(f"{perr}{REPORT}")
+            return 1
         if not ui.ask(f"{reason}.\n\n{QUESTION[action]}"):
             return 0
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -696,10 +896,15 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         ui.info(f"{up}.{REPORT}")
         return 1
     try:
-        _, err = ensure_vfs(root, paths["dump"])
-        note(root, f"vfs: {err or 'ok'}")
+        if link_free(root):
+            err = drop_link(root)
+            note(root, f"vfs: {err or 'no link (game folder read in place, writes under ' + vfs_root(root) + ')'}")
+        else:
+            v, err = ensure_vfs(root, paths["dump"], alt_vfs_root(environ))
+            note(root, f"vfs: {err or 'ok (' + v + ')'}")
+            env["PS3_VFS_ROOT"] = added["PS3_VFS_ROOT"] = v
         if err:
-            ui.info(f"{err}.{REPORT}")
+            ui.info(f"{err}{REPORT}")
             return 1
         note(root, "game: " + " ".join(gargv + extra) + f" (cwd {cwd}; the game's log is in build\\logs)")
         fr.place_fonts(root, os.path.dirname(gargv[0]))     # the notice fonts next to kz2.exe (KZ3's error notice)
@@ -728,9 +933,9 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
 
 
 def update_problem(paths):
-    """-> "" when the recorded 1.29 update folder still holds what the game reads from it, else the message (release
-    an earlier change, issue #16: a 1.29 build run without the update's data stops at the main menu with exit code 1 and no
-    message: kz2-r33-noupd reproduced the reported NULL call from 0x003F2984). The same files as firstrun_check U2/U3."""
+    """-> "" when the recorded 1.29 update folder still holds what the game reads from it, else the message (issue
+    #16: a 1.29 build run without the update's data stops at the main menu with exit code 1 and no message: a
+    test run without the update data reproduced the reported NULL call from 0x003F2984). The same files as firstrun_check U2/U3."""
     upd = paths.get("update") or ""
     if not upd:
         return ""

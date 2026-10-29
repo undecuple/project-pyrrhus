@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -95,6 +96,243 @@ def printed(root, extra=(), **kw):
         la.main(["--root", root, "--print", *extra], ui=FakeUI([]), **kw)
     return json.loads(buf.getvalue())
 
+
+class FakeKernel32:
+    """GetVolumePathNameW / GetVolumeInformationW stand-ins: fill the ctypes buffers as Windows would."""
+    def __init__(self, drives, fail_info=False):
+        self.drives, self.fail_info = drives, fail_info   # {"D:": "exFAT"} by the path's first two characters
+
+    def GetVolumePathNameW(self, path, buf, n):
+        m = re.search(r"([A-Z]:)[\\/]", path)   # (os.path.abspath on Linux puts the cwd in front)
+        d = m.group(1) if m else ""
+        if d not in self.drives:
+            return 0
+        buf.value = d + "\\"
+        return 1
+
+    def GetVolumeInformationW(self, vol, name, nn, serial, maxlen, flags, fsbuf, n):
+        if self.fail_info:
+            return 0
+        fsbuf.value = self.drives[vol[:2]]
+        return 1
+
+
+def fs_tests():
+    """12a. The drives' file systems for the first-run log and the link error (issue #20), the call mocked."""
+    k = FakeKernel32({"D:": "exFAT", "E:": "NTFS"})
+    check(fr.volume_fs("D:\\Killzone 2\\Project Pyrrhus", k) == ("D:\\", "exFAT"), "12a volume_fs with a mocked kernel32")
+    check(fr.file_systems([("install", "D:\\Killzone 2\\Project Pyrrhus"), ("game files", "D:\\Killzone 2"),
+                           ("update", "E:\\upd")], k) == "install, game files D:\\ exFAT; update E:\\ NTFS",
+          f"12a one entry per drive: {fr.file_systems([('install', 'D:/x'), ('game files', 'E:/y')], k)}")
+    check(fr.file_systems([("install", "D:\\x")], FakeKernel32({"D:": ""}, fail_info=True)) == "install D:\\ (file system unknown)",
+          "12a the name missing: the drive is still named")
+    check(fr.file_systems([("install", "Q:\\x")], k) == "", "12a an unknown drive: nothing")
+
+    class Boom:
+        def __getattr__(self, n):
+            raise OSError("no kernel32")
+    check(fr.volume_fs("D:\\x", Boom()) == ("", ""), "12a a failing call never raises")
+    check(fr.file_systems([("install", "/tmp")]) == "" if os.name != "nt" else True, "12a Linux: nothing, no failure")
+
+
+def link_tests(tmp):
+    """12. The vfs link on a drive that cannot hold one (issue #20, launcher 0.1.2: CreateJunction made the folder,
+    failed with WinError 1392 setting the link, the symlink then failed with 183, and every later start said "is a real
+    folder"; the install was inside the dump folder). Windows is stood in for by the module's link makers."""
+    fs_tests()
+    junction, symlink = la.create_junction, la.make_symlink
+    made = []
+    bad_dirs = []       # folders whose drive cannot hold links (empty: none)
+
+    def half_junction(target, link):     # _winapi.CreateJunction: the folder first, then the reparse point fails
+        os.mkdir(link)
+        made.append(link)
+        if any(link.startswith(b) for b in bad_dirs) or not bad_dirs:
+            raise OSError(22, "[WinError 1392] The file or directory is corrupted and unreadable")
+        os.rmdir(link)
+        os.symlink(target, link, target_is_directory=True)
+
+    def no_symlink(target, link, target_is_directory=False):
+        if os.path.lexists(link):
+            raise FileExistsError(17, "[WinError 183] Cannot create a file when that file already exists")
+        raise OSError(1314, "[WinError 1314] A required privilege is not held by the client")
+    fs = lambda r, d: "install, game files D:\\ exFAT"   # noqa: E731
+    try:
+        # the reporter's layout: the install folder inside the dump folder (D:\Killzone 2\Project Pyrrhus)
+        base = os.path.join(tmp, "t12")
+        dump = os.path.join(base, "Killzone 2")
+        root, _, update, eboot, _ = make_tree(os.path.join(tmp, "t12x"))
+        shutil.move(root, os.path.join(dump, "Project Pyrrhus"))
+        root = os.path.join(dump, "Project Pyrrhus")
+        write(os.path.join(dump, "PS3_GAME", "PARAM.SFO"))
+        vl = os.path.join(root, "vfs", "PS3_GAME")
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        v, err = la.ensure_vfs(root, dump, fs_of=fs)
+        check(made == [vl] and not os.path.lexists(vl) and os.path.isdir(v), f"12 a half-made junction is removed {made}")
+        check("NTFS" in err and "Drives: install, game files D:\\ exFAT" in err and "1392" in err and "may be damaged" in err
+              and "may not support" in err and "183" not in err and "1314" in err,
+              f"12 the error names NTFS, the drives' file systems, the 1392 hint and both real errors, not 183: {err}")
+        check(sorted(os.listdir(os.path.join(dump, "PS3_GAME"))) == ["PARAM.SFO"], "12 the dump is untouched")
+
+        def junction_with_files(target, link):  # never seen; proves a folder with anything in it is never removed
+            write(os.path.join(link, "keep.txt"), "mine")
+            raise OSError(22, "[WinError 1392] x")
+        la.create_junction = junction_with_files
+        la._make_dir_link(os.path.join(dump, "PS3_GAME"), vl)
+        check(os.path.isfile(os.path.join(vl, "keep.txt")), "12 a failed junction's folder with files in it stays")
+        shutil.rmtree(vl)
+        os.mkdir(vl)
+        la.create_junction = half_junction
+        check(la._make_dir_link(os.path.join(dump, "PS3_GAME"), vl) and os.path.isdir(vl),
+              "12 a folder that was there before the attempt is not removed by it")
+        os.rmdir(vl)
+
+        # The stuck second start: launcher 0.1.2 left an empty real PS3_GAME and no link.json
+        la.create_junction, la.make_symlink = junction, symlink
+        os.mkdir(vl)
+        v, err = la.ensure_vfs(root, dump)
+        check(err == "" and v == os.path.join(root, "vfs") and la._is_dir_link(vl) and os.path.isfile(os.path.join(vl, "PARAM.SFO")),
+              f"12 an empty real PS3_GAME left by a failed junction is replaced by the link, install inside the dump ({err})")
+        os.unlink(vl)
+        os.remove(os.path.join(root, "vfs", "link.json"))   # (a recorded path is taken as the link: older Pythons)
+        write(os.path.join(vl, "keep.txt"), "mine")
+        v, err = la.ensure_vfs(root, dump)
+        check("files in it" in err and os.path.isfile(os.path.join(vl, "keep.txt")),
+              f"12 a PS3_GAME with files is never removed ({err})")
+        shutil.rmtree(vl)
+        inner = os.path.join(dump, "PS3_GAME", "Project Pyrrhus")
+        v, err = la.ensure_vfs(inner, dump)
+        check("inside the game's own PS3_GAME" in err and not os.path.exists(os.path.join(inner, "vfs")),
+              f"12 an install inside PS3_GAME is refused, nothing written there ({err})")
+
+        # The second place: %LOCALAPPDATA%\Project Pyrrhus\vfs when the install drive cannot hold the link
+        local = os.path.join(tmp, "local")
+        alt = la.alt_vfs_root({"LOCALAPPDATA": local})
+        check(alt == os.path.join(local, "Project Pyrrhus", "vfs") and la.alt_vfs_root({}) == "", f"12 alt place {alt}")
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        bad_dirs[:] = [os.path.join(root, "vfs")]
+        v, err = la.ensure_vfs(root, dump, alt, fs_of=fs)
+        check(err == "" and v == alt and la._is_dir_link(os.path.join(alt, "PS3_GAME"))
+              and not os.path.lexists(vl), f"12 no link in the install: the game's VFS folder is the alt one ({v}, {err})")
+        log = open(os.path.join(root, "logs", "launcher.log"), encoding="utf-8").read()
+        check("using " + alt in log, "12 the move is in launcher.log")
+        la.create_junction, la.make_symlink = junction, symlink
+        check(la.ensure_vfs(root, dump, alt) == (alt, "") and not os.path.lexists(vl)
+              and la.current_vfs(root, dump, alt) == alt, "12 the alt folder stays in use (caches and trophies stay put)")
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        bad_dirs[:] = [os.path.join(root, "vfs"), alt]
+        shutil.rmtree(os.path.join(local))
+        v, err = la.ensure_vfs(root, dump, alt, fs_of=fs)
+        check(v == os.path.join(root, "vfs") and root in err and alt in err and "NTFS" in err,
+              f"12 neither place: both named ({err})")
+        check(la.probe_link(root, alt, fs_of=fs) and os.listdir(os.path.join(root, "vfs")) == []
+              and os.listdir(alt) == [], "12 the link check fails in both places and leaves nothing")
+        bad_dirs[:] = [os.path.join(root, "vfs")]
+        check(la.probe_link(root, alt, fs_of=fs) == "" and os.listdir(alt) == [], "12 the link check passes on the alt place")
+        shutil.rmtree(local)
+
+        # Path length: the second place is shorter than the default install's own VFS folder
+        # (%LOCALAPPDATA%\Programs\Project Pyrrhus\vfs), so no game path gets longer than a default install's.
+        check(len(la.alt_vfs_root({"LOCALAPPDATA": "C:\\Users\\a-long-user-name\\AppData\\Local"}))
+              < len(la.vfs_root("C:\\Users\\a-long-user-name\\AppData\\Local\\Programs\\Project Pyrrhus")),
+              "12 the alt VFS folder's path is shorter than the default install's")
+        # Where the runtime's writes land: a model of ps3recomp's guest-to-host mapping (runtime/ppu/ppu_fs.cpp host_path
+        # and runtime/syscalls/sys_fs.c, with no PS3_HDD0_ROOT/PS3_HDD1_ROOT/PS3_USRDIR_BASE: mount prefix stripped, any
+        # "USRDIR/" path flattened to <root>/USRDIR in sys_fs) for the writable places the game uses. With either VFS
+        # folder of ours nothing lands in the dump; with the dump itself as the VFS root (read in place) every one does,
+        # which is why that is not offered.
+        def host(vroot, guest):
+            u = guest.find("USRDIR/")
+            if u >= 0:
+                return os.path.join(vroot, guest[u:])
+            for m in ("/dev_bdvd/", "/app_home/", "/dev_hdd0/", "/dev_hdd1/", "/host_root/", "/dev_usb000/", "/dev_usb/"):
+                if guest.startswith(m):
+                    return os.path.join(vroot, guest[len(m):])
+            return os.path.join(vroot, guest.lstrip("/"))
+        writes = ("/dev_hdd1/cache/BCUS98116/fios/cache.dat", "/dev_hdd0/home/00000001/trophy/x", "/dev_usb000/x",
+                  "/dev_hdd0/game/BCUS98116/USRDIR/new.dat", "/host_root/x", "psarc-cache/a")
+        for vroot in (os.path.join(root, "vfs"), alt):
+            check(not any(la._inside(host(vroot, g), os.path.join(dump, "PS3_GAME")) for g in writes),
+                  f"12 writes stay out of the dump's PS3_GAME with VFS root {vroot}")
+        inplace = [g for g in writes if la._inside(host(dump, g), dump)]
+        check(inplace == list(writes), f"12 control: the dump as VFS root takes every write {inplace}")
+
+        # A moved install folder (relocate_saved): the link inside it still points at the dump; the stale record's
+        # "link" path does not matter, and the next start keeps (or remakes) the link, never a refusal
+        la.create_junction, la.make_symlink = junction, symlink
+        la.ensure_vfs(root, dump)
+        moved = os.path.join(dump, "Project Pyrrhus moved")
+        shutil.move(root, moved)
+        v, err = la.ensure_vfs(moved, dump)
+        check(err == "" and la._is_dir_link(os.path.join(moved, "vfs", "PS3_GAME"))
+              and os.path.isfile(os.path.join(moved, "vfs", "PS3_GAME", "PARAM.SFO")), f"12 a moved install keeps its link ({err})")
+        shutil.move(moved, root)
+        os.unlink(vl)
+        os.remove(os.path.join(root, "vfs", "link.json"))
+
+        # The early check: before the build, within seconds; nothing left behind either way
+        la.create_junction, la.make_symlink = junction, symlink
+        check(la.probe_link(root) == "" and os.listdir(os.path.join(root, "vfs")) == [],
+              f"12 the link check passes and leaves nothing {os.listdir(os.path.join(root, 'vfs'))}")
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        bad_dirs[:] = []
+        perr = la.probe_link(root, fs_of=fs)
+        check("NTFS" in perr and "exFAT" in perr and os.listdir(os.path.join(root, "vfs")) == [],
+              f"12 a failed link check names the cause and leaves nothing: {perr}")
+        ui, runs = FakeUI([True]), []
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: runs.append(a) or 0, environ={"PATH": "/bin"})
+        log = open(os.path.join(root, "logs", "launcher.log"), encoding="utf-8").read()
+        check(rc == 1 and not runs and not ui.asked and ui.infos and "NTFS" in ui.infos[-1],
+              f"12 first build: the link check stops before the build is offered {rc} {runs} {ui.asked} {ui.infos}")
+        check("vfs: link check:" in log, "12 the link check is in launcher.log")
+        # A built install on such a drive: the game is not started and the dialog says why
+        c = record(root, dump, update, eboot)
+        stamp(c)
+        ui, runs = FakeUI([]), []
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: runs.append(a) or 0, environ={"PATH": "/bin"})
+        check(rc == 1 and not runs and ui.infos and "NTFS" in ui.infos[-1] and not os.path.lexists(vl),
+              f"12 run: no game start, the NTFS text, no half-made folder {rc} {runs} {ui.infos}")
+        # ... with %LOCALAPPDATA%: the game starts with the alt VFS root
+        bad_dirs[:] = [os.path.join(root, "vfs")]
+        ui, runs = FakeUI([]), []
+        envl = {"PATH": "/bin", "LOCALAPPDATA": local}
+        calls = []
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
+        check(rc == 0 and len(calls) == 1 and calls[0][1]["env"]["PS3_VFS_ROOT"] == alt,
+              f"12 run with the alt VFS root {rc} {ui.infos} {[c[1].get('env', {}).get('PS3_VFS_ROOT') for c in calls]}")
+        check(printed(root, environ=envl)["env"]["PS3_VFS_ROOT"] == alt, "12 --print shows the alt VFS root")
+        # Link-free (Project Helghast's design): a runtime that reads KZ2_CACHE_ROOT gets the dump as its VFS root and
+        # <root>/vfs for every write; no link is made even where links fail, and an old one is dropped (target kept)
+        hdr = os.path.join(root, "port", "kz2", "kz2_cache_root.h")
+        check(not fr.cache_root_supported(root) and not la.link_free(root), "12b no runtime support: the link path")
+        write(hdr, "/* KZ2_CACHE_ROOT */")
+        la.create_junction, la.make_symlink = junction, symlink
+        la.ensure_vfs(root, dump)                          # an old start's link, to be dropped
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        bad_dirs[:] = []
+        stamp(c)
+        check(la.link_free(root), "12b the stamp records the runtime's cache-root support")
+        calls = []
+        ui = FakeUI([])
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
+        e = calls[0][1]["env"] if calls else {}
+        check(rc == 0 and e.get("PS3_VFS_ROOT") == dump and e.get("KZ2_CACHE_ROOT") == os.path.join(root, "vfs")
+              and not os.path.lexists(vl) and os.path.isfile(os.path.join(dump, "PS3_GAME", "PARAM.SFO")),
+              f"12b link-free run: dump read in place, writes under vfs, old link dropped {rc} {ui.infos} "
+              f"{ {k: e.get(k) for k in ('PS3_VFS_ROOT', 'KZ2_CACHE_ROOT')} }")
+        os.remove(os.path.join(root, "build", "build-stamp.json"))
+        ui, runs = FakeUI([False]), []
+        la.main(["--root", root], ui=ui, run=lambda a, **k: runs.append(a) or 0, environ={"PATH": "/bin"})
+        check(ui.asked and not any("NTFS" in t for t in ui.infos), f"12b link-free payload: no link check before the build {ui.infos}")
+        os.remove(hdr)
+        stamp(c)
+        la.create_junction, la.make_symlink = junction, symlink
+        shutil.rmtree(local)
+        ui, runs = FakeUI([]), []
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: runs.append(a) or 0, environ={"PATH": "/bin"})
+        check(rc == 0 and len(runs) == 1 and la._is_dir_link(vl), f"12 the next start on a good drive runs {rc} {ui.infos}")
+    finally:
+        la.create_junction, la.make_symlink = junction, symlink
 
 def main():
     tmp = tempfile.mkdtemp(prefix="kz2-launch-")
@@ -424,9 +662,10 @@ def main():
                 stamp(c)
             return 0
         calls.clear()
-        rc = la.main(["--root", root], ui=FakeUI([True]), run=run_build, environ=env)
+        ui = FakeUI([True])
+        rc = la.main(["--root", root], ui=ui, run=run_build, environ=env)
         check(rc == 0 and len(calls) == 2 and "--bar" in calls[0][0] and calls[1][0][0].endswith("kz2.exe"),
-              f"8 Yes: build then game {[x[0][:3] for x in calls]}")
+              f"8 Yes: build then game {[x[0][:3] for x in calls]} {ui.infos}")
         os.remove(os.path.join(root, "build", "build-stamp.json"))
         calls.clear()
         ui = FakeUI([True])
@@ -609,6 +848,7 @@ def main():
         la.main(["--root", root], ui=ui, run=lambda a, **k: 1, environ=env)
         check(ui.infos and "error: x" not in ui.infos[-1] and "(code 1)" in ui.infos[-1],
               f"11 control: an older status file is not shown {ui.infos}")
+        link_tests(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("test_launch:", "FAIL" if FAILS else "PASS")

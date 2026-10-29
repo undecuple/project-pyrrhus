@@ -1,9 +1,12 @@
 # Known issues
 
 What is wrong or unfinished today, stated plainly. It is checked against [FEATURES.md](FEATURES.md) and the README's
-[status table](../README.md#status); where those change, this page changes with them. Last checked 2026-10-27.
-Everything below was observed on Windows x64 builds run under Proton on Linux. On real Windows only the installer and
-the first-run build have been tried (in a virtual machine without a GPU); the game has not been played there.
+[status table](../README.md#status); where those change, this page changes with them. Last checked 2026-10-29.
+Unless an entry says otherwise, everything below was observed by us on Windows x64 builds run under Proton on Linux;
+numbers come from scripted runs unless an entry says hand play. On native Windows our own tests covered the installer
+and the first-run build (in a virtual machine without a GPU). Players have since installed and played the game on
+native Windows 11 (issue #13: a laptop with an RTX 4070 Laptop GPU and Intel Arc integrated graphics); those are their
+reports, not our measurements.
 
 If you hit something that is not listed, please open an issue with the bug report template (it asks for your system
 and the newest log file).
@@ -14,14 +17,15 @@ and the newest log file).
   has not been played from start to finish, and the other missions have not been tried. Checkpoint saves are written
   in the first level; loading a checkpoint back is not checked yet, nor is loading a save copied over from RPCS3 (those
   are copied unchanged, with no promise that they load).
-- **Pre-release, playing on Windows untested.** The installer and portable zip are published as pre-releases on the
+- **Pre-release; native Windows play so far from player reports only.** The installer and portable zip are published as pre-releases on the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). On 2026-10-28 the installer ran in a Windows
   virtual machine with no GPU: the silent install, the check of every installed file, the game-file checks (including
   a OneDrive folder, wrong and swapped inputs, a drive root, a disc ISO and the disc's own EBOOT), the first-run build
   (18.6 minutes with 2 jobs), start-up and uninstall all worked. The game started there and stopped when it tried to
-  open its graphics device, because that machine has no GPU. Playing on Windows is still untested. See
+  open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players
+  (issue #13), not tested by us. See
   [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
-- **Not yet in the port:** the settings and controls menus, a keyboard-and-mouse scheme, skirmish with bots, online play,
+- **Not yet in the port:** the settings and controls menus, mouse look, skirmish with bots, online play,
   trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop"
   entry and a Keyboard page that saves key choices to `keybinds.ini`; both were checked in scripted runs only.
 
@@ -61,8 +65,10 @@ and the newest log file).
   screen is white, please report it with your compositor and GPU.
 - **Mouse cursor:** the cursor used to stay visible over the game. Patch 2098 hides it while the window has focus; this
   was checked on a virtual display only, not on a Wayland compositor. If it is still visible in game, please report it.
-- **Compared with RPCS3:** the first level matches RPCS3's frames in the checks made so far, but only one level has
-  been compared. Other levels may show missing or wrong effects.
+- **Green sky in the first level:** the sky over Corinth River draws green instead of hazy grey and yellow. It shows in
+  our own scripted runs and in a player report (an RTX 5070 Ti); the cause is not yet known.
+- **Compared with RPCS3:** apart from the sky above, the first level matched RPCS3's frames in the checks made so far,
+  but only one level has been compared. Other levels may show missing or wrong effects.
 - **Seen in hand-play recordings (2026-10-22):** with PlayStation 4 or 5 symbols, the START and SELECT labels (OPTIONS, TOUCHPAD,
   CREATE) were drawn as white boxes; fixed since (the wrong font face was picked), checked in scripted runs; "LOADING..." can be drawn twice, one line over the other
   (seen after Mission Select or Continue, not yet reproduced); the load into the first level shows a black, frozen
@@ -104,7 +110,7 @@ and the newest log file).
 - **Motion sections:** the real motion sensor reaches the game (the loading screen tilts). The campaign's valve and
   charge sections have not been done by hand yet. As a stand-in, holding L1 and R1 and moving the right stick turns the
   valve; that it completes the valve is not proven.
-- **Keyboard and mouse:** there is no keyboard-and-mouse play yet.
+- **Keyboard and mouse:** the game can be played with a keyboard (the default key layout; a player did so in issue #13), but there is no mouse look yet, so a gamepad is recommended.
 
 ## Game data and version
 

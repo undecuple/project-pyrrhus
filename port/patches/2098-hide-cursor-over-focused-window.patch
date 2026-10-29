@@ -8,7 +8,7 @@ movement); WM_KILLFOCUS puts the arrow back. RSX_CURSOR=1 keeps the arrow. The d
 rsx_cursor.h (host test tools/runtime/test_cursor.sh). No ClipCursor and no raw input: mouse look is not wired
 (keyboard and mouse is backlog). KZ2_TEST_DISPLAY gets two steps for tests: `mouse` (pointer to the client
 centre) and `cursor` (logs GetCursor(): HIDDEN or SHOWN, focus, pointer over the client area). Under Xwayland (a Wine session on a Wayland desktop) whether a hidden Wine cursor reaches the
-Wayland pointer is not verified (an earlier change checked it under Xvfb only).
+Wayland pointer is not verified (the patch's own test checked it under Xvfb only).
 --- /dev/null
 +++ b/libs/video/rsx_cursor.h
 @@ -0,0 +1,15 @@

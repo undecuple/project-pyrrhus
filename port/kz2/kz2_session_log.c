@@ -101,7 +101,7 @@ static void kz2_log_prune(void)
     }
 }
 
-/* Release an earlier change (issue #16): the user's folders, replaced in every log line (kz2_log_redact.h). Filled once from
+/* Issue #16 (logs attached to public issues): the user's folders, replaced in every log line (kz2_log_redact.h). Filled once from
  * the environment, in both spellings the prints can use (the ANSI code page: the runtime's %s paths; UTF-8). */
 static kz2_redactor s_redact;
 static volatile LONG s_redact_init;
@@ -229,7 +229,7 @@ static DWORD WINAPI kz2_log_filter_chain(LPVOID unused)
     return 0;
 }
 
-/* An earlier change's buffered stdio is upstream since ps3recomp v0.18.0 (#524, the general form of KZ2's patch 6029):
+/* The port's buffered stdio (the fix for a log written one character per write()) is upstream since ps3recomp v0.18.0 (#524, the general form of KZ2's patch 6029):
  * ppu_run calls ps3_stdio_init(), which gives stdout and stderr a 64 KB buffer each, flushes them every
  * PS3_STDIO_FLUSH_MS (50 ms) and on exit, abort and crash. Its flusher only calls fflush, which takes each stream's
  * lock, so a line being formatted by another thread is never split (MinGW's vfprintf holds the lock for the whole

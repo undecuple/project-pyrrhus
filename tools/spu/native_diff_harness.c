@@ -643,6 +643,82 @@ static void synth_ea13100(spu_context* c, uint64_t seed)
     setreg(c, 8, rnd() & 1);
 }
 
+/* Anim.EdgeAnim 0x12438 (slot 76): the keyframe sampler. Per element a spec (as 0x13100's: fixed point,
+ * small floats, wide mantissas, zero widths; or the game's e = 0, m = 14-15 rotations) in a stream at 0x30000 + any
+ * byte; four bitmask bit addresses 4 r20 apart a group (stride 1-128 bits, the game's 99) into random bytes or sparse
+ * key masks; frame masks r4-r7 (the first F frames, or random words) and r8-r11 (the frames before r12, or random),
+ * per lane or splatted; three streams of random keys (0x8000, 0x28000, 0x2C000 + any byte); r13 a fraction in
+ * [0.5, 1), 0, 1 or any bits; rotations or not; the index table as 0x13100's; outputs at 0x24000 + 0/16/32 (+ 48 idx). */
+static uint32_t pfx_word(uint32_t nbits, int j)   /* word j of a 128-bit mask of the first nbits bits (bit 31 of word 0 first) */
+{
+    const int lo = 32 * j;
+    if ((int)nbits <= lo) return 0;
+    if ((int)nbits >= lo + 32) return 0xFFFFFFFFu;
+    return ~(0xFFFFFFFFu >> (nbits - lo));
+}
+static void synth_ea12438(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    const uint32_t n = 1 + rnd() % 40, iters = (n + 3) / 4;
+    const int game = rnd() % 3 == 0;
+    const uint32_t sa = 0x30000 + rnd() % 64;
+    for (uint32_t i = 0; i < 4 * iters; i++) {
+        uint32_t spec = rnd() & 3;
+        for (int k = 0; k < 3; k++) {
+            uint32_t s = rnd() & 1, e, m;
+            if (game) { s = 1; e = 0; m = 14 + rnd() % 2; }
+            else switch (rnd() % 4) {
+                case 0: e = 0; m = rnd() % 32; break;
+                case 1: e = 1 + rnd() % 15; m = rnd() % 24; break;
+                case 2: e = rnd() % 16; m = rnd() % 32; break;
+                default: e = 0; m = 8 + rnd() % 8; break;
+            }
+            spec |= (s << 9 | e << 5 | m) << (22 - 10 * k);
+        }
+        be32w(c->ls + sa + 4 * i, spec);
+    }
+    const uint32_t ta = 0x31100 + (rnd() % 4 ? 8 * (rnd() % 8) : 2 * (rnd() % 32));
+    /* small indices around the table too: a table at an offset that is not a multiple of 8 reads its neighbours
+     * (quadword-wrapped), and a wild index would store into the job image, which the interpreter then executes */
+    for (uint32_t a = 0x31100; a < 0x31100 + 2 * 4 * iters + 128; a += 2) { c->ls[a] = 0; c->ls[a + 1] = rnd() % 64; }
+    for (uint32_t i = 0; i < 4 * iters; i++) {
+        const uint32_t idx = (rnd() % 8 == 0) ? 0 : rnd() % 64;
+        c->ls[ta + 2 * i] = (uint8_t)(idx >> 8);
+        c->ls[ta + 2 * i + 1] = (uint8_t)idx;
+    }
+    const uint32_t stride = rnd() % 4 ? 99 : 1 + rnd() % 128;
+    const uint32_t mb = 0x20000 + rnd() % 64;
+    if (rnd() % 2)   /* sparse key masks (a few keys per element) instead of random bytes */
+        for (uint32_t a = mb; a < mb + (4 * iters * stride + 7) / 8 + 64 && a < 0x24000; a++)
+            c->ls[a] = rnd() % 6 == 0 ? (uint8_t)(1u << (rnd() % 8)) : 0;
+    const int lanes = rnd() % 4 == 0;   /* per-lane masks and frame indices (the game splats them) */
+    const uint32_t F = 1 + rnd() % 128;
+    for (int k = 0; k < 4; k++) {
+        const uint32_t Fk = lanes ? 1 + rnd() % 128 : F, fr = rnd() % (Fk + 1);
+        const int rnd4 = rnd() % 8 == 0, rnd8 = rnd() % 8 == 0;
+        for (int j = 0; j < 4; j++) {
+            c->gpr[4 + j]._u32[k] = rnd4 ? rnd() : pfx_word(Fk, j);
+            c->gpr[8 + j]._u32[k] = rnd8 ? rnd() : pfx_word(fr, j);
+        }
+        c->gpr[12]._u32[k] = rnd() % 16 == 0 ? rnd() : fr;
+        c->gpr[3]._u32[k] = 8 * mb + (rnd() % 8) + (uint32_t)k * stride;
+        c->gpr[13]._u32[k] = rnd() % 8 == 0 ? rnd() : 0x3F000000u | (rnd() & 0x7FFFFFu);
+    }
+    if (!lanes)
+        for (int r = 4; r <= 13; r++)
+            if (r != 3 && (r != 12 || rnd() % 2)) c->gpr[r] = spu_splat_u32(c->gpr[r]._u32[0]);
+    if (rnd() % 4 == 0) c->gpr[13] = spu_splat_u32(rnd() % 2 ? 0x3F800000u : 0);
+    setreg(c, 14, 0x8000 + rnd() % 4096);
+    setreg(c, 15, 0x28000 + rnd() % 256);
+    setreg(c, 16, 0x2C000 + rnd() % 256);
+    setreg(c, 17, n);
+    setreg(c, 18, 0x24000 + 16 * (rnd() % 3));
+    setreg(c, 19, ta);
+    c->gpr[20]._u32[0] = stride;
+    setreg(c, 21, sa);
+    c->gpr[22]._u32[0] = rnd() % 3 ? 1 : (rnd() & 0xE);
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -655,7 +731,7 @@ static const struct {
     {"vignette", synth_vignette},     {"depthfuzzy", synth_depthfuzzy}, {"down4", synth_down4},
     {"down8", synth_down8},           {"dofpass", synth_dofpass},
     {"zero", synth_zero},             {"ilr", synth_ilr},
-    {"ea_13100", synth_ea13100},
+    {"ea_13100", synth_ea13100},      {"ea_12438", synth_ea12438},
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */

@@ -110,7 +110,7 @@ Until then every release is a pre-release. There is no date for it.
 ## Requirements
 
 Your own Killzone 2 disc (US, BCUS98116) dumped as a folder, the 1.29 update, and the decrypted EBOOT from your own
-copy; a Direct3D 12 GPU. Hardware figures come once the game runs. Details: [docs/requirements.md](docs/requirements.md);
+copy; a Direct3D 12 GPU. The hardware figures are estimates, provisional until the game runs at full speed. Details: [docs/requirements.md](docs/requirements.md);
 what each folder must hold and what the first-run check prints: [docs/GETTING-FILES.md](docs/GETTING-FILES.md).
 
 ## Building

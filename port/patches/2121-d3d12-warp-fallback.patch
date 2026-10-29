@@ -10,10 +10,10 @@ KZ2 change for KZ3's VM finding (the WARP adapter "Microsoft Basic Render Driver
 DXGI_ADAPTER_FLAG_SOFTWARE missing): rsx_adapter_is_software() also knows it by vendor 0x1414 / device 0x008C. The
 backend's high-performance adapter loop skips it (so it is never taken as the hardware adapter), and the log line
 says software=1 for it.
-KZ2 an earlier change (public issue #13): the live renderer got the iGPU on a hybrid laptop (D3D12CreateDevice(NULL) = the default
+Public issue #13: the live renderer got the iGPU on a hybrid laptop (D3D12CreateDevice(NULL) = the default
 adapter). rsx_d3d12_create_device now enumerates with IDXGIFactory6::EnumAdapterByGpuPreference(HIGH_PERFORMANCE), skips
 software adapters, tries each (HRESULT logged), then the default adapter, then WARP; adapters and the chosen LUID are
-logged; rsx_pick_device is the pure order logic (host test). KZ3 makes the same fix (its an earlier change), credit mutual.
+logged; rsx_pick_device is the pure order logic (host test). KZ3 makes the same fix, credit mutual.
 rsx_d3d12_backend.c and rsx_live_draw.c create their device through it. The hardware path is unchanged: a GPU
 adapter is picked by the same loop and the same D3D12CreateDevice(NULL) as before. Host test
 tools/runtime/test_d3d12_warp.sh. KZ2 test value RSX_D3D12_WARP=fail: no device at all, for the no-device exit of

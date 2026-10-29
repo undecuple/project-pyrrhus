@@ -21,7 +21,7 @@ Fix:
 
 Verification: tools/runtime/test_adec_ac3.sh (host; stub sizes 36864/12288/8192 without FFmpeg and with
 PS3RECOMP_FFMPEG=0; with host libavcodec 63 every AU of a 5.1 stream equals FFmpeg's own decode sample for sample,
-and swapped channels or a dropped AU are caught); Killzone 2 under Proton (the RE notes "An earlier change").
+and swapped channels or a dropped AU are caught); Killzone 2 under Proton (the RE notes, 2026-10-22: real AC3 frames).
 Upstream candidate (general: AC3 movie audio, and the real frame size for any title that sizes PCM from bsiInfo).
 Written for this port; FFmpeg is not copied, only called (LGPL-2.1-or-later, separate DLLs).
 

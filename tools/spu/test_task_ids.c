@@ -1,4 +1,4 @@
-/* KZ2 SPU lane an earlier change: host test for patch 7004 (the task id a dispatched SPURS task runs as).
+/* KZ2 host test for patch 7004 (the task id a dispatched SPURS task runs as).
  * The task-exit scan (spu_taskset_start_pending -> spu_taskset_task_exited) starts every enabled, ready, not running
  * task of a taskset. Before 7004 it handed each one its taskset and task id through the globals
  * g_ydkj_real_taskset_ea / g_ydkj_real_taskid, which cellSpursCreateTask also writes outside the scan's lock on

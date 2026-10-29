@@ -1,4 +1,4 @@
-/* KZ2 SPU lane an earlier change: does an SPU PUTLLC fail when the PPU writes the reserved 128-byte line between the SPU's
+/* KZ2 host test: does an SPU PUTLLC fail when the PPU writes the reserved 128-byte line between the SPU's
  * GETLLAR and its PUTLLC? (tokisaki-port's level-start stall: a pending count that an SPU task decrements with
  * GETLLAR/PUTLLC on a line the PPU also writes with plain stores.) On Cell any store to the line by another unit
  * loses the reservation, so the PUTLLC fails even when the store leaves the bytes as they were.

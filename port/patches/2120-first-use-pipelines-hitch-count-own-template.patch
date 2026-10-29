@@ -1,6 +1,6 @@
 KZ2 patch 2120: count first-use hitches and keep every session's pipeline template.
 
-Runtime an earlier change (first-use shader stutter). Hand play stalls 0.2-0.9 s in the first minute of each area: every new
+First-use shader stutter. Hand play stalls 0.2-0.9 s in the first minute of each area: every new
 pipeline is built while the walker waits (patch 2058 awaits each asynchronous build, max-in-flight 1, ~70 ms per
 pipeline; 170 builds in the first minute of Corinth River in the maintainer's 2026-10-22 log). Patch 2071's template prewarm
 removes them on a first play, but KZ2 shipped no template and had no way to grow one from real sessions.

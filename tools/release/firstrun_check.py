@@ -590,7 +590,7 @@ def check_eboot_elf(r, elf, target="1.29", update=None):
     if ver == target:
         r.ok("E1", f"decrypted EBOOT is the {ver} one ({size:,} bytes)")
     elif ver == "1.01":
-        # a FAIL since an earlier change (as Project Helghast PR #11 did for its issue #8): as a WARN it passed the
+        # a FAIL since v0.1.2 (as Project Helghast PR #11 did for its issue #8): as a WARN it passed the
         # console's check and the build then stopped at firstrun's version test, so a restart reused the same EBOOT
         r.fail("E1", f"this EBOOT is the disc's 1.01 one ({size:,} bytes); this release needs the EBOOT of the "
                      f"{target} update: EBOOT.elf, the decrypted form of EBOOT.BIN in the update's USRDIR folder "

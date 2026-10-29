@@ -1,6 +1,6 @@
 KZ2 patch 6032 (diagnostic, LD_UPCHK=1): live-draw checks against upstream ps3recomp PRs #501, #502, #504 and #508.
 
-Runtime an earlier change asked which of four upstream fixes for the shared Vulkan/Metal engine also apply to the D3D12 live
+The question: which of four upstream fixes for the shared Vulkan/Metal engine also apply to the D3D12 live
 draw. With LD_UPCHK=1 the bind loop counts every depth-format texture bind (DEPTH24_D8/_FLOAT, DEPTH16/_FLOAT) by
 format, CONTROL1 crossbar and serving path (zeta snapshot, zeta window of patch 2063, CPU decode, colour surface);
 counts depth snapshots and zeta windows created and retired, the texture cache size and all textures retired (#502:

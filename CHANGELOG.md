@@ -4,6 +4,16 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Fixed
+- The game should now start when the install folder is on a drive where Windows refuses the folder link the launcher makes to your game files (the game reads them through that link and never writes into them). The launcher then makes the link, and keeps the game's caches, in `%LOCALAPPDATA%\Project Pyrrhus\vfs` on the Windows drive instead, and stays with that folder. A failed link no longer leaves an empty `vfs\PS3_GAME` folder behind that made every later start refuse with "is a real folder"; such a folder left by an earlier version is removed (a folder with anything in it is never touched). The launcher tries the link before the first-run build, so a problem shows within seconds instead of after the build; when no link is possible anywhere, the message says folder links need a file system that supports them, such as NTFS, and for Windows' "corrupted and unreadable" answer it names both possible causes (a drive that does not support folder links, or a damaged file system). The first-run log and that message name the file system of each drive involved. Reading the game folder directly without a link is not offered, because the game would then write its caches into your game files. Tested with host tests only; not yet confirmed on Windows. Fixes #20 (also reported on Reddit).
+- A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads no longer use a Wine/Proton wait primitive that can corrupt its own wait list under load. No crash in 9 scripted runs since; not yet confirmed on native Windows.
+- SPU interrupts that arrive back to back now resume the interrupted job with its own registers.
+
+### Added
+- Estimated hardware requirements to play and to build (README and `docs/requirements.md`): estimates, provisional until the game runs at full speed; hand play is not measured.
+
 ## [0.1.4] - 2026-10-29 (pre-release)
 
 ### Fixed

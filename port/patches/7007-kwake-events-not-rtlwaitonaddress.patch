@@ -1,0 +1,108 @@
+KZ2 patch 7007 (root cause of an earlier change's p5-old crash): the SPURS kernel threads' idle wake (KZ3 patch
+1074's kz3_kwake, runtime/spu/spurs_kern_sched.h) no longer sleeps in an SRW lock + condition variable on Windows.
+
+The crash (kz2-spu19-post-p5-old, main menu, 1 run in 20): an access violation on a SPURS kernel thread inside
+ntdll's RtlWakeAddressAll (+0xCA, `mov %rcx,(%rax)`: prev->next = next while unlinking a waiter whose prev pointer was
+0x000893AF63070478, a QueryPerformanceCounter time in ns from that very minute: a value of our own stack, not a list
+pointer), called by RtlReleaseSRWLockExclusive inside SleepConditionVariableSRW(kwake cv, kwake lock, 1 ms). Frames
+matched against GE-Proton11-7's ntdll/kernelbase/kernel32 exports (RtlUserThreadStart+0x17, BaseThreadInitThunk,
+SleepConditionVariableSRW+0x31, RtlSleepConditionVariableSRW+0x5D, RtlWakeAddressAll+0xCA). The bucket list of
+ntdll's futex queue (futex_queues[(addr >> 4) & 255]) held stack memory that had been reused.
+
+Why: in this ntdll, RtlWaitOnAddress, after NtWaitForAlertByThreadId returns (here: the 1 ms timeout), skips the queue
+lock when its entry's address field already reads 0 (cmpq $0,-0x10(%rbp); jmp past the lock), while a waker
+(RtlWakeAddressAll / RtlWakeAddressSingle) sets that field to 0 first and only then unlinks the entry, re-reading the
+entry's next pointer after the store (and its tid after that). A waiter that times out in that window returns and
+reuses its stack (the next frames write saved registers, wait-accounting times) while the waker still reads the dead
+entry: garbage is linked into the bucket and the next wake or wait on any address of that bucket faults. The window
+is a few instructions unless the waker is preempted there, which a loaded machine (KZ3 and KZ2 runs together, load
+13-30) does now and then. The idle SPUs are the heaviest user: 6 kernel threads, each timing out ~1000 times a second
+while every policy-module exit, ReadyCount import and instance-line commit wakes them all.
+
+Fix: each sleeping thread waits on its own auto-reset event (WaitForSingleObject with the same timeout: fsync, ntsync
+or the server, no ntdll futex queue). kz3_kwake_wait publishes "sleeping" for its slot, re-reads the generation and
+waits; kz3_kwake_signal bumps the generation, then sets the event of every slot that sleeps (both sequentially
+consistent: a wake between the caller's evaluation and the wait is still never lost). A thread takes a slot on its
+first wait (16 per kwake; a kernel thread serves one instance); none left: it polls with Sleep(ms). An event left set
+after a timeout ends that thread's next wait at once: one extra pass of the kernel loop. Same API, the Linux branch
+(pthread) is unchanged. Not changed here: the runtime's other SRW / condition-variable waits (fewer, and mostly
+without a timeout; listed in the RE notes "An earlier change").
+
+--- a/runtime/spu/spurs_kern_sched.h
++++ b/runtime/spu/spurs_kern_sched.h
+@@ -26,6 +26,7 @@
+ #ifndef SPURS_KERN_SCHED_H
+ #define SPURS_KERN_SCHED_H
+ #include <stdint.h>
++#include <string.h>
+ 
+ #define KZ3_KSEL_NONE      0x20u   /* no workload: the SPU idles (SPURS_SYS_SERVICE_WID in the firmware) */
+ #define KZ3_POLL_READY     1u      /* poll status: readyCount > contention */
+@@ -112,22 +113,58 @@
+  * so a wake between the evaluation and the wait is never lost. */
+ #ifdef _WIN32
+ #include <windows.h>
+-typedef struct { SRWLOCK lk; CONDITION_VARIABLE cv; volatile LONG gen; } kz3_kwake;
+-static inline void kz3_kwake_init(kz3_kwake* w) { InitializeSRWLock(&w->lk); InitializeConditionVariable(&w->cv); w->gen = 0; }
++/* KZ2 patch 7007: no SRW lock or condition variable here. Under Wine (GE-Proton 11) both wait through ntdll's
++ * RtlWaitOnAddress, whose waiter, once its wait has ended (the 1 ms timeout), leaves without the queue lock when it
++ * sees its entry's address already cleared, while the waker (RtlWakeAddressAll / RtlWakeAddressSingle) clears that
++ * address before it unlinks the entry and reads the entry's next pointer again after the clear. When the waiter's
++ * stack is reused in that window the waker links garbage into the futex bucket, and a later wake or wait on any
++ * address of that bucket faults: the menu crash seen in play (read of -1 = a non-canonical pointer, in RtlWakeAddressAll
++ * under SleepConditionVariableSRW, on a SPURS kernel thread). The idle SPUs time out ~1000 times a second each while
++ * the signals come every module exit, which is where the two meet most. Here each sleeping thread waits on its own
++ * auto-reset event (WaitForSingleObject, fsync/ntsync or the server; no ntdll futex queue): the waiter publishes
++ * that it sleeps, then re-reads the generation; the signal bumps the generation, then sets the event of every
++ * thread that sleeps (both sequentially consistent, so a wake between the evaluation and the wait is never lost, as
++ * before). A set event left over after a timeout ends that thread's next wait at once (one spurious pass). Each
++ * thread takes a slot of the kwake on its first wait (a kernel thread serves one instance); with all 16 slots
++ * taken, a thread polls (Sleep(ms)). */
++#define KZ3_KWAKE_SLOTS 16
++typedef struct {
++    volatile LONG gen, nslot;
++    volatile LONG sleeping[KZ3_KWAKE_SLOTS];
++    HANDLE ev[KZ3_KWAKE_SLOTS];
++} kz3_kwake;
++static inline void kz3_kwake_init(kz3_kwake* w) { memset((void*)w, 0, sizeof *w); }
+ static inline uint32_t kz3_kwake_gen(kz3_kwake* w) { return (uint32_t)__atomic_load_n(&w->gen, __ATOMIC_ACQUIRE); }
+ static inline void kz3_kwake_signal(kz3_kwake* w)
+ {
+-    AcquireSRWLockExclusive(&w->lk); __atomic_add_fetch(&w->gen, 1, __ATOMIC_ACQ_REL); ReleaseSRWLockExclusive(&w->lk);
+-    WakeAllConditionVariable(&w->cv);
++    __atomic_add_fetch(&w->gen, 1, __ATOMIC_SEQ_CST);
++    LONG n = __atomic_load_n(&w->nslot, __ATOMIC_ACQUIRE);
++    if (n > KZ3_KWAKE_SLOTS) n = KZ3_KWAKE_SLOTS;
++    for (LONG s = 0; s < n; s++)
++        if (__atomic_load_n(&w->sleeping[s], __ATOMIC_SEQ_CST)) SetEvent(w->ev[s]);   /* ev[s] is set before sleeping[s] */
++}
++/* This thread's slot in w (-1: none left). A thread keeps up to 4 (kwake, slot) pairs. */
++static inline int kz3_kwake_slot(kz3_kwake* w)
++{
++    static __thread kz3_kwake* t_w[4];
++    static __thread int t_s[4];
++    for (int i = 0; i < 4; i++) if (t_w[i] == w) return t_s[i];
++    const LONG s = InterlockedIncrement(&w->nslot) - 1;
++    if (s >= KZ3_KWAKE_SLOTS) return -1;
++    w->ev[s] = CreateEventW(NULL, FALSE, FALSE, NULL);   /* auto-reset */
++    if (!w->ev[s]) return -1;
++    for (int i = 0; i < 4; i++) if (!t_w[i]) { t_w[i] = w; t_s[i] = (int)s; break; }
++    return (int)s;
+ }
+ /* Returns 1 when woken (gen moved), 0 on the timeout. */
+ static inline int kz3_kwake_wait(kz3_kwake* w, uint32_t seen, unsigned ms)
+ {
+-    int woke = 1;
+-    AcquireSRWLockExclusive(&w->lk);
+-    if ((uint32_t)w->gen == seen) { SleepConditionVariableSRW(&w->cv, &w->lk, ms, 0); woke = (uint32_t)w->gen != seen; }
+-    ReleaseSRWLockExclusive(&w->lk);
+-    return woke;
++    const int s = kz3_kwake_slot(w);
++    if (s < 0) { if (kz3_kwake_gen(w) == seen) Sleep(ms); return kz3_kwake_gen(w) != seen; }
++    __atomic_store_n(&w->sleeping[s], 1, __ATOMIC_SEQ_CST);
++    if ((uint32_t)__atomic_load_n(&w->gen, __ATOMIC_SEQ_CST) == seen) WaitForSingleObject(w->ev[s], ms);
++    __atomic_store_n(&w->sleeping[s], 0, __ATOMIC_RELEASE);
++    return kz3_kwake_gen(w) != seen;
+ }
+ #else
+ #include <pthread.h>

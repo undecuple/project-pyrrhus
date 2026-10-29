@@ -162,8 +162,9 @@ def req_tables(root, problems):
         split = lambda l: [c.strip() for c in l.strip().strip("|").split("|")]  # noqa: E731
         head = split(lines[0])
         try:
-            idx = [head.index(c) for c in cols]
-        except ValueError:
+            # a header may carry a qualifier, e.g. "Minimum (estimate)"
+            idx = [next(i for i, h in enumerate(head) if h == c or (c and h.startswith(c + " ("))) for c in cols]
+        except StopIteration:
             problems.append(f"{REQ}: table in '{section}' lacks one of the columns {cols}")
             continue
         rows = [[split(l)[i] for i in idx] for l in lines[2:] if len(split(l)) == len(head)]
@@ -495,7 +496,7 @@ def render(root, problems):
             w("<tr>" + "".join(f"<td>{inline(c, 'docs/')}</td>" for c in rw) + "</tr>\n")
         w("</tbody></table></div>\n")
     w(f"<p class=\"small\">Details: <a href=\"{REPO}/blob/main/docs/requirements.md\">requirements.md</a>. Hardware "
-      "figures come once the game runs at full speed; none are claimed before that.</p>\n</section>\n"
+      "figures are estimates, provisional until the game runs at full speed; hand play is not measured.</p>\n</section>\n"
       "<section id=\"channels\" class=\"promo\">\n<h2>Official channels</h2>\n<ul class=\"links\">\n"
       f"<li><a href=\"{REPO}\">Source on GitHub</a></li><li><a href=\"{REPO}/releases\">Releases</a></li>"
       f"<li><a href=\"{REPO}/issues\">Report a problem</a></li><li><a href=\"{HELGHAST}\">Project Helghast</a> "

@@ -8,7 +8,7 @@ Stock Windows 10/11 ship XInput1_4.dll and XInput9_1_0.dll. pad_xinput_load() (a
 the pads) tries XInput1_4.dll, XInput1_3.dll, XInput9_1_0.dll from System32 only, resolves XInputGetState and
 XInputSetState (the only two calls; 9_1_0 exports both), logs "[pad] XInput from <dll>" or "[pad] no XInput DLL ...",
 and without one every slot reads as unplugged (keyboard on port 0 still works). Guard: tools/net/test_pe_imports.py
-(KZ3 an earlier change, the RE notes s.27). Upstream candidate (general ps3recomp fix).
+(from KZ3, the RE notes s.27). Upstream candidate (general ps3recomp fix).
 
 Rebased on ps3recomp v0.18.0 (partly upstream): #494 (ours) drops xinput from CMake; 4019's cellPad.c half stays (KZ2's own cellPad backend from 4010)
 

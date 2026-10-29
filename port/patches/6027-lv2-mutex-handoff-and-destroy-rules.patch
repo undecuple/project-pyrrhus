@@ -1,6 +1,6 @@
 KZ2 patch 6027: lv2 mutex semantics (guest-thread ownership, hand-off at unlock and cond signal, lv2 destroy rules).
 
-After R&C patch 7007 (rc-an earlier change; Ratchet & Clank PC port, same owner, MIT), ported onto KZ2's tree with
+After R&C patch 7007 (Ratchet & Clank PC port, same owner, MIT), ported onto KZ2's tree with
 patch 6025's diagnostics kept. Behaviour as RPCS3's lv2_mutex / lv2_cond (read, not copied).
 The mutex was a host CRITICAL_SECTION (pthread mutex) per slot, owned by a HOST thread, beside bookkeeping
 (owner_tid, lock_count) keyed by the GUEST thread id; sys_cond_wait re-locked it itself after the wake and destroy
