@@ -6,7 +6,16 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$ROOT"
 PT="${KZ2_OUT:-work}/ps3recomp-patched"
-python3 - "$PT/libs/video/cellGcmSys.c" port/kz2/main.cpp <<'PY'
+# python3, else python, else py -3: on Windows python3 is often the Microsoft Store alias (issue #9)
+PY=()
+for c in "python3" "python" "py -3"; do
+  read -r -a cand <<<"$c"
+  if "${cand[@]}" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' >/dev/null 2>&1; then
+    PY=("${cand[@]}"); break
+  fi
+done
+(( ${#PY[@]} )) || { echo "FAIL: no Python 3.6 or newer (tried python3, python, py -3)"; exit 1; }
+"${PY[@]}" - "$PT/libs/video/cellGcmSys.c" port/kz2/main.cpp <<'PY'
 import re, sys
 g, m = open(sys.argv[1]).read(), open(sys.argv[2]).read()
 def fn(src, sig):

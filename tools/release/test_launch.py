@@ -344,9 +344,9 @@ def main():
               and calls[0][1]["cwd"] == root and calls[0][1]["env"]["PS3_VFS_ROOT"] == os.path.join(root, "vfs")
               and calls[0][1]["env"]["PATH"] == "/bin", f"8 run game {calls[:1]}")
         vl = os.path.join(root, "vfs", "PS3_GAME")
-        check(os.path.islink(vl) and os.path.realpath(vl) == os.path.realpath(os.path.join(dump, "PS3_GAME"))
+        check(la._is_dir_link(vl) and os.path.realpath(vl) == os.path.realpath(os.path.join(dump, "PS3_GAME"))
               and os.path.isfile(os.path.join(vl, "PARAM.SFO")), "8 vfs/PS3_GAME links to the dump's PS3_GAME")
-        check(la.ensure_vfs(root, dump) == (os.path.join(root, "vfs"), "") and os.path.islink(vl),
+        check(la.ensure_vfs(root, dump) == (os.path.join(root, "vfs"), "") and la._is_dir_link(vl),
               "8 vfs link kept on the next start")
         dump2 = os.path.join(tmp, "dump2")
         write(os.path.join(dump2, "PS3_GAME", "PARAM.SFO"), "two")

@@ -80,6 +80,17 @@ def run(args):
     return rc, buf.getvalue()
 
 
+def case_sensitive(d):
+    """False on a case-insensitive file system (Windows, macOS by default): there MAIN.cpp and main.cpp are one file,
+    so a clash cannot be made on disk."""
+    p = os.path.join(d, "case-probe")
+    open(p, "w").close()
+    try:
+        return not os.path.exists(os.path.join(d, "CASE-PROBE"))
+    finally:
+        os.remove(p)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="kz2-zip-")
     try:
@@ -125,8 +136,11 @@ def main():
 
         refused("changed file", lambda r: put(r, "port/kz2/main.cpp", "int main(){return 1;}\n"), "SHA-256 differs")
         refused("unlisted file", lambda r: put(r, "port/kz2/extra.c", "x\n"), "not in manifest.json")
-        refused("paths differing only by case", lambda r: put(r, "port/kz2/MAIN.cpp", "x\n"),
-                "two paths differ only by case", remanifest=True)
+        if case_sensitive(tmp):
+            refused("paths differing only by case", lambda r: put(r, "port/kz2/MAIN.cpp", "x\n"),
+                    "two paths differ only by case", remanifest=True)
+        else:   # MAIN.cpp would overwrite main.cpp, so nothing clashes and the zip gets written
+            print("SKIP paths differing only by case: this file system ignores case, so the clash cannot be made")
         refused("listed file missing", lambda r: os.remove(os.path.join(r, "port", "kz2", "main.cpp")),
                 "missing on disk")
         refused("no run.cmd", lambda r: os.remove(os.path.join(r, "run.cmd")), "run.cmd: missing", remanifest=True)

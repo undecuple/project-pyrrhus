@@ -34,8 +34,9 @@ def main():
     os.makedirs(scratch, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch) as td:
         pt = os.path.join(td, "pt")
-        env = dict(os.environ, KZ2_PATCHED_DIR=os.path.relpath(pt, ROOT))   # relative: git apply --directory
-        subprocess.run([os.path.join(ROOT, "tools", "ps3recomp-patched.sh")], cwd=ROOT, env=env, check=True,
+        # relative (git apply --directory), with "/": bash reads a Windows "\" as an escape
+        env = dict(os.environ, KZ2_PATCHED_DIR=os.path.relpath(pt, ROOT).replace(os.sep, "/"))
+        subprocess.run(["bash", os.path.join(ROOT, "tools", "ps3recomp-patched.sh")], cwd=ROOT, env=env, check=True,
                        stdout=subprocess.DEVNULL)
         assert os.path.exists(os.path.join(pt, "include", "ps3emu", "env_once.h")), "env_once.h missing"
         bad = []

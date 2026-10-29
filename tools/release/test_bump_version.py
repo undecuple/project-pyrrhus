@@ -64,7 +64,7 @@ def make_copies(base):
     (pubr / "docs").mkdir(parents=True)
     shutil.copy2(REAL / "docs/requirements.md", pubr / "docs/requirements.md")
     shutil.copytree(REAL / "public", pubr, dirs_exist_ok=True, ignore=IGNORE)
-    (pubr / "docs/FEATURES.md").write_text("# Features\n")   # the export generates it from docs/features.tsv
+    (pubr / "docs/FEATURES.md").write_text("# Features\n", newline="\n")   # the export generates it from docs/features.tsv
     copy_release_tools(pubr)
     return {"public/": priv, "root (export)": pubr}
 
@@ -83,7 +83,7 @@ def seed_unreleased(root):
     else:
         at_first = re.search(r"^## \[", t0, re.M).start()
         t0 = t0[:at_first] + "## [Unreleased]\n\n### Added\n\n- A test item.\n\n" + t0[at_first:]
-    cl.write_text(t0, encoding="utf-8")
+    cl.write_text(t0, encoding="utf-8", newline="\n")
 
 
 def snapshot(root):
@@ -113,7 +113,7 @@ def layout_round(name, root):
     rc, out, _ = run(root, cur, "--date", "2030-01-02")
     check(rc == 0 and snapshot(root) == base, f"{name}: the current version {cur} changes nothing", out)
     rc, out, _ = run(root, new, "--check", "--date", "2030-01-02")
-    check(rc == 0 and snapshot(root) == base and "would change installer/VERSION" in out,
+    check(rc == 0 and snapshot(root) == base and "would change installer/VERSION" in out.replace(os.sep, "/"),
           f"{name}: --check lists the changes and writes nothing", out)
     for v, why in (("0.0.1", "downgrade"), ("1.2", "two numbers"), ("v" + new, "a leading v"), ("01.2.3", "a leading 0"),
                    (new + "-rc1", "a suffix"), ("x", "words")):
@@ -193,15 +193,15 @@ def units():
     with tempfile.TemporaryDirectory() as t:
         root = pathlib.Path(t)
         (root / "installer").mkdir()
-        (root / "installer/VERSION").write_text("0.1.0\n")
-        (root / "installer/kz2.iss").write_text("#define AppVersion PayloadVersion\n")
+        (root / "installer/VERSION").write_text("0.1.0\n", newline="\n")
+        (root / "installer/kz2.iss").write_text("#define AppVersion PayloadVersion\n", newline="\n")
         (root / "port/kz2").mkdir(parents=True)
-        (root / "port/kz2/CMakeLists.txt").write_text("project(kz2\n    VERSION 0.1.0\n    LANGUAGES C CXX\n)\n")
+        (root / "port/kz2/CMakeLists.txt").write_text("project(kz2\n    VERSION 0.1.0\n    LANGUAGES C CXX\n)\n", newline="\n")
         (root / "public").mkdir()
-        (root / "public/README.md").write_text("Pre-release <!-- version -->v0.1.0<!-- /version --> and 0.1.0 outside.\n")
-        (root / "public/CITATION.cff").write_text('cff-version: 1.2.0\ntitle: "X"\ntype: software\n')
-        (root / "public/CHANGELOG.md").write_text("# Changelog\n\n## [0.1.0] - 2026-10-28 (pre-release)\n")
-        ch = {os.path.relpath(p, root): s for p, s in bump_version.edits(root, "0.1.1", "2030-01-02").items()}
+        (root / "public/README.md").write_text("Pre-release <!-- version -->v0.1.0<!-- /version --> and 0.1.0 outside.\n", newline="\n")
+        (root / "public/CITATION.cff").write_text('cff-version: 1.2.0\ntitle: "X"\ntype: software\n', newline="\n")
+        (root / "public/CHANGELOG.md").write_text("# Changelog\n\n## [0.1.0] - 2026-10-28 (pre-release)\n", newline="\n")
+        ch = {p.relative_to(root).as_posix(): s for p, s in bump_version.edits(root, "0.1.1", "2030-01-02").items()}
         check("    VERSION 0.1.1\n" in ch.get("port/kz2/CMakeLists.txt", ""), "a CMake project VERSION moves")
         check("installer/kz2.iss" not in ch, "kz2.iss reading the payload's version is left alone")
         check(ch.get("public/README.md", "").endswith("<!-- version -->v0.1.1<!-- /version --> and 0.1.0 outside.\n"),
@@ -223,7 +223,7 @@ def chain_round(name, root):
     def unreleased_item():
         t0 = cl.read_text(encoding="utf-8")
         at_first = re.search(r"^## \[", t0, re.M).start()
-        cl.write_text(t0[:at_first] + "## [Unreleased]\n\n### Added\n\n- A test item.\n\n" + t0[at_first:], encoding="utf-8")
+        cl.write_text(t0[:at_first] + "## [Unreleased]\n\n### Added\n\n- A test item.\n\n" + t0[at_first:], encoding="utf-8", newline="\n")
 
     unreleased_item()
     rc, out, err = run(root, new, "--date", "2030-02-03", "--notes", str(notes))
@@ -232,14 +232,14 @@ def chain_round(name, root):
     check(notes.is_file() and new in notes.read_text(encoding="utf-8"), f"{name}: --notes keeps the draft for {new}")
     newer = next_patch(new)
     unreleased_item()
-    card.write_text(good.replace('"BCUS98116"', '"BCUS00000"'), encoding="utf-8")
+    card.write_text(good.replace('"BCUS98116"', '"BCUS00000"'), encoding="utf-8", newline="\n")
     rc, out, err = run(root, newer, "--date", "2030-02-04")
     check(rc == 1 and "C6" in err and "release_notes: draft" in out, f"{name}: a card that disagrees fails the bump (after the notes)",
           out[-200:] + err[-300:])
-    card.write_text(good, encoding="utf-8")
+    card.write_text(good, encoding="utf-8", newline="\n")
     text = cl.read_text(encoding="utf-8")
     m = re.search(rf"^## \[{re.escape(newer)}\].*?(?=^## \[)", text, re.M | re.S)
-    cl.write_text(text.replace(m.group(0), m.group(0).split("\n", 1)[0] + "\n\n### Added\n\n"), encoding="utf-8")
+    cl.write_text(text.replace(m.group(0), m.group(0).split("\n", 1)[0] + "\n\n### Added\n\n"), encoding="utf-8", newline="\n")
     rc, out, err = run(root, newer, "--date", "2030-02-04")
     check(rc == 1 and "draft release notes refused" in err, f"{name}: an entry with no items fails at the notes step", err[-300:])
 

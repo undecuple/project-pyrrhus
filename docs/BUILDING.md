@@ -211,3 +211,8 @@ nix develop .#re --command python3 tools/release/test_installer_art.py
 
 `tools/host-tests.txt` lists the host tests (the installer's checks, packaging, the asset tools). They need no game
 data and no GPU. Each line is a command to run inside the Nix shell shown on that line.
+
+On Windows without Nix, the Python tests run with Python 3.12 (`python tools/release/test_....py`), and the shell
+tests in `tools/` with Git Bash. The exception is the shell tests in `tools/spu/` and `tools/runtime/` that compile C
+test programs against the runtime with the Nix shell's Linux compilers: they are Linux tests, run by CI, and are not
+expected to pass on Windows.

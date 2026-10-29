@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 
@@ -67,9 +68,20 @@ def fake_install(tmp):
     os.symlink(HERE, os.path.join(inst, "kz2-setup", "release"))
     py = vt.py_of(inst)
     os.makedirs(os.path.dirname(py))
-    with open(py, "w") as f:
-        f.write(f"#!/bin/sh\nexec '{sys.executable}' -I \"$@\"\n")
-    os.chmod(py, 0o755)
+    if os.name == "nt":
+        # Windows cannot run a #!/bin/sh stand-in. CPython's own venv launcher runs this Python (home in the pyvenv.cfg
+        # beside it); round30 sets PYTHONSAFEPATH=1 for what -I gives below: the script's folder is not on sys.path.
+        home = os.path.dirname(sys._base_executable)
+        launcher = os.path.join(home, "Lib", "venv", "scripts", "nt", "python.exe")
+        if not os.path.isfile(launcher):
+            return None
+        shutil.copy2(launcher, py)
+        with open(os.path.join(os.path.dirname(py), "pyvenv.cfg"), "w") as f:
+            f.write(f"home = {home}\ninclude-system-site-packages = false\n")
+    else:
+        with open(py, "w") as f:
+            f.write(f"#!/bin/sh\nexec '{sys.executable}' -I \"$@\"\n")
+        os.chmod(py, 0o755)
     with open(os.path.join(inst, "kz2-install.ini"), "w") as f:
         f.write("[install]\nportable = 0\n\n[controls]\nlayout = original\n")
     return inst
@@ -106,15 +118,21 @@ def round30(tmp):
         write(os.path.join(base, "kit", n), open(os.path.join(HERE, n), "rb").read())
     synthetic_game(base)
     inst = fake_install(tmp)
+    if inst is None:
+        print("SKIP steps 11-21 and 23 on a fake install: this Windows Python has no venv launcher "
+              "(Lib/venv/scripts/nt/python.exe) to stand in for the bundled python.exe")
+        return
     os.makedirs(os.path.join(base, "out"), exist_ok=True)
     with open(os.path.join(base, "out", "state.json"), "w") as f:
         vt.json.dump({"inst": inst}, f)
     ini0 = open(os.path.join(inst, "kz2-install.ini")).read()
     real = (vt.reg_install_dir, vt.drive_roots, vt.run)
     vt.reg_install_dir = lambda: ""
-    env0 = {k: os.environ.get(k) for k in vt.ONEDRIVE_VARS}
+    env0 = {k: os.environ.get(k) for k in (*vt.ONEDRIVE_VARS, "PYTHONSAFEPATH")}
     for k in vt.ONEDRIVE_VARS:
         os.environ.pop(k, None)
+    if os.name == "nt":
+        os.environ["PYTHONSAFEPATH"] = "1"   # the venv launcher stand-in's -I (fake_install)
     try:
         for name in ("13-bundled-python", "15-empty-folder", "17-swapped", "18-disc-id", "19-iso", "20-eboot-101",
                      "21-ask-again", "23-uninstall-cover"):
@@ -179,6 +197,8 @@ def round30(tmp):
         for k, v in env0.items():
             if v is not None:
                 os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
     # 22's dialog pick: the failure dialog, not the first question (which also says "did not finish")
     q = "The last build did not finish.\n\nContinue the build now? Finished steps are skipped."
     f = "The build did not finish (code 1):\n\n- Disc dump failed: X"
@@ -233,6 +253,8 @@ def main():
         st["dump_fp"] = vt.fingerprint(vt.game_paths(base)[0])
         st.pop("inst", None)
         vt.json.dump(st, open(os.path.join(out, "state.json"), "w"))
+        real_reg = vt.reg_install_dir
+        vt.reg_install_dir = lambda: ""   # never the uninstall key of a Project Pyrrhus installed on the test machine
         rc, text = step(base, "10-leftovers")
         check(rc == 0 and "only user data left" in text, "10-leftovers passes with saves and .ini only", text)
         write(os.path.join(data, "scratch", "rsx_shader_cache_v3", "a.bin"))
@@ -243,6 +265,7 @@ def main():
         write(os.path.join(vt.game_paths(base)[0], "PS3_GAME", "NEW.TXT"))
         rc, text = step(base, "10-leftovers")
         check(rc == 1 and "the dump changed" in text, "10-leftovers notices a changed dump", text)
+        vt.reg_install_dir = real_reg
 
         # 08-readonly: icacls denies only "create files" on the install folder itself (no (OI)/(CI) inheritance, no
         # write or delete rights), the launch still runs, and the deny is removed even when the launch raises

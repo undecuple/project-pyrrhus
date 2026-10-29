@@ -192,6 +192,17 @@ def listing(d):
     return out
 
 
+def case_sensitive(d):
+    """False on a case-insensitive file system (Windows, macOS by default): there MAIN.cpp and main.cpp are one file,
+    so a clash cannot be made on disk."""
+    p = os.path.join(d, "case-probe")
+    open(p, "w").close()
+    try:
+        return not os.path.exists(os.path.join(d, "CASE-PROBE"))
+    finally:
+        os.remove(p)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="kz2-payload-")
     try:
@@ -265,11 +276,14 @@ def main():
         check(rc == 0 and man2 == man, "same sources give the same manifest (--replace)", txt)
 
         # two destinations equal under case-folding (VM test: llvm-mingw-LICENSE.TXT / .txt): refused, nothing written
-        put(repo, "port/kz2/MAIN.cpp", "// clash\n")
-        rc, txt = run(["--repo", repo, "--out", os.path.join(tmp, "cs")])
-        check(rc == 1 and "port/kz2/MAIN.cpp  =  port/kz2/main.cpp" in txt and "only by case" in txt
-              and not os.path.exists(os.path.join(tmp, "cs")), "paths differing only by case are refused", txt)
-        os.remove(os.path.join(repo, "port", "kz2", "MAIN.cpp"))
+        if case_sensitive(tmp):
+            put(repo, "port/kz2/MAIN.cpp", "// clash\n")
+            rc, txt = run(["--repo", repo, "--out", os.path.join(tmp, "cs")])
+            check(rc == 1 and "port/kz2/MAIN.cpp  =  port/kz2/main.cpp" in txt and "only by case" in txt
+                  and not os.path.exists(os.path.join(tmp, "cs")), "paths differing only by case are refused", txt)
+            os.remove(os.path.join(repo, "port", "kz2", "MAIN.cpp"))
+        else:   # MAIN.cpp would overwrite main.cpp, and removing it would then remove main.cpp for every later case
+            print("SKIP paths differing only by case: this file system ignores case, so the clash cannot be made")
         check(ap.case_clashes(["a/B/c.txt", "a/b/d.txt"]) == ["a/B  =  a/b"]
               and ap.case_clashes(["x/Y.txt", "x/z.txt"]) == [], "folders differing only by case are found too")
         rc, txt = run(["--repo", repo, "--out", os.path.join(tmp, "v"), "--version", "1.0; rm"])

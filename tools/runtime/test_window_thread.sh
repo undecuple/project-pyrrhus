@@ -10,7 +10,16 @@ for d in ${KZ2_PATCHED_DIR:+"$KZ2_PATCHED_DIR"} ${KZ2_OUT:+"$KZ2_OUT/ps3recomp-p
   [[ -f "$d/libs/video/rsx_null_backend.c" ]] && grep -q "patch 2124" "$d/libs/video/rsx_null_backend.c" && { P="$d"; break; }
 done
 [[ -n "$P" ]] || { echo "SKIP test_window_thread: no patched toolkit with patch 2124 here (run tools/ps3recomp-patched.sh)"; exit 0; }
-python3 - "$P/libs/video/rsx_null_backend.c" "$P/libs/video/rsx_live_draw.c" port/kz2/main.cpp <<'PY'
+# python3, else python, else py -3: on Windows python3 is often the Microsoft Store alias (issue #9)
+PY=()
+for c in "python3" "python" "py -3"; do
+  read -r -a cand <<<"$c"
+  if "${cand[@]}" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' >/dev/null 2>&1; then
+    PY=("${cand[@]}"); break
+  fi
+done
+(( ${#PY[@]} )) || { echo "FAIL: no Python 3.6 or newer (tried python3, python, py -3)"; exit 1; }
+"${PY[@]}" - "$P/libs/video/rsx_null_backend.c" "$P/libs/video/rsx_live_draw.c" port/kz2/main.cpp <<'PY'
 import re, sys
 nb, ld, mc = (open(p).read() for p in sys.argv[1:4])
 fails = []

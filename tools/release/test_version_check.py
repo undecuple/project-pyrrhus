@@ -16,6 +16,7 @@ import http.server
 import io
 import json
 import os
+import pathlib
 import shutil
 import socket
 import sys
@@ -139,7 +140,7 @@ def main():
         saved = os.path.join(tmp, "latest.json")
         with open(saved, "w", encoding="utf-8") as f:
             json.dump(rel, f)
-        rc, out = run(["--current", "0.3.0", "--url", "file://" + saved.replace(os.sep, "/")])
+        rc, out = run(["--current", "0.3.0", "--url", pathlib.Path(saved).as_uri()])
         check(rc == 0 and "status=current" in out, "file:// saved answer, older release = current", out)
 
         rc, out = run(["--current", "0.1.0-dev", "--url", base + "/latest"])

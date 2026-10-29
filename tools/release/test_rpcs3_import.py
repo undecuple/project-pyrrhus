@@ -96,14 +96,16 @@ def main():
     for p in patches:
         p.start()
     try:
-        # --- detect: a hint, and the known place under the (fake) home
+        # --- detect: a hint, and the known place under the (fake) home. Linux's known places on any host, so the
+        # machine's own %APPDATA%/%LOCALAPPDATA% RPCS3 is never seen and ~/.config/rpcs3 is looked at on Windows too.
         root, disc = tree(tmp)
-        c = ri.detect(str(root))
-        check(c and c[0]["root"] == str(root) and c[0]["source"] == "hint", f"detect hint {c[:1]}")
-        check(ri.detect(str(Path(tmp) / "nowhere")) == [], "detect: a bad hint gives nothing")
-        homerpcs, _ = tree(tmp, name="home/.config/rpcs3")
-        c = ri.detect()
-        check(c and c[0]["source"] == "linux-config" and c[0]["root"] == str(homerpcs), f"detect known place {c[:1]}")
+        with mock.patch.object(L, "_is_windows", return_value=False):
+            c = ri.detect(str(root))
+            check(c and c[0]["root"] == str(root) and c[0]["source"] == "hint", f"detect hint {c[:1]}")
+            check(ri.detect(str(Path(tmp) / "nowhere")) == [], "detect: a bad hint gives nothing")
+            homerpcs, _ = tree(tmp, name="home/.config/rpcs3")
+            c = ri.detect()
+            check(c and c[0]["source"] == "linux-config" and c[0]["root"] == str(homerpcs), f"detect known place {c[:1]}")
 
         # --- Windows: a portable RPCS3 in Documents/Desktop/Downloads or at a drive root (Windows faked on any host)
         win = Path(tmp) / "win"

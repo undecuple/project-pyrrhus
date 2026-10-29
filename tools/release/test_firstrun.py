@@ -285,7 +285,7 @@ def main():
         sp = fr.cmd_spu_lift(c)
         spj = " ".join(sp[0]).replace(os.sep, "/")
         check(len(sp) == 1 and "release/spu_step.py" in spj
-              and f"--eboot {c.eboot}" in spj and c.env()["KZ2_EBOOT_VER"] == "129", "11c spu_step on the EBOOT, version 129")
+              and f"--eboot {c.eboot}".replace(os.sep, "/") in spj and c.env()["KZ2_EBOOT_VER"] == "129", "11c spu_step on the EBOOT, version 129")
         order = [s.name for s in fr.STEPS]
         check(order.index("ppu-lift") < order.index("spu-lift") < order.index("configure"),
               "11c spu-lift runs between the PPU lift and configure")

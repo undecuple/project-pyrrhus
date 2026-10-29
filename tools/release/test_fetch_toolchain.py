@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import os
+import pathlib
 import shutil
 import stat
 import sys
@@ -64,7 +65,7 @@ def sha(path):
 
 
 def url(p):
-    return "file://" + os.path.abspath(p)
+    return pathlib.Path(os.path.abspath(p)).as_uri()   # file:///C:/... on Windows, file:///tmp/... elsewhere
 
 
 def fetch(args, schemes=SCHEMES):
@@ -333,17 +334,18 @@ def test_firstrun(tmp, payload_dir):
                ninja=found["ninja"])
     cfg = fr.cmd_configure(c)[0]
     check(cfg[0] == found["cmake"], "configure runs the bundled cmake")
-    check(f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(root, 'cmake', 'llvm-mingw.cmake')}" in cfg,
+    # configure hands CMake its paths with "/" (firstrun.cm_path), so the expected paths go through it too
+    check(f"-DCMAKE_TOOLCHAIN_FILE={fr.cm_path(os.path.join(root, 'cmake', 'llvm-mingw.cmake'))}" in cfg,
           "configure uses cmake/llvm-mingw.cmake when the tree has no port/cmake", cfg)
     tap.put(root, "port/cmake/llvm-mingw.cmake", "#")
     for t in ("ppu_overrides.txt", "ppu_overrides-101.txt"):   # the lift needs its table (firstrun.overrides_file)
         tap.put(root, "port/kz2/" + t, "x")
     cfg = fr.cmd_configure(c)[0]
-    check(f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(root, 'port', 'cmake', 'llvm-mingw.cmake')}" in cfg,
+    check(f"-DCMAKE_TOOLCHAIN_FILE={fr.cm_path(os.path.join(root, 'port', 'cmake', 'llvm-mingw.cmake'))}" in cfg,
           "configure uses port/cmake/llvm-mingw.cmake (KZ2's tree and payload)", cfg)
     os.remove(os.path.join(root, "port", "cmake", "llvm-mingw.cmake"))
-    check(f"-DLLVM_MINGW_ROOT={found['llvm_mingw']}" in cfg, "configure passes LLVM_MINGW_ROOT")
-    check(f"-DCMAKE_MAKE_PROGRAM={found['ninja']}" in cfg, "configure passes the bundled ninja")
+    check(f"-DLLVM_MINGW_ROOT={fr.cm_path(found['llvm_mingw'])}" in cfg, "configure passes LLVM_MINGW_ROOT")
+    check(f"-DCMAKE_MAKE_PROGRAM={fr.cm_path(found['ninja'])}" in cfg, "configure passes the bundled ninja")
     check("-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" in cfg and "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" in cfg,
           "Release at -O2 like the verified build")
     check(fr.cmd_compile(c)[0][0] == found["cmake"], "compile runs the bundled cmake")

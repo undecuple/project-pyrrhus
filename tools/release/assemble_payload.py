@@ -71,7 +71,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import release_version  # noqa: E402  (installer/VERSION: the one version)
-TOOLKIT = os.path.join("work", "ps3recomp-patched")
+TOOLKIT = "work/ps3recomp-patched"   # repo-relative, "/" like the other sources here (and in its messages on Windows)
 
 # (source relative to the repo, destination in the payload, kind, options)
 #   kind "file": one file; "tree": a folder, walked without following symlinks
