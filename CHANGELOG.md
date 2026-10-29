@@ -4,7 +4,12 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [0.1.3] - 2026-10-29 (pre-release)
+## [0.1.4] - 2026-10-29 (pre-release)
+
+### Fixed
+- The release build now carries FFmpeg's headers into the installer and the portable zip, which the first run needs since 0.1.3; 0.1.3's own release build stopped there, so 0.1.3 was tagged but not released, and this version holds everything listed under it.
+
+## [0.1.3] - 2026-10-29 (tagged, not released)
 
 ### Added
 - Three optional gameplay settings, all off or original by default, kept in a new `gameplay.ini` next to `keybinds.ini` (or `KZ2_AIM_ASSIST`, `KZ2_CROUCH_TOGGLE`, `KZ2_COVER_TOGGLE` for one run): `crouch_toggle = 1` makes crouch a toggle (tap to crouch, tap to stand; the game has this option itself but only turns it on online), `cover_toggle = 1` makes take-cover a toggle (tap to take cover, tap again, sprint or jump to leave), and `aim_assist = off` switches the game's aim assist off (`auto`, the default, leaves it on for a pad and the keyboard). Hold to crouch and hold to take cover stay the default. Checked in scripted runs on the first level only.

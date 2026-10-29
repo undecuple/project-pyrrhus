@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.3<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.4<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -139,8 +139,16 @@
 </article>
 <div id="news">
 <article class="news rel">
-<h2>v0.1.3</h2>
+<h2>v0.1.4</h2>
 <p class="meta">29 Oct 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Fixed</span>The release build now carries FFmpeg&#x27;s headers into the installer and the portable zip, which the first run needs since 0.1.3; 0.1.3&#x27;s own release build stopped there, so 0.1.3 was tagged but not released, and this version holds everything listed under it.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
+<h2>v0.1.3</h2>
+<p class="meta">29 Oct 2026 · tagged, not released</p>
 <ul class="rlist">
 <li><span class="sec">Changed</span>A new install starts in a borderless window: the installer, the first-run prompt, the launcher and the game itself all default to it when no display setting exists yet; Alt+Enter switches to a window and back. An existing <code>display.ini</code> keeps its mode, and exclusive fullscreen stays opt-in.</li>
 <li><span class="sec">Changed</span>A frame waiting on a graphics job from the game&#x27;s SPU code is resumed as soon as the job writes its result, instead of after a fixed 4 ms sleep. In two scripted pairs under Proton the wait between the game&#x27;s frame request and the renderer&#x27;s drain fell by 4 to 5 ms (median), and the whole time from a button press to the frame being handed to Windows fell by 2 ms in one pair and 12 ms in the other, to about 60 ms; the screen&#x27;s own delay comes on top and was not measured. Hand play is not measured.</li>
@@ -153,7 +161,6 @@
 <li><span class="sec">Fixed</span>The first-run log no longer keeps the Windows user name when a path is written in its escaped form, with doubled backslashes (an error message, or a list or JSON of paths). Reported by @feanor-noldorin (#9).</li>
 <li><span class="sec">Fixed</span><code>bump_version.py</code> keeps each file&#x27;s line endings instead of writing Windows line endings when run on Windows. Reported by @feanor-noldorin (#9).</li>
 </ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
 <article class="news rel">
 <h2>v0.1.2</h2>
@@ -182,21 +189,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.2">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.1</h2>
-<p class="meta">28 Oct 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Added</span>A disc dump copied to a FAT32 drive, where the game archive is split into parts (data_ps3.psarc.66600, .66601, and so on), is accepted as it is by the setup, the first-run check and the game. A missing part is named.</li>
-<li><span class="sec">Added</span>The first run checks the disc&#x27;s game archive against the known copy (check A1) and says when it differs.</li>
-<li><span class="sec">Added</span>The launcher log starts each run with a version line, so a shared log says which version made it.</li>
-<li><span class="sec">Added</span>A new page, docs/GETTING-FILES.md, shows what the disc dump, the 1.29 update and the EBOOT must contain and what every first-run check means.</li>
-<li><span class="sec">Changed</span>The game folders are given once: when the build is started later or a check fails, the first start checks the folders from the setup instead of asking for them again.</li>
-<li><span class="sec">Changed</span>When an upgrade changes the tables the game&#x27;s code is translated with, the first start translates and builds the game again instead of reusing the old build.</li>
-<li><span class="sec">Changed</span>The help for using an RPCS3 install points to RPCS3&#x27;s own documentation.</li>
-<li><span class="sec">Fixed</span>Installed files carry the right time on PCs in time zones west of UTC (the Americas), so the first build does not loop on files dated in the future (&quot;build.ninja still dirty after 100 tries&quot;). The first run stops with a plain message if it finds such files.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.1">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -210,6 +202,7 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-10-29">10-29</time><span><b>0.1.4</b> The release build now carries FFmpeg&#x27;s headers into the installer and the portable zip, which the first run needs...</span></li>
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> A new install starts in a borderless window: the installer, the first-run prompt, the launcher and the game itself all...</span></li>
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> A frame waiting on a graphics job from the game&#x27;s SPU code is resumed as soon as the job writes its result, instead of...</span></li>
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The release notes on GitHub list each change as its own bullet, with the fixes in a list of their own, instead of one...</span></li>
@@ -217,7 +210,6 @@
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The intro movie and the cutscenes were black and silent in every v0.1.2 install: the first run built the game without...</span></li>
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The setup and the first run refuse an install or build folder whose path contains [, ] or ;, with a message, instead...</span></li>
 <li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> On a laptop with two graphics chips (for example an Intel iGPU and an NVIDIA or AMD GPU) the game could draw on the...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> Switching to exclusive fullscreen no longer leaves the picture frozen if the next present fails: the swap chain is...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -250,9 +242,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3">v0.1.3</a><!-- /version --> <span>pre-release</span></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">v0.1.4</a><!-- /version --> <span>pre-release</span></p>
 <p class="small">29 Oct 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3">Download v0.1.3</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">Download v0.1.4</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>

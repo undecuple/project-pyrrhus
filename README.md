@@ -92,7 +92,7 @@ Online multiplayer, if it comes, will only use a self-hosted server you choose.
 
 ## Getting it
 
-**Pre-release <!-- version -->[v0.1.3](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3)<!-- /version -->:** a Windows installer (recommended) and
+**Pre-release <!-- version -->[v0.1.4](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4)<!-- /version -->:** a Windows installer (recommended) and
 a portable zip, on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) with a `.sha256` file for each and `SHA256SUMS`. They check your
 own disc dump (a folder or a decrypted ISO file), the 1.29 update and the decrypted EBOOT ([what each must
 contain](docs/GETTING-FILES.md)), then

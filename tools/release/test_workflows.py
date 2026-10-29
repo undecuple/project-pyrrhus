@@ -107,6 +107,7 @@ def test_release():
     check('tags: ["v[0-9]+.[0-9]+.[0-9]+"]' in on and "workflow_dispatch:" in on and "branches" not in on
           and "pull_request" not in on, "release.yml: runs on a vX.Y.Z tag or a dispatch only", on)
     check(re.search(r"^permissions:\n  contents: read", t, re.M) is not None, "release.yml: read-only by default")
+    check("work/ffmpeg-win/include" in t, "release.yml: the FFmpeg headers reach the installer job (the first run builds against them)")
     js = jobs(t)
     writers = [j for j, b in js.items() if "contents: write" in b]
     check(writers == ["publish"], "release.yml: only the publish job can write", writers)

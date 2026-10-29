@@ -77,6 +77,18 @@ def first_release(version, es):
                    for v, e in es.items())
 
 
+def carried(version, es):
+    """Items of the versions just below `version` that were tagged but never released ("(tagged, not released)"), newest
+    first, up to the last published one: their changes reach players only with this release, so its notes list them."""
+    key = lambda v: tuple(int(x) for x in v.split("."))
+    out = []
+    for v in sorted((v for v in es if release_version.valid(v) and key(v) < key(version)), key=key, reverse=True):
+        if es[v]["note"] != "tagged, not released":
+            break
+        out += es[v]["items"]
+    return out
+
+
 def notes(version, entry, first=False):
     blob = f"{REPO}/blob/v{version}"
     new = [sentence(t, blob) for s, t in entry["items"] if s in NEW_SECTIONS or not s]
@@ -136,7 +148,7 @@ def main(argv=None):
     if not e["items"]:
         print(f"release_notes: the CHANGELOG entry for {version} lists nothing", file=sys.stderr)
         return 1
-    body = notes(version, e, first_release(version, es))
+    body = notes(version, dict(e, items=e["items"] + carried(version, es)), first_release(version, es))
     if a.out:
         out = pathlib.Path(a.out)
         out.parent.mkdir(parents=True, exist_ok=True)

@@ -60,7 +60,7 @@ jobs:
           nix build --impure -o work/ffmpeg-win --expr \
             "import ./tools/runtime/ffmpeg-lgpl-win.nix { pkgs = import (builtins.getFlake \"path:$PWD\").inputs.nixpkgs { system = \"x86_64-linux\"; }; }"
           mkdir -p nix-parts/ffmpeg-win
-          cp -rL work/ffmpeg-win/bin work/ffmpeg-win/share nix-parts/ffmpeg-win/
+          cp -rL work/ffmpeg-win/bin work/ffmpeg-win/share work/ffmpeg-win/include nix-parts/ffmpeg-win/   # include: the first run builds against the headers
       - name: SDL3 (the .#win shell's SDL3.dll and licence, as the local build stages it)
         run: |
           nix develop .#win --command python3 tools/release/stage_sdl3.py --out nix-parts/sdl3
@@ -164,7 +164,7 @@ jobs:
           # stage_sdl3.py checks the DLL (PE x64) and the zlib licence text again on this side
           python3 tools/release/stage_sdl3.py --dll "$RUNNER_TEMP/nix-parts/sdl3/SDL3.dll" \
             --license "$RUNNER_TEMP/nix-parts/sdl3/LICENSE.txt"
-          ls -l work/ffmpeg-win/bin work/release/sdl3
+          ls -l work/ffmpeg-win/bin work/ffmpeg-win/include work/release/sdl3
 
       - name: Assemble the payload
         env:

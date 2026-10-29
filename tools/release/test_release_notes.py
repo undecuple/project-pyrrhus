@@ -88,6 +88,19 @@ def main():
             check(rc == 0 and len(fp) == 4 and "earlier version" not in out and "Fixed:" not in out
                   and fp[1] == "New in 0.1.1:\n- A new thing.\n- A fixed thing.",
                   f"{layout}: the first published release has no install-over line and no Fixed label", (rc, err, fp))
+            # A version tagged but never released hands its items to the next release's notes.
+            carry = root / "carry"
+            carry.mkdir()
+            (carry / "CHANGELOG.md").write_text("# Changelog\n\n## [0.1.4] - 2030-01-03 (pre-release)\n\n### Fixed\n"
+                                                "- The build fix.\n\n## [0.1.3] - 2030-01-02 (tagged, not released)\n\n"
+                                                "### Added\n- A carried thing.\n\n### Fixed\n- A carried fix.\n\n"
+                                                "## [0.1.2] - 2030-01-01 (pre-release)\n\n### Added\n- An old thing.\n",
+                                                encoding="utf-8")
+            rc, out, err = run("--tag", "v0.1.4", "--root", str(carry))
+            check(rc == 0 and "- A carried thing." in out and "- A carried fix." in out and "An old thing" not in out
+                  and out.index("- The build fix.") < out.index("- A carried fix."),
+                  f"{layout}: an unreleased tagged version's items carry into the next release, the released one's do not",
+                  (rc, err, out))
             rc, out, err = run("--tag", "v0.2.0", "--root", t)
             paras = out.strip().split("\n\n")
             check(rc == 0 and len(paras) == 6, f"{layout}: v0.2.0 gives six paragraphs", (rc, err, paras))

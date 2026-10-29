@@ -6,7 +6,7 @@ downloaded.
 
 There are two ways to get a build:
 
-- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.3](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3)<!-- /version -->.**
+- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.4](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4)<!-- /version -->.**
   It checks your disc dump and the 1.29 update, then lifts and compiles the game's code on your machine with a bundled
   compiler, behind one progress bar, with a full log. Download it from the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). The scripts and the installer definition are in this repository (`installer/`,
