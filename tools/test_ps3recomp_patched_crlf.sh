@@ -5,6 +5,9 @@
 # layout under a temporary folder: no game data, no network.
 #   nix develop --command tools/sandbox.sh -- tools/test_ps3recomp_patched_crlf.sh
 set -euo pipefail
+# The script under test writes to ${KZ2_OUT:-work}; the checks look in the throw-away repo's work/, so the caller's output
+# folder must not leak in (isolation).
+unset KZ2_OUT KZ2_PATCHED_DIR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf -- "$T"' EXIT
 fails=0

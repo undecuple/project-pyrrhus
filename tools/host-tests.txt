@@ -54,3 +54,12 @@ nix develop --command tools/sandbox.sh -- tools/runtime/test_input_latency.sh
 nix develop --command tools/sandbox.sh -- tools/runtime/test_walker_park_wake.sh
 nix develop --command tools/sandbox.sh -- tools/test_ps3recomp_patched_crlf.sh
 nix develop --command tools/sandbox.sh -- tools/test_ps3recomp_patched_python.sh
+nix develop --command tools/sandbox.sh -- tools/runtime/test_edge_zlib.sh
+nix develop .#re --command tools/sandbox.sh -- tools/spu/test_native_dof.sh
+nix develop .#re --command tools/sandbox.sh -- tools/spu/test_native_post.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_native_flags.sh
+nix develop .#win --command python3 tools/release/test_ffmpeg_cmake.py
+nix develop .#win --command python3 tools/release/test_cmake_path_chars.py
+nix develop --command tools/sandbox.sh -- tools/release/test_log_redact.sh
+nix develop .#re --command tools/sandbox.sh -- tools/spu/test_native_edgeanim.sh
+nix develop --command python3 tools/release/test_relocate.py

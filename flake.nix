@@ -96,7 +96,9 @@
           nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.shaderc pkgs.bubblewrap pkgs.python3 pkgs.ccache ];  # ccache: local and remote builds (tools/remote image, D9)
           # SDL3 (the pad standard): only its SDL3.dll is shipped next to the exe, loaded at run time by
           # patch 4010 (XInput fallback without it); the build needs no SDL headers. SDL2 build input dropped.
-          buildInputs = [ win.sdl3 ];
+          # zlib: the Edge zlib job's host decoder (KZ2_NATIVE_ZLIB, port/kz2/kz2_edge_zlib.c); CMake's
+          # FindZLIB with ZLIB_USE_STATIC_LIBS links its libz.a into the exe (no zlib DLL shipped).
+          buildInputs = [ win.sdl3 win.zlib ];
           shellHook = fixLdflags;
         };
       };

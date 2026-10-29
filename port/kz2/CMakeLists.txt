@@ -88,10 +88,17 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 #     by the toolkit's PS3RECOMP_FFMPEG_RUNTIME path for movie pictures
 #     (cellVdec H.264) and sound (cellAdec AC3, patch 6023). Building needs
 #     only FFmpeg's headers: KZ2_FFMPEG_INCLUDE_DIR (tools/build-kz2.sh points
-#     it at the tools/runtime/ffmpeg-lgpl-win.nix output). Without it the
-#     decoders stay callback-only (black pictures, silent AC3).
+#     it at the tools/runtime/ffmpeg-lgpl-win.nix output; the release's
+#     first-run build, tools/release/firstrun.py, at the payload's
+#     ffmpeg/include). Without the headers the decoders stay callback-only
+#     (black pictures, silent AC3), so configure stops unless
+#     KZ2_ALLOW_NO_FFMPEG=ON says that is meant (developer builds only).
+#     Release an earlier change, issue #16: v0.1.2's first-run build passed no
+#     headers, only warned, and every player's kz2.exe ignored the DLLs.
 set(PS3RECOMP_AT3_SHARED ON CACHE BOOL "at3_standalone as its own DLL" FORCE)
+# BEGIN ffmpeg-headers (tools/release/test_ffmpeg_cmake.py configures this block on its own)
 set(KZ2_FFMPEG_INCLUDE_DIR "" CACHE PATH "FFmpeg headers for the run-time loaded decoders (empty: none)")
+option(KZ2_ALLOW_NO_FFMPEG "Build without FFmpeg (black movie pictures, silent AC3): developer builds only" OFF)
 # The remote build (tools/remote/kz2remote.py) syncs the headers as work/ffmpeg-headers/ in the source tree; the
 # server's configure line cannot carry this option, so that folder is the default when nothing was given.
 if(NOT KZ2_FFMPEG_INCLUDE_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../work/ffmpeg-headers/libavcodec/avcodec.h")
@@ -104,10 +111,16 @@ if(KZ2_FFMPEG_INCLUDE_DIR)
     endif()
     set(PS3RECOMP_FFMPEG_RUNTIME ON CACHE BOOL "FFmpeg loaded at run time" FORCE)
     set(PS3RECOMP_FFMPEG_INCLUDE_DIR "${KZ2_FFMPEG_INCLUDE_DIR}" CACHE PATH "FFmpeg headers" FORCE)
-else()
+elseif(KZ2_ALLOW_NO_FFMPEG)
     set(PS3RECOMP_FFMPEG_RUNTIME OFF CACHE BOOL "FFmpeg loaded at run time" FORCE)
-    message(WARNING "No KZ2_FFMPEG_INCLUDE_DIR: movies decode to black pictures and silent AC3")
+    message(WARNING "No KZ2_FFMPEG_INCLUDE_DIR (KZ2_ALLOW_NO_FFMPEG=ON): movies decode to black pictures and silent AC3")
+else()
+    message(FATAL_ERROR "No KZ2_FFMPEG_INCLUDE_DIR: kz2.exe would never load avcodec/avutil (black movies, silent "
+                        "AC3). Pass -DKZ2_FFMPEG_INCLUDE_DIR=<folder holding libavcodec/avcodec.h> (the include/ of "
+                        "tools/runtime/ffmpeg-lgpl-win.nix's output; a release payload's ffmpeg/include), or "
+                        "-DKZ2_ALLOW_NO_FFMPEG=ON for a developer build without movies.")
 endif()
+# END ffmpeg-headers
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
 
@@ -183,6 +196,11 @@ if(PORT_ENABLE_SPU)
         # page a few thousand iterations in.
         list(APPEND SPU_SOURCES ${SPU_LIFTED}
              "${PS3RECOMP_DIR}/runtime/spu/spu_dispatch_mt.c")
+        # Native host versions of hot SPU job code (re/spu/native_gates.tsv): built with the
+        # lifted SPU code's flags (same float helpers), registered by spu/kz2_native_jobs.c, off unless
+        # KZ2_NATIVE_JOB_<NAME>=1.
+        file(GLOB KZ2_NATIVE_SPU CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/spu/*.c")
+        list(APPEND SPU_SOURCES ${KZ2_NATIVE_SPU})
         # Generated beside the lift; each is present only once its generator
         # has been run, so each is included only if it is actually here.
         foreach(gen IN ITEMS spu_workloads.c jobmods_register.c taskset_policy_bytes.c)
@@ -207,9 +225,12 @@ add_executable(${PROJECT_NAME}
     guest_fiber.c       # host coroutines for the PPU job-fiber scheduler (from Project Helghast port/spu)
     kz2_cpu_check.c     # KZ2_SPU_FMA: refuses to start without AVX/FMA3/OS AVX state, with a message
     kz2_pad_layout.c    # KZ2_PAD_LAYOUT=original|modern: Modern pad preset through the profile map
+    kz2_gameplay.c      # aim_assist / crouch_toggle / cover_toggle settings and latch logic
     kz2_prompts.cpp     # prompt glyph source for patches 2091-2093: keys, label fonts
     kz2_menu_pages.cpp  # EXIT TO DESKTOP and the Keyboard page in the game's menus
     kz2_session_log.c   # KZ2_CONSOLE, logs/kz2-<date>-<time>.log, the EBOOT beside the exe (kz2_session_log.h)
+    kz2_edge_zlib.c     # an earlier change (6039): the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)
+    kz2_edge_guest.c    # a guest write standing in for the task's DMA put
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}
@@ -272,6 +293,19 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ps3recomp_runtime
 )
+
+# An earlier change (6039): the host decoder of the Edge zlib job. zlib (static, zlib licence) when the toolchain has it
+# (the .#win shell needs pkgsCross.mingwW64.zlib: requested from the maintainer, flake.nix is protected); until then
+# stb_image's decoder, already in the runtime (libs/codec/cellPngDec.c). Both are complete raw-deflate decoders.
+set(ZLIB_USE_STATIC_LIBS ON)
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+    set_source_files_properties(kz2_edge_zlib.c PROPERTIES COMPILE_DEFINITIONS KZ2_HAVE_ZLIB)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ZLIB::ZLIB)
+    message(STATUS "Edge zlib job:   zlib ${ZLIB_VERSION_STRING} (${ZLIB_LIBRARIES})")
+else()
+    message(STATUS "Edge zlib job:   stb_image decoder (no zlib in the toolchain)")
+endif()
 
 # Killzone 2: no lifted SPU images yet (KZ3's port/spu subproject), no file logger and no online
 # setup (KZ3 port/net); add them here when the port has its own.

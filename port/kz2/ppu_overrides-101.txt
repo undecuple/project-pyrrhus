@@ -11,3 +11,13 @@
 0053E448  # v1.01 post stage Unlock-job setup: KZ2_POSTSTAGE_LOG, registers P with the GCM walker watch
 # Page-layer hooks (1.29 0x78528, 0x2C7688, 0x2C4A78, 0x2C6E38, 0x489970, 0x48D848, 0x3ABC40, 0x49EA38, 0x49E5C0, 0x2AF50, 0x4893A8, 0x489078, 0x488FB8, 0x3ABED0, 0x49E820, 0x49ED98, listener 0x48A660 0x48A520 0x48A5B0 0x48A650 0x48A920 0x48A948 0x484170) are not mapped to v1.01 yet.
 # SV engine page-layer hooks (1.29 0x3B7908, 0x3B6220, 0x3A7198, 0x3A8330, 0x3A8264, 0x3B69C0, 0x49E668, 0x49EF10, 0x3B8628) are not mapped to v1.01 yet.
+003BCAA0  # v1.01 edgeZlibAddInflateQueueElement (= 1.29 0x3C8BA0, same first 80 bytes): KZ2_NATIVE_ZLIB
+# Player gameplay settings (kz2_ppu_overrides.cpp). Found with the name_census 1.29 -> 1.01 map, call sites checked by disassembly. NOT lifted or run on v1.01 yet.
+002E4EF8  # v1.01 ApplyInputModifier (= 1.29 0x2F0120): skipped at lr 0x16E900 when aim_assist is off
+002E5658  # v1.01 shoot/zoom aim-assist helper (= 1.29 0x2F0880): skipped at lr 0x16E998 / 0x16EA2C
+00170990  # v1.01 crouch decision (= 1.29 0x176208): P+0x61 around the body (P = *(0x117E740 + 0x240))
+0007A098  # v1.01 net-state test (= 1.29 0x7B388): forced to 1 at lr 0x170A34 for crouch_toggle
+00170B38  # v1.01 cover decision (= 1.29 0x1763B0): cover_toggle latch frame
+000AD4F0  # v1.01 cover finder (= 1.29 0xB1E78): result at lr 0x170C58
+00080D38  # v1.01 input query "function down" (= 1.29 0x82248): cover_toggle at lr 0x170C30
+00080D80  # v1.01 input query "function pressed" (= 1.29 0x82290)

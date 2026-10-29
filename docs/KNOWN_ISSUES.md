@@ -70,6 +70,18 @@ and the newest log file).
   list it fell from about 10 s to 2-3 s in scripted runs.
 - Other languages than the default are not tried; menu pages and subtitles were checked in one language.
 
+## Display
+
+- **Borderless is the default window mode** for a new install (no `display.ini`); Alt+Enter switches to a window and
+  back. An existing `display.ini` keeps its mode.
+- **Exclusive fullscreen is opt-in** (`mode = fullscreen` in `display.ini`, or the Display entry). On Windows it was
+  reported to freeze the picture after the switch on a flip-model swap chain; the port now resizes the swap chain after
+  every switch and keeps drawing (borderless) if a present fails, but this is only tried under Proton, not on real
+  Windows.
+- **Laptops with two graphics chips:** the game now asks Windows for the high-performance GPU first and logs every
+  adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop; if the game still runs on
+  the integrated chip, set `kz2.exe` to High performance in Windows' graphics settings and tell us in #13.
+
 ## Stability
 
 - **A stop in the SPU job system.** A `Gfx.PB.ShadowMap` assert stops a level load. It was seen once in a run with
@@ -85,6 +97,10 @@ and the newest log file).
 - **Pads:** a DualShock 4 (wired, through SDL3), including its motion sensor, was played by hand. Xbox and DualSense
   pads work in code but have not been tried by hand. Prompts can show PlayStation, Xbox or keyboard symbols; a pad
   layout setting (Original or Modern) is available.
+- **Crouch and cover toggles, aim assist switch:** options in `gameplay.ini` (see ACCESSIBILITY.md), off or original by
+  default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
+  aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
+  the aim assist cannot yet follow a mouse (no mouse look).
 - **Motion sections:** the real motion sensor reaches the game (the loading screen tilts). The campaign's valve and
   charge sections have not been done by hand yet. As a stand-in, holding L1 and R1 and moving the right stick turns the
   valve; that it completes the valve is not proven.

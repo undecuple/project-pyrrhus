@@ -9,12 +9,15 @@
  *    KZ3 has a full logger for this (kz3_log.c: levels, tags, crash files; patches 2030/2032 call into it under
  *    KZ3_LOG_REDIRECT_STDIO); KZ2 does not build that path, so this tee keeps the existing output byte for byte.
  *  - kz2_session_log_flush: waits until the pipe is drained into the file (exit paths, crash filter chain).
+ *  - the copy thread writes every line with the user's folders replaced (kz2_log_redact.h, an earlier change,
+ *    issue #16); kz2_log_path_w does the same for one path the port prints itself.
  *
  * The inline functions below are the platform-free parts (host test: tools/runtime/test_session_log.sh). */
 #pragma once
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +82,9 @@ int  kz2_console_open(void);                   /* KZ2_CONSOLE=1: 1 = a console w
 int  kz2_session_log_start(void);              /* 1 = logging to a file (path: kz2_session_log_path) */
 const char* kz2_session_log_path(void);        /* "" when no file */
 void kz2_session_log_flush(unsigned timeout_ms);
+/* Release an earlier change (issue #16): a path for a log line, with the user's folders as %APPDATA%, %LOCALAPPDATA%,
+ * %USERPROFILE% (kz2_log_redact.h; the session log's copy thread applies the same rules to every line). -> out. */
+const char* kz2_log_path_w(const wchar_t* path, char* out, size_t n);
 /* Buffered stdout/stderr (upstream since ps3recomp v0.18.0 #524): ppu_run's ps3_stdio_init()
  * buffers both streams (64 KB each) and flushes them every PS3_STDIO_FLUSH_MS (50 ms) and on exit, crash and abort.
  * This maps the port's switches onto it: KZ2_LOG_UNBUFFERED=1 -> PS3_STDIO_UNBUFFERED=1 (both streams unbuffered),

@@ -70,6 +70,8 @@ def payload(tmp):
     for n in ("licenses/LGPL-2.1.txt", "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt",
               "licenses/FFmpeg-LICENSE-build.txt"):
         put(root, n, "GNU LESSER GENERAL PUBLIC LICENSE Version 2.1\n")
+    put(root, "ffmpeg/include/libavcodec/avcodec.h", "/* avcodec */\n")   # issue #16: the headers ship
+    put(root, "ffmpeg/include/libavutil/avutil.h", "/* avutil */\n")
     manifest(root)
     return root
 
@@ -107,7 +109,7 @@ def main():
             names = [i.filename for i in infos]
             same = all(z.read(f"Project Pyrrhus/{rel}") == open(p, "rb").read() for rel, p in pz.walk(root))
         check(names == sorted(names) and all(n.startswith("Project Pyrrhus/") for n in names)
-              and len(names) == 19 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
+              and len(names) == 21 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
               names)
         check({"Project Pyrrhus/runtime/SDL3.dll", "Project Pyrrhus/licenses/SDL3-LICENSE.txt"} <= set(names),
               "SDL3.dll and its licence are in the zip", names)
@@ -146,6 +148,8 @@ def main():
         refused("no run.cmd", lambda r: os.remove(os.path.join(r, "run.cmd")), "run.cmd: missing", remanifest=True)
         refused("no notice font", lambda r: os.remove(os.path.join(r, "fonts", "Rajdhani-Medium.ttf")),
                 "fonts/Rajdhani-Medium.ttf: missing", remanifest=True)
+        refused("no FFmpeg headers", lambda r: os.remove(os.path.join(r, "ffmpeg", "include", "libavcodec", "avcodec.h")),
+                "ffmpeg/include/libavcodec/avcodec.h: missing", remanifest=True)
         refused("no avcodec-63.dll", lambda r: os.remove(os.path.join(r, "runtime", "avcodec-63.dll")),
                 "runtime/avcodec-63.dll: missing", remanifest=True)
         refused("no FFmpeg source pointer", lambda r: os.remove(os.path.join(r, "licenses", "FFmpeg-SOURCE.txt")),

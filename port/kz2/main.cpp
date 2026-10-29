@@ -64,6 +64,15 @@
  * there is nothing to shim: the 15.6 ms default timer granularity this works
  * around is a Windows problem. */
 #include <timeapi.h>
+
+/* Hybrid-GPU hints (public issue #13). NOT the fix (the adapter is chosen by enumeration in
+ * rsx_d3d12_device.h, patch 2121): these only ask the NVIDIA Optimus and AMD PowerXpress drivers to treat this exe as
+ * a high-performance application, which also matters for drivers that decide the adapter list order by profile.
+ * Exported data, read by the driver at load; ASSUMPTION: harmless on other hardware (ignored). */
+extern "C" {
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -237,7 +246,9 @@ static void kz2_display_save(int mode, int scaling, int filter)
     FILE* f = _wfopen(p, L"wb");
     const bool ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
     if (f) fclose(f);
-    printf("[display] %ls: mode %s, scaling %s, filter %s %s\n", p, rsx_dm_name(mode), rsx_dm_scaling_name(scaling),
+    char shown[1200];   /* an earlier change (issue #16): %APPDATA%\..., never the user name */
+    printf("[display] %s: mode %s, scaling %s, filter %s %s\n", kz2_log_path_w(p, shown, sizeof shown),
+           rsx_dm_name(mode), rsx_dm_scaling_name(scaling),
            rsx_dm_filter_name(filter), ok ? "saved" : "NOT saved");
     fflush(stdout);
 }
@@ -256,10 +267,12 @@ static void kz2_display_load(void)
             mode = rsx_dm_ini_parse(t);
             scaling = rsx_dm_ini_scaling(t);
             filter = rsx_dm_ini_filter(t);
-            printf("[display] %ls: mode %s, scaling %s, filter %s\n", p, mode >= 0 ? rsx_dm_name(mode) : "(none)",
+            char shown[1200];   /* an earlier change (issue #16): %APPDATA%\..., never the user name */
+            printf("[display] %s: mode %s, scaling %s, filter %s\n", kz2_log_path_w(p, shown, sizeof shown), mode >= 0 ? rsx_dm_name(mode) : "(none)",
                    scaling >= 0 ? rsx_dm_scaling_name(scaling) : "(none)", filter >= 0 ? rsx_dm_filter_name(filter) : "(none)");
         } else {
-            printf("[display] %ls: not there (optional; Alt+Enter writes it)\n", p);
+            char shown[1200];
+            printf("[display] %s: not there (optional; Alt+Enter writes it)\n", kz2_log_path_w(p, shown, sizeof shown));
         }
     }
     rsx_display_configure(mode, scaling, filter, kz2_display_save);

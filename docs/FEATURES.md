@@ -44,6 +44,7 @@ How far the port is, feature by feature, against the PS3 game. Statuses: works, 
 | Enhancement | Display modes | ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini | in progress |
 | Enhancement | Gamepads: PlayStation and Xbox | ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only | partial |
 | Enhancement | Button prompt choice and pad layouts | ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout | partial |
+| Enhancement | Gameplay options: aim assist switch, crouch and cover toggles | ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE) | partial |
 | Enhancement | Movie playback through FFmpeg | ENHANCEMENT: movies decoded by FFmpeg LGPL decoders in separate DLLs | partial |
 | Enhancement | Reuse an existing RPCS3 install | ENHANCEMENT: the setup can find an RPCS3 install and reuse its game files, with an optional, separate save copy | in progress |
 | Enhancement | Launcher and window controls | ENHANCEMENT: launcher (pad layout, display), window close shuts down cleanly | partial |

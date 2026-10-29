@@ -56,3 +56,10 @@
 00082248  # 1.29 input query "function down" (state array, func): KZ2_PAD_LOG
 00082290  # 1.29 input query "function pressed" (state == 3): KZ2_PAD_LOG
 000822F0  # 1.29 input query "function released" (state == 2): KZ2_PAD_LOG
+003C8BA0  # 1.29 edgeZlibAddInflateQueueElement (FIOS dearchiver's only Edge zlib push; = v1.01 0x3BCAA0): KZ2_NATIVE_ZLIB
+002F0120  # 1.29 ApplyInputModifier(M, E, &x, &y, ...) (aim assist stick edit; = v1.01 0x2E4EF8): skipped at UpdateLook's lr 0x174160 when aim_assist is off
+002F0880  # 1.29 shoot/zoom aim-assist helper (= v1.01 0x2E5658): skipped at UpdateLook's lr 0x1741F8 / 0x1742CC when aim_assist is off
+00176208  # 1.29 SoldierJoystickController crouch decision (= v1.01 0x170990): P+0x61 set around the body for crouch_toggle
+0007B388  # 1.29 net-state test (= v1.01 0x7A098): forced to 1 at lr 0x1762AC for crouch_toggle; KZ2_GP_LOG prints the raw result
+001763B0  # 1.29 SoldierJoystickController cover decision (= v1.01 0x170B38): cover_toggle latch frame
+000B1E78  # 1.29 cover finder (= v1.01 0xAD4F0): result at lr 0x1764D0 clears the cover_toggle latch when nothing is found

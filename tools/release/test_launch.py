@@ -68,6 +68,8 @@ def make_tree(tmp):
     eboot = os.path.join(update, "USRDIR", "EBOOT.elf")
     write(os.path.join(dump, "PS3_GAME", "PARAM.SFO"))
     write(eboot, "fake elf")
+    for n in ("EBOOT.BIN", "added_data_ps3.psarc", os.path.join("patch_data_ps3", "x.pspatch")):   # update_problem
+        write(os.path.join(update, "USRDIR", n), "x")
     write(os.path.join(root, "port", "kz2", "ppu_overrides.txt"), "a\n")
     write(os.path.join(root, "VERSION.txt"), "0.1.0")
     os.makedirs(os.path.join(root, "ps3recomp", "tools"))
@@ -251,20 +253,30 @@ def main():
         check(la.read_ini(root)["prompts"] == "keyboard", "5c rewrite without prompts keeps the choice")
         fr.write_install_ini(root, True, False, prompts="auto")
         # 5d. [display] mode: unset leaves KZ2_DISPLAY out (display.ini decides), each mode reaches KZ2_DISPLAY,
-        # window/exclusive aliases, unknown -> windowed + one log line, --display sets/cycles, installer default windowed
+        # window/exclusive aliases, unknown -> windowed + one log line, --display sets/cycles, installer default borderless
         write(ini_p, "[controls]\nlayout = original\n")
         p = printed(root, environ=env)
-        check("KZ2_DISPLAY" not in p["env"] and p["display"] == "windowed", f"5d unset leaves it unset {p.get('env')}")
+        check("KZ2_DISPLAY" not in p["env"] and p["display"] == "borderless", f"5d unset leaves it unset {p.get('env')}")
         for name in ("windowed", "borderless", "fullscreen"):
             write(ini_p, f"[display]\nmode = {name.upper()}\n")
             check(printed(root, environ=env)["env"].get("KZ2_DISPLAY") == name, f"5d {name}")
         write(ini_p, "[display]\nmode = exclusive\n")
         check(printed(root, environ=env)["env"]["KZ2_DISPLAY"] == "fullscreen", "5d exclusive = fullscreen")
         write(ini_p, "[display]\nmode = bogus\n")
-        check(printed(root, environ=env)["env"]["KZ2_DISPLAY"] == "windowed" and la.read_ini(root)["display_bad"] == "bogus",
-              "5d bad -> windowed")
+        check(printed(root, environ=env)["env"]["KZ2_DISPLAY"] == "borderless" and la.read_ini(root)["display_bad"] == "bogus",
+              "5d bad -> borderless")
         la.main(["--root", root], ui=FakeUI([]), run=lambda a, **k: 0, start=lambda *a, **k: None, environ=env)
         check("mode = 'bogus' is unknown" in open(os.path.join(root, "logs", "launcher.log")).read(), "5d bad value logged")
+        # 5f (issue #16): an update folder that lost its data stops the start with the reason, not a menu crash
+        check(la.update_problem({"update": update}) == "", "5f the full update folder passes")
+        os.rename(os.path.join(update, "USRDIR", "added_data_ps3.psarc"), os.path.join(update, "USRDIR", "a.bak"))
+        up = la.update_problem({"update": update})
+        check("added_data_ps3.psarc" in up and "main menu" in up and "EBOOT.BIN" not in up, f"5f missing data named: {up}")
+        os.rename(os.path.join(update, "USRDIR", "a.bak"), os.path.join(update, "USRDIR", "added_data_ps3.psarc"))
+        home = os.path.expanduser("~")
+        la.note(root, f"vfs: cannot link {os.path.join(home, 'Games', 'KZ2', 'PS3_GAME')}")
+        lg = open(os.path.join(root, "logs", "launcher.log")).read().splitlines()[-1]
+        check(home not in lg and "%USERPROFILE%" in lg, f"5e launcher.log: the home folder is %USERPROFILE% (issue #16): {lg}")
         seen = {}
         write(ini_p, "[display]\nmode = borderless\n")
         la.main(["--root", root], ui=FakeUI([]), run=lambda a, **k: seen.update(k) or 0, start=lambda *a, **k: None,
@@ -283,7 +295,7 @@ def main():
         check(la.read_ini(root)["layout"] == "modern", "5d display change keeps layout")
         os.remove(ini_p)
         fr.write_install_ini(root, True, False)
-        check(la.read_ini(root)["display"] == "windowed" and "mode = windowed" in open(ini_p).read(), "5d installer default windowed")
+        check(la.read_ini(root)["display"] == "borderless" and "mode = borderless" in open(ini_p).read(), "5d installer default borderless")
         fr.write_install_ini(root, True, False, display="fullscreen")
         fr.write_install_ini(root, True, False)
         check(la.read_ini(root)["display"] == "fullscreen", "5d rewrite without display keeps the choice")

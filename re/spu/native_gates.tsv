@@ -1,0 +1,83 @@
+# Native gates (spu rounds 15-16): lifted SPU functions that hand over to a native host implementation when its job's
+# env flag is set (port/kz2/spu/). tools/spu/lift_spu.py inserts the gate as the first statement of each listed
+# function (KZ2 1.29 images); the slot indexes g_kz2_native_gate[] (defined in the generated spu_workloads.c, filled by
+# port/kz2/spu/kz2_native_jobs.c). A gate function returns 1 when it ran the whole subroutine (the lifted body is
+# skipped and the function returns to its link as `bi $r0`), 0 to run the lifted body.
+# image	addr	slot	job	env	what
+job_00d6d100	0x5750	0	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_DOF	gather (centre + 36 radius-scaled taps) then normalise, blend factor, pack RGBA8
+job_00d6d100	0x5F80	1	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_DOF	unpack RGBM-style pixels to float4 times the per-pixel weight
+job_00d6d100	0x4CB0	2	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_DOF|KZ2_NATIVE_JOB_POSTMIX	blend the blurred RGBA8 layer over the sharp one in place: a + b * (256 - a.coverage) >> 8, saturated
+job_00d51f00	0x56F0	3	Gfx.Post.Upsample	KZ2_NATIVE_JOB_UPSAMPLE	2x upsample RGBA8: two output rows from three source rows, 3/4-1/4 taps, truncated per pass
+job_00d51f00	0x5A20	4	Gfx.Post.Upsample	KZ2_NATIVE_JOB_UPSAMPLE	2x upsample of 8-byte pixels (four 16-bit channels), the same taps with the SPU's signed mpya
+job_00d4c580	0x4A60	5	Gfx.Post.Zero	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d4df80	0x5380	6	Gfx.Post.GrainWeight	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d50280	0x4B80	7	Gfx.Post.Downsample	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d51f00	0x4C50	8	Gfx.Post.Upsample	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d54100	0x4FD0	9	Gfx.Post.Add	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d56000	0x4F70	10	Gfx.Post.Modulate	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d57f00	0x4EC0	11	Gfx.Post.Blend	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d59d00	0x4D60	12	Gfx.Post.HBlur	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d5ce80	0x4D00	13	Gfx.Post.VBlur	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d5fc00	0x6300	14	Gfx.Post.BloomCapture	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d62e80	0x5940	15	Gfx.Post.BloomIntegrate	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d65780	0x6780	16	Gfx.Post.ILR	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d68f00	0x4C10	17	Gfx.Post.Vignette	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d6aa80	0x4C40	18	Gfx.Post.MotionBlur	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d6fe00	0x4C40	19	Gfx.Post.DepthToFuzzy	KZ2_NATIVE_JOB_POSTMIX	blend an RGBA8 layer over the target in place: a + b * (256 - a.coverage) >> 8, saturated (shared Gfx.Post kernel)
+job_00d4c580	0x4EE8	20	Gfx.Post.Zero	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d4df80	0x5808	21	Gfx.Post.GrainWeight	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d50280	0x5008	22	Gfx.Post.Downsample	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d51f00	0x50D8	23	Gfx.Post.Upsample	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d54100	0x5458	24	Gfx.Post.Add	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d56000	0x53F8	25	Gfx.Post.Modulate	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d57f00	0x5348	26	Gfx.Post.Blend	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d59d00	0x51E8	27	Gfx.Post.HBlur	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d5ce80	0x5188	28	Gfx.Post.VBlur	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d5fc00	0x6788	29	Gfx.Post.BloomCapture	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d62e80	0x5DC8	30	Gfx.Post.BloomIntegrate	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d65780	0x6C08	31	Gfx.Post.ILR	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d68f00	0x5098	32	Gfx.Post.Vignette	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d6aa80	0x50C8	33	Gfx.Post.MotionBlur	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d6d100	0x5138	34	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d6fe00	0x50C8	35	Gfx.Post.DepthToFuzzy	KZ2_NATIVE_JOB_POSTMIX	add RGBA8 pixels to the target in place, bytes saturated (shared Gfx.Post kernel)
+job_00d4c580	0x5208	36	Gfx.Post.Zero	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d4df80	0x5B28	37	Gfx.Post.GrainWeight	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d50280	0x5328	38	Gfx.Post.Downsample	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d51f00	0x53F8	39	Gfx.Post.Upsample	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d54100	0x5778	40	Gfx.Post.Add	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d56000	0x5718	41	Gfx.Post.Modulate	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d57f00	0x5668	42	Gfx.Post.Blend	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d59d00	0x5508	43	Gfx.Post.HBlur	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d5ce80	0x54A8	44	Gfx.Post.VBlur	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d5fc00	0x6AA8	45	Gfx.Post.BloomCapture	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d62e80	0x60E8	46	Gfx.Post.BloomIntegrate	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d65780	0x6F28	47	Gfx.Post.ILR	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d68f00	0x53B8	48	Gfx.Post.Vignette	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d6aa80	0x53E8	49	Gfx.Post.MotionBlur	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d6d100	0x5458	50	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d6fe00	0x53E8	51	Gfx.Post.DepthToFuzzy	KZ2_NATIVE_JOB_POSTMIX	add 8-byte pixels (four 16-bit channels) to the target in place, halfwords saturated (shared Gfx.Post kernel)
+job_00d5ce80	0x57A0	52	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of RGBA8 pixels, >> 6
+job_00d5ce80	0x59E0	53	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of RGBA8 pixels, >> 5 clamped at 255
+job_00d5ce80	0x5EB0	54	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of RGBA8 pixels, first channel outer taps doubled, >> 6, clamped at 255
+job_00d5ce80	0x6170	55	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of 8-byte (16-bit channels) pixels, >> 6
+job_00d5ce80	0x63B0	56	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of 8-byte (16-bit channels) pixels, >> 5 clamped at 255
+job_00d5ce80	0x6640	57	Gfx.Post.VBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) vertical blur of 8-byte (16-bit channels) pixels, first channel outer taps doubled, >> 6, clamped at 255
+job_00d59d00	0x5800	58	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of RGBA8 pixels, >> 6
+job_00d59d00	0x5BC8	59	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of RGBA8 pixels, >> 5 clamped at 255
+job_00d59d00	0x6028	60	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of RGBA8 pixels, first channel outer taps doubled, >> 6, clamped at 255
+job_00d59d00	0x64F0	61	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of 8-byte (16-bit channels) pixels, >> 6
+job_00d59d00	0x6778	62	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of 8-byte (16-bit channels) pixels, >> 5 clamped at 255
+job_00d59d00	0x6A30	63	Gfx.Post.HBlur	KZ2_NATIVE_JOB_BLUR	7-tap binomial (1 6 15 20 15 6 1) horizontal blur of 8-byte (16-bit channels) pixels, first channel outer taps doubled, >> 6, clamped at 255
+job_00d5fc00	0x4AD8	64	Gfx.Post.BloomCapture	KZ2_NATIVE_JOB_BLOOM	the whole pass: 129-entry curve from the table, then per pixel curve(f) x clamp(lum, coverage) x colour, RGBA8 or 16-bit channels out (the shared routine 0x4178 inside)
+job_00d4df80	0x4AD8	65	Gfx.Post.GrainWeight	KZ2_NATIVE_JOB_BLOOM	the whole pass: 129-entry curve of the table bytes, per pixel curve(weighted channel sum) into the first byte of the r6 pixel (the shared routine 0x4178 inside)
+job_00d56000	0x4A20	66	Gfx.Post.Modulate	KZ2_NATIVE_JOB_MODULATE	the whole pass: every channel times a per-channel 8.8 fixed-point factor (cfltu of the factor quadword), RGBA8 (low byte of the product >> 8) or 16-bit channels (signed mpy, >> 8, clamped at 0xFFFF)
+job_00d62e80	0x4A20	67	Gfx.Post.BloomIntegrate	KZ2_NATIVE_JOB_BLOOMINT	the whole pass: RGBA8 or 16-bit (>> 4) source channels times scale/255 clamped to [0, 1], channel 0 replaced by the weighted sum (0, 0.3, 0.59, 0.11), times 255 to RGBA8
+job_00d65780	0x4E20	68	Gfx.Post.ILR	KZ2_NATIVE_JOB_ILR	the pass from its row loop to its return (prologue lifted): 8-tap radial blur, taps at the pixel's position times 8 constants, integer weights, clamp, bits 8-15
+job_00d68f00	0x4A20	69	Gfx.Post.Vignette	KZ2_NATIVE_JOB_VIGNETTE	the whole pass: per pixel colour/255 times clamp(1 - (x^2 + y^2)^2, 0, 1) over x, y in [-1, 1), channel 0 cleared, one word store per pixel
+job_00d6fe00	0x4A20	70	Gfx.Post.DepthToFuzzy	KZ2_NATIVE_JOB_DEPTHTOFUZZY	the whole pass: per float clamp(fma(a, d, b), 0, 1) times (c * 255 / 256), cfltu 2^8 into the top byte of the word
+job_00d50280	0x5620	71	Gfx.Post.Downsample	KZ2_NATIVE_JOB_DOWNSAMPLE	2x2 box of RGBA8 pixels (avgb of the rows, then of the even and odd pixels), 4 output pixels a step
+job_00d50280	0x56D0	72	Gfx.Post.Downsample	KZ2_NATIVE_JOB_DOWNSAMPLE	8-byte pixels (16-bit channels): per row (p0 + p2) >> 1, (p1 + p3) >> 1, their sum >> 1; one output pixel per source row of the pair, 2 a step
+job_00d4c580	0x5698	73	Gfx.Post.Zero	KZ2_NATIVE_JOB_ZERO	the memset the pass tail-branches to (whole quadwords, then a masked partial quadword)
+job_00d6d100	0x4A20	74	Gfx.Post.DepthOfField	KZ2_NATIVE_JOB_DOFPASS	the whole pass: each apron row unpacked once (host buffer by global row), phase 1 skipped where phase 2 does not read it, the LS left as the SPU leaves it
+job_00d95d80	0x13100	75	Anim.EdgeAnim	KZ2_NATIVE_JOB_EDGEANIM	bit-packed three-component decoder called 3x @0x10D78 (loop 0x13428): (s, e, m) fields per component, fourth = sqrt(1 - sum of squares) at index spec & 3, stored at r5 + 48 idx
+job_00d95d80	0x12438	76	Anim.EdgeAnim	KZ2_NATIVE_JOB_EDGEANIM_KEYS	keyframe sampler called 3x @0x10D78 (loop 0x125A8): key bitmask popcounts, two keys decoded, blended by r13 (gate for recording; native not written yet)

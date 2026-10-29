@@ -39,3 +39,5 @@ __pycache__/
 PARAM.PFD
 PARAM.SFO
 savefile-*.zip
+# game-derived recordings from the opt-in KZ2_NATIVE_ZLIB_RECORD diagnostic
+kz2-zrec/

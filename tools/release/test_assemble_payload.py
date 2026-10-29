@@ -162,7 +162,14 @@ def fake_repo(root):
     put(root, "work/ffmpeg-win/share/ffmpeg-lgpl/COPYING.LGPLv2.1", lgpl)
     put(root, "work/ffmpeg-win/share/ffmpeg-lgpl/SOURCE.txt", "FFmpeg n9.0.1 source: https://ffmpeg.org/\n")
     put(root, "work/ffmpeg-win/share/ffmpeg-lgpl/LICENSE-build.txt", "LGPL version 2.1 or later, CONFIG_GPL 0\n")
+    for rel, text in FF_HEADERS.items():
+        put(root, "work/ffmpeg-win/include/" + rel, text)
+    put(root, "work/ffmpeg-win/include/libavcodec/notes.txt", "not a header: left out\n")
     put(root, "installer/art/art.json", json.dumps({"format": 1, "fonts_sha256": pins}))
+
+
+FF_HEADERS = {"libavcodec/avcodec.h": "/* avcodec */\n", "libavcodec/version_major.h": "#define LIBAVCODEC_VERSION_MAJOR  63\n",
+              "libavutil/avutil.h": "/* avutil */\n", "libavutil/version.h": "#define LIBAVUTIL_VERSION_MAJOR  61\n"}
 
 
 def fake_dll(size, machine=0x8664, flags=0x2000):
@@ -230,6 +237,7 @@ def main():
                 "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
                 "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
                 "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt", "licenses/FFmpeg-LICENSE-build.txt"}
+        want |= {"ffmpeg/include/" + rel for rel in FF_HEADERS}   # issue #16: the headers ship (*.h only)
         check(got == want, "payload holds exactly the allowlisted files",
               f"extra {sorted(got - want)} missing {sorted(want - got)}")
         # The public repo's layout (the release workflow): public/ files at the root, no public/ folder.
@@ -488,6 +496,29 @@ def main():
         check(rc == 1 and "MISSING" in txt, "--ffmpeg DIR is honoured (an empty one refuses)", txt)
         rc, txt = run(["--repo", repo, "--dry-run"])
         check(rc == 0, "FFmpeg files restored: payload assembles again", txt)
+
+        # FFmpeg headers (issue #16): required, and their version majors must match the DLL names
+        inc = os.path.join(fdir, "include")
+        for rel in ("libavcodec/avcodec.h", "libavutil/avutil.h", "libavcodec/version_major.h"):
+            fp = os.path.join(inc, *rel.split("/"))
+            os.remove(fp)
+            rc, txt = run(["--repo", repo, "--dry-run"])
+            check(rc == 1 and "MISSING" in txt and rel.split("/")[0] in txt.replace(os.sep, "/"),
+                  f"a payload without the header {rel} is refused", txt)
+            put(fdir, "include/" + rel, FF_HEADERS[rel])
+        put(fdir, "include/libavcodec/version_major.h", "#define LIBAVCODEC_VERSION_MAJOR  62\n")
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "LIBAVCODEC_VERSION_MAJOR 62" in txt and "avcodec-63.dll" in txt,
+              "headers of another FFmpeg major than the shipped DLL are refused", txt)
+        put(fdir, "include/libavcodec/version_major.h", FF_HEADERS["libavcodec/version_major.h"])
+        shutil.rmtree(os.path.join(inc, "libavutil"))
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "MISSING" in txt and "libavutil" in txt, "a payload without libavutil's headers is refused", txt)
+        for rel in ("libavutil/avutil.h", "libavutil/version.h"):
+            put(fdir, "include/" + rel, FF_HEADERS[rel])
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 0 and "ffmpeg/include/libavcodec/avcodec.h" in txt and "notes.txt" not in txt,
+              "headers restored: payload assembles again (only *.h ship)", txt)
 
         put(repo, "port/kz2/notes.txt", "see %USERPROFILE%\\logs and C:\\Users\\<name>\\x, /home/ is fine\n")
         rc, txt = run(["--repo", repo, "--dry-run"])

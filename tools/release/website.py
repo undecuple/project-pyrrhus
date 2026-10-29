@@ -205,6 +205,7 @@ def entries(root):
 
 
 def clip(text, n=120):
+    text = text.replace("`", "")   # Markdown code marks read as literal backticks in the news column
     return text if len(text) <= n else text[:n - 1].rsplit(" ", 1)[0].rstrip(",;:- ") + "..."
 
 

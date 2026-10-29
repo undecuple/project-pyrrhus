@@ -22,14 +22,19 @@ static uint32_t open_press(void)
 
 int main(void)
 {
-    double a = 50, b = 700, c = 120; uint32_t m = 2;
-    CHECK(ps3_lat_parse("30:500:80:0x4000", &a, &b, &c, &m) == 4 && a == 30 && b == 500 && c == 80 && m == 0x4000,
-          "parse: all four fields");
+    double a = 50, b = 700, c = 120, d = 0; uint32_t m = 2;
+    CHECK(ps3_lat_parse("30:500:80:0x4000", &a, &b, &c, &m, &d) == 4 && a == 30 && b == 500 && c == 80 && m == 0x4000
+          && d == 0, "parse: four fields, no stop");
     a = 50; b = 700; c = 120; m = 2;
-    ps3_lat_parse("10", &a, &b, &c, &m);
-    CHECK(a == 10 && b == 700 && c == 120 && m == 2, "parse: missing fields keep their defaults");
-    ps3_lat_parse("10:20:900:0", &a, &b, &c, &m);
+    ps3_lat_parse("10", &a, &b, &c, &m, &d);
+    CHECK(a == 10 && b == 700 && c == 120 && m == 2 && d == 0, "parse: missing fields keep their defaults");
+    ps3_lat_parse("10:20:900:0", &a, &b, &c, &m, &d);
     CHECK(b == 700 && c == 120 && m == 2, "parse: period under 50 ms, hold over the period, mask 0 refused");
+    a = 50; b = 700; c = 120; m = 2;
+    CHECK(ps3_lat_parse("75:300:80:0x0010:105", &a, &b, &c, &m, &d) == 5 && a == 75 && m == 0x0010 && d == 105,
+          "parse: fifth field is the window's stop");
+    d = 0; ps3_lat_parse("75:300:80:0x0010:60", &a, &b, &c, &m, &d);
+    CHECK(d == 0, "parse: a stop before the start is refused");
     double v[] = { 5, 1, 4, 2, 3, 10, 9, 8, 7, 6 };
     CHECK(ps3_lat_q(v, 10, 0.5) == 5 && ps3_lat_q(v, 10, 0.95) == 10 && ps3_lat_q(v, 10, 0.01) == 1,
           "quantile: nearest rank");
@@ -81,7 +86,16 @@ int main(void)
     s->probe[p].t[PS3_LAT_GPU] = ps3_lat_now(); s->probe[p].stage = PS3_LAT_NSTAMP;
     ps3_lat_finish(p);
     CHECK(s->n_done == 1 && s->n_open == 1 && s->open[0] == q, "finish: closed and removed from the open list");
-    ps3_lat_summary();
+    ps3_lat_summary("summary");
+    /* frame times are kept from the first press until the stop, not after */
+    s->ft_prev = 1;
+    ps3_lat_present(PS3_LAT_RET); ps3_lat_present(PS3_LAT_RET); ps3_lat_present(PS3_LAT_RET);
+    const uint32_t nft = s->n_ft;
+    CHECK(nft == 2, "frame times: two intervals from three Present returns");
+    s->ft_stop = 1;
+    ps3_lat_present(PS3_LAT_RET);
+    CHECK(s->n_ft == nft, "frame times: none kept past the window's stop");
+    ps3_lat_summary("window summary");
     CHECK(g_ps3_lat.magic == PS3_LAT_MAGIC, "state: one initialised object (selectany on Windows)");
     free(s->probe); free(s->ft);
     printf(fails ? "FAILED %d\n" : "ALL PASS\n", fails);

@@ -6,7 +6,7 @@ downloaded.
 
 There are two ways to get a build:
 
-- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.2](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.2)<!-- /version -->.**
+- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.3](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3)<!-- /version -->.**
   It checks your disc dump and the 1.29 update, then lifts and compiles the game's code on your machine with a bundled
   compiler, behind one progress bar, with a full log. Download it from the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). The scripts and the installer definition are in this repository (`installer/`,
@@ -113,7 +113,9 @@ nix build --impure -o work/ffmpeg-win --expr \
 ```
 
 Step 4's `tools/build-kz2.sh` then finds the FFmpeg headers in `work/ffmpeg-win/include`; copy the two DLLs next to
-`kz2.exe`. Keep the three text files with them if you pass the DLLs on (LGPL).
+`kz2.exe`. Configuring `port/kz2` by hand needs `-DKZ2_FFMPEG_INCLUDE_DIR=<folder holding libavcodec/avcodec.h>`:
+without it CMake stops, because the game would build without its movies. `-DKZ2_ALLOW_NO_FFMPEG=ON` builds without
+them on purpose (black movie pictures, no 5.1 sound; `build-kz2.sh` does this, with a warning, when it finds no headers). Keep the three text files with them if you pass the DLLs on (LGPL).
 
 ## Running
 
@@ -132,8 +134,14 @@ There is no ini file for the program itself. It reads these environment variable
 | `PS3_HDD0_ROOT` | A `dev_hdd0` folder, only if your update sits in one. Optional. |
 | `PS3_EDAT_CACHE` | Where decrypted game files are cached. Optional. |
 | `KZ2_PAD_LAYOUT` | `original` (default) or `modern` pad buttons. |
+| `KZ2_AIM_ASSIST` | `auto` (default), `on` or `off`: the game's aim assist (slows and pulls the aim towards a target on the right stick). `auto` is on for a pad and the keyboard. Unset: `gameplay.ini` decides. |
+| `KZ2_CROUCH_TOGGLE` | `1`: a tap of the crouch button crouches and a second tap stands (the game's own toggle option, which the game only offers online). Default `0`: hold to crouch, as in the original. |
+| `KZ2_COVER_TOGGLE` | `1`: a tap of the cover button takes cover and a second tap (or a sprint or jump) leaves it. Default `0`: hold to take cover, as in the original. |
 | `KZ2_PROMPTS` | Button prompt symbols: `ps3`, `ps4`, `xbox` or `keyboard`. Unset: chosen from the pad in use. |
-| `KZ2_DISPLAY` | `windowed` (default), `borderless` or `fullscreen`. Unset: the game's `display.ini` decides (Alt+Enter also switches). |
+| `KZ2_DISPLAY` | `borderless`, `windowed` or `fullscreen`. Unset: the game's `display.ini` decides; with no `display.ini` a new install starts borderless (Alt+Enter switches to a window and back). |
+
+The same three gameplay choices can be kept in `gameplay.ini` next to `keybinds.ini` (the file is optional and the game only reads it):
+`[gameplay]` then `aim_assist = auto|on|off`, `crouch_toggle = 0|1`, `cover_toggle = 0|1`. The variables win for one run.
 
 The installer and the portable zip set these for you. They keep their choices in `kz2-install.ini` in the install
 folder: `[install] portable` (1 keeps saves and settings in that folder), `[online] check_updates` (0 by default; the

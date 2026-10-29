@@ -13,12 +13,15 @@ its time in FIFO drains and its sleeps by why the drain before them stopped (cel
 probe line splits req->fifo into the walker's work and its waits (patch 6038 then wakes the
 frame thread from a park). Header-only like ps3_ftrace.h (state in one weak
 object; off, each hook is a load and a branch). General (upstream candidate as a diagnostic).
+Runtime an earlier change: a fifth KZ2_LATENCY_INJECT field ends the window (no press, no frame time after it; one
+[latency] window summary line), KZ2_LATENCY_ANCHOR=<path> counts start and stop from the moment that file exists, and
+the summaries print the frame-time p95 too (tools/runtime/native_ab.sh, the in-play A/B of a native job).
 
 diff --git a/include/ps3emu/input_latency.h b/include/ps3emu/input_latency.h
 new file mode 100644
 --- /dev/null
 +++ b/include/ps3emu/input_latency.h
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,496 @@
 +/*
 + * input_latency -- input-to-present latency probe (KZ2 patch 6037). Off by default.
 + *
@@ -34,11 +37,16 @@ new file mode 100644
 + *   ret   Present returned
 + *   gpu   the frame's GPU work finished (its fence; the wait for it is on the probe's own thread)
 + *
-+ * Knobs: KZ2_LATENCY_INJECT=<start s>:<period ms>:<hold ms>:<mask> (default 50:700:120:0x0002, L3; start counts from
-+ * the first pad read; each gap is period + a pseudo-random 0..period/2 so presses land at every phase of a frame;
-+ * mask is PAD_SCRIPT's (DIGITAL2 << 8) | DIGITAL1). One line per press ([latency] probe ...), a summary every 20
++ * Knobs: KZ2_LATENCY_INJECT=<start s>:<period ms>:<hold ms>:<mask>[:<stop s>] (default 50:700:120:0x0002, L3; start
++ * counts from the first pad read; each gap is period + a pseudo-random 0..period/2 so presses land at every phase of a
++ * frame; mask is PAD_SCRIPT's (DIGITAL2 << 8) | DIGITAL1). One line per press ([latency] probe ...), a summary every 20
 + * presses ([latency] summary: median and p95 per stage, in->ret totals, and the present-to-present frame time p50 /
-+ * p99 over the same span). The press is a real pad press for the game, so pick a harmless button.
++ * p95 / p99 over the same span). The press is a real pad press for the game, so pick a harmless button.
++ * stop (the in-play A/B window of tools/runtime/native_ab.sh): no press after it and no frame time
++ * after it; once the presses still open are done (3 s at most), one "[latency] window summary" line covers exactly
++ * [start, stop) and the probe thread ends. KZ2_LATENCY_ANCHOR=<path>: start and stop count from the moment
++ * that file exists instead (polled every 20 ms), so a driver outside the process can open the window at a point in the
++ * game (the level in hand), not at a fixed time after the first pad read.
 + *
 + * Header-only like ps3_ftrace.h: the hooked files are also compiled alone by tests. State is one weak/selectany
 + * object; off, every hook is one load and a branch.
@@ -89,7 +97,8 @@ new file mode 100644
 +    uint32_t magic;               /* PS3_LAT_MAGIC: the initialiser selectany needs (and a check the object is shared) */
 +    int on;                       /* 0 unknown, 1 initialising, 2 on, 3 off */
 +    uint64_t qpf;
-+    double start_s, period_ms, hold_ms;
++    double start_s, period_ms, hold_ms, stop_s;   /* stop_s 0 = never */
++    volatile int ft_stop;         /* past stop_s: frame times no longer kept */
 +    uint32_t mask;
 +    volatile uint32_t inj_mask;   /* the injector's button bits, ORed into port 0 */
 +    volatile int inj_wait_read;   /* a press is down and no read has handed it out yet */
@@ -144,16 +153,18 @@ new file mode 100644
 +}
 +
 +/* Parse "<start s>:<period ms>:<hold ms>:<mask>"; missing fields keep their defaults. Returns the fields read. */
-+static inline int ps3_lat_parse(const char* e, double* start_s, double* period_ms, double* hold_ms, uint32_t* mask)
++static inline int ps3_lat_parse(const char* e, double* start_s, double* period_ms, double* hold_ms, uint32_t* mask,
++                                 double* stop_s)
 +{
 +    if (!e || !*e) return 0;
-+    double a = *start_s, b = *period_ms, c = *hold_ms; unsigned m = *mask;
++    double a = *start_s, b = *period_ms, c = *hold_ms, d = 0; unsigned m = *mask;
 +    char hex[32] = {0};
-+    const int n = sscanf(e, "%lf:%lf:%lf:%31s", &a, &b, &c, hex);
++    const int n = sscanf(e, "%lf:%lf:%lf:%31[^:]:%lf", &a, &b, &c, hex, &d);
 +    if (n >= 1 && a >= 0) *start_s = a;
 +    if (n >= 2 && b >= 50) *period_ms = b;
 +    if (n >= 3 && c > 0 && c < *period_ms) *hold_ms = c;
 +    if (n >= 4) { m = (unsigned)strtoul(hex, 0, 0); if (m && m <= 0xFFFF) *mask = m; }
++    if (n >= 5 && stop_s && d > *start_s) *stop_s = d;   /* the window's end */
 +    return n;
 +}
 +
@@ -173,13 +184,13 @@ new file mode 100644
 +
 +static const char* const ps3_lat_name[PS3_LAT_NSTAMP] = { "in", "read", "req", "fifo", "pres", "call", "ret", "gpu" };
 +
-+static inline void ps3_lat_summary(void)   /* caller holds the lock */
++static inline void ps3_lat_summary(const char* head)   /* caller holds the lock; head "summary" or "window summary" */
 +{
 +    ps3_lat_state* s = &g_ps3_lat;
 +    static double v[PS3_LAT_MAX];
 +    uint32_t n;
 +    char line[1400]; int o = 0;
-+    o += snprintf(line + o, sizeof line - o, "[latency] summary presses=%u", s->n_done);
++    o += snprintf(line + o, sizeof line - o, "[latency] %s presses=%u", head, s->n_done);
 +    for (int st = 1; st < PS3_LAT_NSTAMP; st++) {
 +        n = 0;
 +        for (uint32_t i = 0; i < s->n_probe; i++) {
@@ -217,9 +228,9 @@ new file mode 100644
 +        n = s->n_ft < (uint32_t)PS3_LAT_FT ? s->n_ft : (uint32_t)PS3_LAT_FT;
 +        memcpy(f, s->ft, n * sizeof f[0]);
 +        double sum = 0; for (uint32_t i = 0; i < n; i++) sum += f[i];
-+        const double p50 = ps3_lat_q(f, n, 0.5), p99 = ps3_lat_q(f, n, 0.99);
-+        o += snprintf(line + o, sizeof line - o, " frames=%u fps=%.2f ft_p50=%.1f ft_p99=%.1f (ms, median/p95)",
-+                      n, n && sum > 0 ? 1000.0 * n / sum : 0.0, p50, p99);
++        const double p50 = ps3_lat_q(f, n, 0.5), p95 = ps3_lat_q(f, n, 0.95), p99 = ps3_lat_q(f, n, 0.99);
++        o += snprintf(line + o, sizeof line - o, " frames=%u fps=%.2f ft_p50=%.1f ft_p95=%.1f ft_p99=%.1f (ms; stages"
++                      " median/p95)", n, n && sum > 0 ? 1000.0 * n / sum : 0.0, p50, p95, p99);
 +    }
 +    fprintf(stderr, "%s\n", line);
 +    fflush(stderr);
@@ -240,7 +251,7 @@ new file mode 100644
 +    for (uint32_t k = 0; k < s->n_open; k++)
 +        if (s->open[k] == idx) { s->open[k] = s->open[--s->n_open]; break; }
 +    s->n_done++;
-+    if (s->n_done - s->n_reported >= PS3_LAT_EVERY) { s->n_reported = s->n_done; ps3_lat_summary(); }
++    if (s->n_done - s->n_reported >= PS3_LAT_EVERY) { s->n_reported = s->n_done; ps3_lat_summary("summary"); }
 +}
 +
 +#ifdef _WIN32
@@ -250,12 +261,41 @@ new file mode 100644
 +    ps3_lat_state* s = &g_ps3_lat;
 +    uint32_t rng = 0x2545F491u;
 +    while (!s->first_read_us) Sleep(50);
-+    const uint64_t t0 = s->first_read_us + (uint64_t)(s->start_s * 1e6);
++    uint64_t base = s->first_read_us;
++    {   /* KZ2_LATENCY_ANCHOR=<path>: the window counts from the moment that file exists */
++        const char* anchor = getenv("KZ2_LATENCY_ANCHOR");
++        if (anchor && *anchor) {
++            while (GetFileAttributesA(anchor) == INVALID_FILE_ATTRIBUTES) Sleep(20);
++            base = ps3_lat_now();
++            fprintf(stderr, "[latency] anchor %s seen %.3f s after the first pad read\n", anchor,
++                    (double)(base - s->first_read_us) / 1e6);
++            fflush(stderr);
++        }
++    }
++    const uint64_t t0 = base + (uint64_t)(s->start_s * 1e6);
 +    while (ps3_lat_now() < t0) Sleep(20);
 +    fprintf(stderr, "[latency] injecting mask 0x%04X every %.0f-%.0f ms, held %.0f ms\n", (unsigned)s->mask, s->period_ms,
 +            s->period_ms * 1.5, s->hold_ms);
 +    fflush(stderr);
++    const uint64_t t_stop = s->stop_s > 0 ? base + (uint64_t)(s->stop_s * 1e6) : 0;
++    uint64_t stopping = 0;   /* past the window's end, when the last open press is given up */
 +    for (;;) {
++        if (t_stop && !stopping && ps3_lat_now() >= t_stop) {
++            ps3_lat_lock();
++            s->ft_stop = 1;
++            ps3_lat_unlock();
++            stopping = ps3_lat_now() + 3200000u;
++        }
++        if (stopping && (!s->n_open || ps3_lat_now() >= stopping)) {
++            ps3_lat_lock();
++            for (uint32_t k = s->n_open; k-- > 0; ) {   /* still open: incomplete, as after 3 s */
++                if (s->gpu_probe == (LONG)s->open[k] + 1) InterlockedExchange(&s->gpu_probe, 0);
++                s->probe[s->open[k]].stage = -1; ps3_lat_finish(s->open[k]);
++            }
++            ps3_lat_summary("window summary");
++            ps3_lat_unlock();
++            return 0;
++        }
 +        /* press */
 +        ps3_lat_lock();
 +        {   /* a press still open after 3 s (a load, or a fence stamp that never came) is closed as incomplete */
@@ -268,7 +308,7 @@ new file mode 100644
 +                } else k++;
 +            }
 +        }
-+        if (s->n_probe < PS3_LAT_MAX && s->n_open < PS3_LAT_OPEN) {
++        if (!stopping && s->n_probe < PS3_LAT_MAX && s->n_open < PS3_LAT_OPEN) {
 +            const uint32_t i = s->n_probe++;
 +            memset(&s->probe[i], 0, sizeof s->probe[i]);
 +            s->probe[i].t[PS3_LAT_IN] = ps3_lat_now();
@@ -329,15 +369,15 @@ new file mode 100644
 +        LARGE_INTEGER f; QueryPerformanceFrequency(&f); s->qpf = (uint64_t)f.QuadPart;
 +        InitializeSRWLock(&s->lock);
 +        s->start_s = 50; s->period_ms = 700; s->hold_ms = 120; s->mask = 0x0002;
-+        ps3_lat_parse(getenv("KZ2_LATENCY_INJECT"), &s->start_s, &s->period_ms, &s->hold_ms, &s->mask);
++        ps3_lat_parse(getenv("KZ2_LATENCY_INJECT"), &s->start_s, &s->period_ms, &s->hold_ms, &s->mask, &s->stop_s);
 +        s->gpu_event = CreateEventA(NULL, FALSE, FALSE, NULL);
 +        s->probe = (ps3_lat_probe*)calloc(PS3_LAT_MAX, sizeof(ps3_lat_probe));
 +        s->ft = (double*)calloc(PS3_LAT_FT, sizeof(double));
 +        HANDLE h = s->gpu_event && s->probe && s->ft ? CreateThread(NULL, 0, ps3_lat_thread, NULL, 0, NULL) : NULL;
 +        if (h) {
 +            CloseHandle(h);
-+            fprintf(stderr, "[latency] probe on (state %p): first press %.0f s after the first pad read, mask 0x%04X\n",
-+                    (void*)s, s->start_s, (unsigned)s->mask);
++            fprintf(stderr, "[latency] probe on (state %p): first press %.0f s after the first pad read, mask 0x%04X,"
++                    " stop %.0f s\n", (void*)s, s->start_s, (unsigned)s->mask, s->stop_s);
 +            on = 2;
 +        }
 +    }
@@ -440,7 +480,7 @@ new file mode 100644
 +    if (stage == PS3_LAT_RET) {   /* frame times from the first press on, under the lock below */
 +        ps3_lat_lock();
 +        const uint64_t t = ps3_lat_now();
-+        if (s->ft_prev > 1 && s->n_ft < PS3_LAT_FT) s->ft[s->n_ft++] = (double)(t - s->ft_prev) / 1000.0;
++        if (s->ft_prev > 1 && s->n_ft < PS3_LAT_FT && !s->ft_stop) s->ft[s->n_ft++] = (double)(t - s->ft_prev) / 1000.0;
 +        if (s->ft_prev) s->ft_prev = t;
 +        ps3_lat_unlock();
 +    }

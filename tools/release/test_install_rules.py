@@ -13,6 +13,7 @@ Cases:
     file, all parts, a gap, no first part, the first part only, nothing, an unrelated suffix).
   - WritePaths: the wizard's folders go to kz2-install.ini [paths] (dump, update, eboot) from [Code] at ssPostInstall,
     whether or not "Build now" is ticked; never an [INI] entry (Inno's setup log prints [INI] values).
+  - path characters (Project Helghast #20): HasBadPathChar/InstallDirProblem refuse '[', ']', ';'
   - OneDrive (Project Helghast v0.1.2): InOneDrive/InstallDirProblem refuse an install folder inside OneDrive, on the folder page
     and in PrepareToInstall (silent /DIR=); a transcription agrees with firstrun_check.onedrive_root_of.
   - Dump and update pages (Project Helghast v0.1.2): PS3_GAME / USRDIR picks resolved (wizard and silent), the TITLE_ID read
@@ -147,6 +148,14 @@ env = {"OneDrive": "C:\\Users\\a\\OneDrive", "OneDriveCommercial": "D:\\W\\OneDr
 for pth in ("C:\\Users\\a\\OneDrive\\Project Pyrrhus", "c:\\users\\A\\onedrive", "C:\\Users\\a\\OneDrive2\\x",
             "D:\\W\\OneDrive - Corp\\x\\Project Pyrrhus", "C:\\Users\\a\\AppData\\Local\\Programs\\Project Pyrrhus"):
     check(onedrive(pth, env) == bool(fc.onedrive_root_of(pth, env)), f"InOneDrive and firstrun_check O1 agree: {pth}")
+
+# P1 (the same failure reported on Project Helghast (#20)): '[', ']' or ';' in the install folder
+f = func("HasBadPathChar")
+chars = set(re.findall(r"Pos\('(.)', Dir\)", f))
+check(chars == set(fc.PATH_BAD_CHARS), f"HasBadPathChar tests the same characters as firstrun_check P1: {sorted(chars)}")
+f = func("InstallDirProblem")
+check("HasBadPathChar(D)" in f and "cannot handle" in f and "%LOCALAPPDATA%" in f,
+      "InstallDirProblem refuses [ ] ; with the plain message (folder page and PrepareToInstall, like OneDrive)")
 
 # Dump and update pages (adapted from Project Helghast v0.1.2)
 f = func("ResolveDump")

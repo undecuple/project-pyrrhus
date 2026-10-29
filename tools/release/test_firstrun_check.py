@@ -119,6 +119,18 @@ def main():
         check("complete set passes", rc == 0 and "FAIL" not in out, out)
         check("1.29 ELF recognised", "1.29" in out and levels(out, "E1") == {"OK"}, out)
         check("update APP_VER ok", levels(out, "U1") == {"OK"}, out)
+        # U3 FAILs since an earlier change (issue #16: the 1.29 EBOOT without the update's data stops at the main menu)
+        ud = os.path.join(u, "USRDIR", fc.UPDATE_DATA)
+        os.rename(ud, ud + ".bak")
+        rc, out = run(["--dump", d, "--update", u] + small)
+        check("U3 no update data archive fails", rc == 1 and "FAIL" in out and levels(out, "U3") == {"FAIL"}
+              and "main menu" in out, out)
+        os.rename(ud + ".bak", ud)
+        pd = os.path.join(u, "USRDIR", fc.UPDATE_PATCH_DIR)
+        os.rename(pd, pd + ".bak")
+        rc, out = run(["--dump", d, "--update", u] + small)
+        check("U3 no patch_data_ps3 fails", rc == 1 and levels(out, "U3") >= {"FAIL"}, out)
+        os.rename(pd + ".bak", pd)
 
         rc, out = run(["--dump", d, "--update", u, "--json"] + small)
         j = json.loads(out)
@@ -183,13 +195,25 @@ def main():
         r = fc.Report()
         fc.check_onedrive_tree(r, "C:\\ok\\Project Pyrrhus", "D:\\Work\\OneDrive - Corp\\build", env)
         check("O1 fails for a build dir inside OneDrive", len(r.checks) == 1 and "build folder" in r.checks[0]["message"])
+        # P1 (the same failure reported on Project Helghast (#20)): '[', ']' or ';' in the path
+        for bad in ("D:\\games\\recomp[\\Project Pyrrhus", "D:\\games\\x]y", "D:\\a;b\\Project Pyrrhus"):
+            r = fc.Report()
+            fc.check_path_chars(r, bad, "C:\\b\\build")
+            check(f"P1 fails for the install folder {bad}", [(c["code"], c["level"]) for c in r.checks] == [("P1", "FAIL")]
+                  and "cannot handle" in r.checks[0]["message"] and "Programs" in r.checks[0]["message"], r.checks)
+        r = fc.Report()
+        fc.check_path_chars(r, "C:\\Games\\Project Pyrrhus (copy) #2", "D:\\b[1]\\build")
+        check("P1: parentheses and # are fine; a build folder with [ fails", [c["code"] for c in r.checks] == ["P1"]
+              and "build folder" in r.checks[0]["message"] and "'[' and ']'" in r.checks[0]["message"], r.checks)
+        rc, out = run(["--dump", d, "--update", u, "--root", os.path.join(tmp, "inst[1]")] + small)
+        check("P1 from the command line: --root with [ fails", rc == 1 and "P1" in out and "cannot handle" in out, out)
         old = os.environ.get("OneDrive")
         os.environ["OneDrive"] = os.path.join(tmp, "hdd0")      # the update folder sits inside the fake OneDrive
         real_attr = fc.file_attributes
         try:
             rc, out = run(["--dump", d, "--update", u] + small)
             check("O3 INFO only when inside OneDrive but local", rc == 0 and levels(out, "O3") == {"OK"}
-                  and "INFO" in out and "O2" not in out, out)
+                  and "INFO" in out and "O2:" not in out, out)
             fc.file_attributes = lambda p: 0x400000 if p.endswith("data_ps3.psarc") else 0
             rc, out = run(["--dump", d, "--update", u, "--json"] + small)
             j = json.loads(out)
@@ -215,7 +239,7 @@ def main():
         check("O2 looks at every split part of the archive",
               [os.path.basename(x) for x in fc.game_files(sp, "", "")][2:] == ["data_ps3.psarc.66600", "data_ps3.psarc.66601"])
         rc, out = run(["--dump", d, "--update", u] + small + ["--root", "/x/OneDrive/p", "--build", os.path.join(tmp, "bx")])
-        check("--root without OneDrive env passes", rc == 0 and "O1" not in out, out)
+        check("--root without OneDrive env passes", rc == 0 and "O1:" not in out, out)
 
         # decrypted ISO as --dump (adapted from Project Helghast v0.1.2; iso_fixture.py builds tiny images): the same D-codes
         # from inside the image; I1 = encrypted, I2 = unreadable; no A1 here (firstrun.py hashes while copying)
@@ -235,7 +259,7 @@ def main():
         iso = build_iso(os.path.join(i, "game.iso"), files, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 2048})
         rc, out = run(["--dump", iso, "--update", u] + small)
         check("ISO: complete decrypted ISO passes", rc == 0 and "OK   D1:" in out and "OK   D3:" in out
-              and "inside the ISO" in out and "A1" not in out, out)
+              and "inside the ISO" in out and "A1:" not in out, out)
         check("ISO: INFO line names the image", "dump: decrypted ISO game.iso" in out, out)
         rc, out = run(["--dump", iso, "--update", u, "--json"] + small)
         j = json.loads(out)
@@ -269,7 +293,7 @@ def main():
         check("ISO: region table image is I1", rc == 1 and "FAIL I1" in out, out)
         open(os.path.join(i, "x.iso"), "wb").write(b"hello" * 100000)
         rc, out = run(["--dump", os.path.join(i, "x.iso")] + small)
-        check("ISO: not an ISO is I2, not 'encrypted'", rc == 1 and "FAIL I2" in out and "I1" not in out, out)
+        check("ISO: not an ISO is I2, not 'encrypted'", rc == 1 and "FAIL I2" in out and "FAIL I1" not in out, out)   # not bare "I1": a random temp path can hold it (nix-shell.NZASI1)
         data = open(iso, "rb").read()
         open(os.path.join(i, "t.iso"), "wb").write(data[:len(data) - 3000])
         rc, out = run(["--dump", os.path.join(i, "t.iso")] + small)
@@ -328,7 +352,7 @@ def main():
             check("A1 a different size is a mismatch without reading the file",
                   rc == 1 and "FAIL A1" in out and "the known archive is 4,096 bytes" in out and not calls, out)
             rc, out = run(["--dump", dmg, "--skip-archive-hash"] + a1)
-            check("--skip-archive-hash leaves A1 out", rc == 0 and "A1" not in out and not calls, out)
+            check("--skip-archive-hash leaves A1 out", rc == 0 and "A1:" not in out and not calls, out)
             cdir = os.path.join(tmp, "cachedir")
             for n in (1, 2):
                 rep = fc.Report()
@@ -495,7 +519,7 @@ def main():
         rc, out = run(["--dump", d, "--update", u] + small + ["--hashes", os.path.join(tmp, "nohashes.json")])
         check("H1 unreadable hashes file warns", rc == 0 and levels(out, "H1") == {"WARN"}, out)
         rc, out = run(["--dump", d, "--update", ux] + small + hashes(got))
-        check("no H1 when E1 failed", "H1" not in out, out)
+        check("no H1 when E1 failed", "H1:" not in out, out)
         # B1: the finished build must hold kz2.exe and at3_standalone.dll (kz2.exe imports it)
         ob = os.path.join(tmp, "obj")
         os.makedirs(ob)
@@ -510,7 +534,17 @@ def main():
         check("B1 empty DLL fails", rc == 1 and "is empty" in out, out)
         open(os.path.join(ob, "at3_standalone.dll"), "wb").write(b"MZ")
         rc, out = run(["--build-dir", ob])
-        check("B1 complete build passes", rc == 0 and "build checks: pass" in out, out)
+        check("B2 kz2.exe without the FFmpeg loader fails (issue #16)", rc == 1 and "FAIL B2:" in out
+              and "avcodec-63.dll, avutil-61.dll" in out and "FAIL B1" not in out, out)
+        # the loader's names straddling the 4 MiB read boundary are still found
+        exe = b"MZ" + bytes((1 << 22) - 8) + b"avcodec-63.dll" + bytes(100) + b"avutil-61.dll\0"
+        open(os.path.join(ob, "kz2.exe"), "wb").write(exe)
+        rc, out = run(["--build-dir", ob])
+        check("B1 + B2 complete build passes", rc == 0 and "build checks: pass" in out, out)
+        open(os.path.join(ob, "kz2.exe"), "wb").write(b"MZ avcodec-62.dll avutil-61.dll")
+        rc, out = run(["--build-dir", ob])
+        check("B2 a loader for another avcodec major fails", rc == 1 and "FAIL B2:" in out and "avcodec-63.dll" in out
+              and "avutil-61.dll," not in out, out)
         check("firstrun stamp step runs the B1 check", "--build-dir" in
               open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "firstrun.py")).read())
     finally:

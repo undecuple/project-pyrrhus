@@ -1,0 +1,286 @@
+KZ2 patch 6040: exclusive fullscreen on the live-draw swap chain survives a failed Present; ported
+from Killzone 3 PC port patch 2130 (2026-10-29; same author, MIT; their patch is not in the
+snapshot, so this follows their note, not their code). ENHANCEMENT / bug fix for patch 2095's code. Not yet confirmed
+on native Windows (KZ3 waits for an outside tester too); only tried under Proton, which never reproduced the failure.
+Two defects in 2095's present path, both not KZ-specific:
+- No ResizeTarget/ResizeBuffers after SetFullscreenState: a flip-model swap chain needs a resize after every fullscreen
+  transition, even when the client size did not change (2095 resized only on a size change, and borderless already had
+  the output's size). Now rsx_live_draw_set_fullscreen asks for a forced resize after every successful transition, and a
+  DXGI-made exit (Alt+Tab, mode change) is detected at the next present; the present then waits for the GPU, releases the
+  back-buffer references, ResizeTarget (in exclusive fullscreen) and ResizeBuffers, before the Present.
+- Any failed Present set g.ready = 0 for the session (the null backend, picture frozen, game running). Now
+  ld_dm_present_failed: a device that is gone (GetDeviceRemovedReason) stops the renderer as before; any other failure
+  leaves exclusive fullscreen (rsx_display_exclusive_lost posts it to the window thread: borderless for the session, the
+  saved mode untouched), forces the resize and keeps drawing; 8 failures in a row stop it (rsx_present_recover.h). Every
+  step is logged ([display]).
+- KZ2_TEST_PRESENT_FAIL=N[@F]: N forced failures from live-draw frame F (default 300), for tests. Host test
+  tools/runtime/test_present_recover.c.
+- Also: the ResizeBuffers-failure path no longer reads a NULL back buffer.
+
+diff -ruN a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -15020,6 +15020,13 @@
+ static u32 g_dm_movie_w, g_dm_movie_h;
+ static int g_dm_fs;                           /* swap chain in exclusive fullscreen */
+ static u32 g_dm_resizes;
++#include "rsx_present_recover.h"   /* patch 6040 (KZ3 2130): failed-Present recovery */
++/* patch 6040 (from KZ3 2130): a flip-model swap chain needs ResizeTarget/ResizeBuffers after every fullscreen
++ * transition, even when the client size did not change, or the next Present fails (DXGI_ERROR_INVALID_CALL, seen on
++ * native Windows in KZ3). g_dm_force_resize asks for it at the next present; a failed Present is recovered from. */
++static volatile LONG g_dm_force_resize;
++static unsigned g_dm_present_fails;           /* Presents that failed in a row */
++extern void rsx_display_exclusive_lost(void); /* rsx_null_backend.c: the window thread learns exclusive fullscreen is gone */
+ 
+ static void ld_dm_client(u32* w, u32* h)
+ {
+@@ -15045,17 +15052,39 @@
+     u32 w, h;
+     if (!g.swap) return;
+     ld_dm_client(&w, &h);
+-    if (w == g_dm_bb_w && h == g_dm_bb_h) return;
++    BOOL fs = FALSE;
++    g.swap->lpVtbl->GetFullscreenState(g.swap, &fs, NULL);
++    int force = InterlockedExchange(&g_dm_force_resize, 0) != 0;
++    if (g_dm_fs && !fs) {                           /* DXGI left exclusive fullscreen itself (Alt+Tab, mode change) */
++        g_dm_fs = 0;
++        force = 1;
++        fprintf(stderr, "[display] DXGI left exclusive fullscreen: swap chain resized at this present\n");
++    }
++    if (!force && w == g_dm_bb_w && h == g_dm_bb_h) return;
+     ld_wait_fence(g.fence_value);                   /* every submitted list that used a back buffer is done */
+     for (u32 i = 0; i < LD_SWAP_BUFFERS; i++)
+         if (g.backbuf[i]) { g.backbuf[i]->lpVtbl->Release(g.backbuf[i]); g.backbuf[i] = NULL; }
+-    const HRESULT hr = g.swap->lpVtbl->ResizeBuffers(g.swap, LD_SWAP_BUFFERS, w, h, DXGI_FORMAT_UNKNOWN, 0);
++    HRESULT hr = S_OK;
++    if (force && fs) {                              /* ResizeTarget first, then ResizeBuffers (DXGI's order) */
++        DXGI_SWAP_CHAIN_DESC sd;
++        if (SUCCEEDED(g.swap->lpVtbl->GetDesc(g.swap, &sd))) {
++            DXGI_MODE_DESC md = sd.BufferDesc;
++            md.Width = w; md.Height = h;
++            md.RefreshRate.Numerator = 0; md.RefreshRate.Denominator = 0;   /* the output's current rate */
++            const HRESULT rt = g.swap->lpVtbl->ResizeTarget(g.swap, &md);
++            if (FAILED(rt)) fprintf(stderr, "[display] ResizeTarget %ux%u failed hr=0x%08lX\n", w, h, (unsigned long)rt);
++        }
++    }
++    hr = g.swap->lpVtbl->ResizeBuffers(g.swap, LD_SWAP_BUFFERS, w, h, DXGI_FORMAT_UNKNOWN, 0);
+     ld_dm_get_buffers();
++    if (force)
++        fprintf(stderr, "[display] swap chain forced resize %ux%u (%s) hr=0x%08lX\n", w, h,
++                fs ? "exclusive fullscreen" : "not exclusive", (unsigned long)hr);
+     if (FAILED(hr)) {
+         fprintf(stderr, "[display] ResizeBuffers %ux%u failed hr=0x%08lX: %ux%u kept\n", w, h, (unsigned long)hr,
+                 g_dm_bb_w, g_dm_bb_h);
+         g_dm_bb_w = w; g_dm_bb_h = h;               /* do not retry every frame; the blit scales into the old size */
+-        {
++        if (g.backbuf[0]) {
+             D3D12_RESOURCE_DESC d;
+             g.backbuf[0]->lpVtbl->GetDesc(g.backbuf[0], &d);
+             g_dm_bb_w = (u32)d.Width; g_dm_bb_h = d.Height;
+@@ -15233,6 +15262,46 @@
+     return g_dm_movie_tex;
+ }
+ 
++/* Patch 6040: a Present failed (hr). Recover and keep drawing unless the device is gone or the failures do not stop:
++ * leave exclusive fullscreen (the backend learns it), have the swap chain resized at the next present. -> 1 = keep
++ * drawing, 0 = stop the renderer (the null backend, as before). Forced failures: KZ2_TEST_PRESENT_FAIL (rsx_present_recover.h). */
++static int ld_dm_present_failed(HRESULT hr, const char* where)
++{
++    const HRESULT removed = g.dev ? g.dev->lpVtbl->GetDeviceRemovedReason(g.dev) : S_OK;
++    const int act = rsx_pr_failed(&g_dm_present_fails, FAILED(removed));
++    BOOL fs = FALSE;
++    if (g.swap) g.swap->lpVtbl->GetFullscreenState(g.swap, &fs, NULL);
++    if (act != RSX_PR_CONTINUE) {
++        fprintf(stderr, "[display] %s Present failed hr=0x%08lX (%u in a row, device removed reason 0x%08lX): the live renderer stops\n",
++                where, (unsigned long)hr, g_dm_present_fails, (unsigned long)removed);
++        return 0;
++    }
++    fprintf(stderr, "[display] %s Present failed hr=0x%08lX (%u of %u): %s, swap chain resized at the next present, drawing continues\n",
++            where, (unsigned long)hr, g_dm_present_fails, RSX_PR_MAX_FAILS,
++            fs ? "leaving exclusive fullscreen (borderless from now)" : "not in exclusive fullscreen");
++    if (fs && g.swap) {
++        g.swap->lpVtbl->SetFullscreenState(g.swap, FALSE, NULL);
++        g_dm_fs = 0;
++        rsx_display_exclusive_lost();
++    }
++    InterlockedExchange(&g_dm_force_resize, 1);
++    return 1;
++}
++/* The Present's result, with KZ2_TEST_PRESENT_FAIL applied (read once). */
++static HRESULT ld_dm_present_result(HRESULT hr)
++{
++    static int init;
++    static unsigned n, from;
++    if (!init) {
++        init = 1;
++        const char* e = getenv("KZ2_TEST_PRESENT_FAIL");
++        if (rsx_pr_test_parse(e, &n, &from))
++            fprintf(stderr, "[display] KZ2_TEST_PRESENT_FAIL: %u forced Present failures from frame %u\n", n, from);
++        else if (e && *e) fprintf(stderr, "[display] KZ2_TEST_PRESENT_FAIL=%s not understood (N or N@FRAME)\n", e);
++    }
++    return SUCCEEDED(hr) && rsx_pr_test_hit(n, from, g_ld_frames) ? (HRESULT)DXGI_ERROR_INVALID_CALL : hr;
++}
++
+ /* Exclusive fullscreen on this swap chain (rsx_null_backend.c calls it on the window's thread). 1 = in that state
+  * now, 0 = DXGI refused, -1 = no swap chain. */
+ int rsx_live_draw_set_fullscreen(int on)
+@@ -15244,6 +15313,7 @@
+     const HRESULT hr = g.swap->lpVtbl->SetFullscreenState(g.swap, on ? TRUE : FALSE, NULL);
+     g.swap->lpVtbl->GetFullscreenState(g.swap, &cur, NULL);
+     g_dm_fs = cur != FALSE;
++    if (SUCCEEDED(hr)) InterlockedExchange(&g_dm_force_resize, 1);   /* patch 6040: ResizeTarget/ResizeBuffers at the next present */
+     fprintf(stderr, "[display] SetFullscreenState(%s) hr=0x%08lX -> fullscreen state %s\n", on ? "TRUE" : "FALSE",
+             (unsigned long)hr, cur ? "TRUE" : "FALSE");
+     return SUCCEEDED(hr) && (g_dm_fs == (on != 0)) ? 1 : 0;
+@@ -16087,15 +16157,18 @@
+ 
+     ld_flush(LD_FLUSH_MOVIE_PRESENT);
+     {
+-        const HRESULT present_hr = g.swap->lpVtbl->Present(g.swap, 1, 0);
+-        if (SUCCEEDED(present_hr))
++        const HRESULT present_hr = ld_dm_present_result(g.swap->lpVtbl->Present(g.swap, 1, 0));   /* patch 6040 */
++        if (SUCCEEDED(present_hr)) {
++            rsx_pr_ok(&g_dm_present_fails);
+             ld_present_measure_record(g_ld_frames);
+-        else {
++        } else {
+             fprintf(stderr,
+                     "[d3d-fail] movie Present hr=0x%08lX frame=%u\n",
+                     (unsigned long)present_hr, g_ld_frames);
+-            ld_dump_dred("MoviePresent", present_hr);
+-            g.ready = 0;
++            if (!ld_dm_present_failed(present_hr, "movie")) {   /* patch 6040: recover unless the device is gone */
++                ld_dump_dred("MoviePresent", present_hr);
++                g.ready = 0;
++            }
+         }
+     }
+     if (serialized) {
+@@ -17538,23 +17611,26 @@
+         ps3_lat_present(PS3_LAT_CALL);   /* KZ2 patch 6037 (KZ2_LATENCY=1) */
+         const long long swap0 = rsx_perf_now();
+         const HRESULT present_hr = s_nopresent ? S_OK
+-            : g.swap->lpVtbl->Present(g.swap, (UINT)s_interval, 0);
++            : ld_dm_present_result(g.swap->lpVtbl->Present(g.swap, (UINT)s_interval, 0));   /* patch 6040 */
+         rsx_perf_add(RSX_PERF_SWAP_T, rsx_perf_now() - swap0);
+         ps3_lat_present(PS3_LAT_RET);    /* KZ2 patch 6037: and the frame's fence for the probe's gpu stamp */
+         if (ps3_lat_gpu_claim() &&
+             FAILED(g.fence->lpVtbl->SetEventOnCompletion(g.fence, g.fence_value, (HANDLE)ps3_lat_gpu_event())))
+             SetEvent((HANDLE)ps3_lat_gpu_event());
+-        if (SUCCEEDED(present_hr))
++        if (SUCCEEDED(present_hr)) {
++            rsx_pr_ok(&g_dm_present_fails);
+             ld_present_measure_record(g_ld_frames + 1u);
+-        else {
++        } else {
+             fprintf(stderr,
+                     "[d3d-fail] Present hr=0x%08lX frame=%u "
+                     "target=%u size=%ux%u window=%ux%u\n",
+                     (unsigned long)present_hr, g_ld_frames,
+                     target, g.surfaces[target].w, g.surfaces[target].h,
+                     g.width, g.height);
+-            ld_dump_dred("Present", present_hr);
+-            g.ready = 0;
++            if (!ld_dm_present_failed(present_hr, "frame")) {   /* patch 6040: recover unless the device is gone */
++                ld_dump_dred("Present", present_hr);
++                g.ready = 0;
++            }
+         }
+     }
+ #if !defined(YZ_PERF_CLEAN)
+diff -ruN a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -70,6 +70,7 @@
+  * -----------------------------------------------------------------------*/
+ static int s_wt_on;                               /* the window lives on its own thread */
+ static volatile LONG s_wt_fs_req = -1;            /* (stage << 1) | on for the frame thread, -1 = none */
++#define RSX_DM_WM_FSLOST (WM_APP + 0x98)          /* patch 6040: the live renderer left exclusive fullscreen after a failed Present */
+ #define RSX_DM_WM_FSDONE (WM_APP + 0x97)          /* wParam = stage, lParam = rsx_live_draw_set_fullscreen's result */
+ enum { RSX_WT_FS_LEAVE = 1, RSX_WT_FS_ENTER = 2, RSX_WT_FS_RETAKE = 3 };
+ 
+@@ -250,6 +251,13 @@
+     return PostMessageA(s_state.hwnd, RSX_DM_WM_SET, (WPARAM)m, 0) ? 1 : 0;
+ }
+ 
++/* Patch 6040: from the frame thread when it leaves exclusive fullscreen on its own (a failed Present). Posted; the
++ * window's thread sets its state. The saved mode in display.ini is not touched. */
++void rsx_display_exclusive_lost(void)
++{
++    if (s_state.hwnd) PostMessageA(s_state.hwnd, RSX_DM_WM_FSLOST, 0, 0);
++}
++
+ /* Image scaling / filter (-1 = unchanged), from any thread; applied on the window's thread and saved. */
+ int rsx_display_set_scaling(int scaling, int filter)
+ {
+@@ -291,6 +299,16 @@
+         *res = 0;
+         return 1;
+     }
++    if (msg == RSX_DM_WM_FSLOST) {   /* patch 6040 (KZ3 2130): back to borderless for this session, no retake on activation */
++        const int m = rsx_dm_exclusive_refused(&s_dm);
++        if (s_dm_applied == RSX_DM_FULLSCREEN || s_dm_pending == RSX_DM_FULLSCREEN) {
++            s_dm_pending = -1;
++            s_dm_applied = m;
++            rsx_dm_log_client("exclusive fullscreen lost after a failed present: borderless for this session");
++        }
++        *res = 0;
++        return 1;
++    }
+     if (msg == RSX_DM_WM_FSDONE) { rsx_dm_fs_done((int)wp, (int)lp); *res = 0; return 1; }   /* patch 2124 */
+     if (msg == WM_ACTIVATEAPP && wp && s_dm_applied == RSX_DM_FULLSCREEN && !rsx_live_draw_is_fullscreen()) {
+         if (s_wt_on) { if (!s_dm_wait) rsx_wt_fs_ask(RSX_WT_FS_RETAKE, 1); }   /* patch 2124 */
+diff -ruN a/libs/video/rsx_present_recover.h b/libs/video/rsx_present_recover.h
+--- a/libs/video/rsx_present_recover.h
++++ b/libs/video/rsx_present_recover.h
+@@ -0,0 +1,50 @@
++/* KZ2 patch 6040: what a failed Present does, and the test switch that forces failures. The pure part (host test
++ * tools/runtime/test_present_recover.c); rsx_live_draw.c does the D3D work. From Killzone 3 PC port patch 2130 (same
++ * author, MIT) in idea: a failed Present must not stop the live renderer for good while the device is alive.
++ *
++ * Rule: a failure with the device removed (GetDeviceRemovedReason != S_OK) stops the renderer, as before. Any other
++ * failure is recovered from (leave exclusive fullscreen, resize the swap chain at the next present) and the renderer
++ * keeps drawing; after RSX_PR_MAX_FAILS failures in a row (a Present that never works again) it stops, so a real
++ * fault ends in the null backend instead of a retry loop. A successful Present clears the count.
++ *
++ * KZ2_TEST_PRESENT_FAIL=N[@F]: N forced failures (DXGI_ERROR_INVALID_CALL in place of the Present result), from live-draw
++ * frame F (default 300), in a row. N <= RSX_PR_MAX_FAILS must recover; more must stop the renderer (tests). */
++#ifndef RSX_PRESENT_RECOVER_H
++#define RSX_PRESENT_RECOVER_H
++#include <stdlib.h>
++
++#define RSX_PR_MAX_FAILS 8u
++enum { RSX_PR_CONTINUE = 1, RSX_PR_STOP = 0 };
++
++/* A Present failed: *consecutive counts it. -> RSX_PR_CONTINUE (recover and keep drawing) or RSX_PR_STOP. */
++static inline int rsx_pr_failed(unsigned* consecutive, int device_removed)
++{
++    (*consecutive)++;
++    if (device_removed) return RSX_PR_STOP;
++    return *consecutive <= RSX_PR_MAX_FAILS ? RSX_PR_CONTINUE : RSX_PR_STOP;
++}
++static inline void rsx_pr_ok(unsigned* consecutive) { *consecutive = 0; }
++
++/* KZ2_TEST_PRESENT_FAIL "N" or "N@F" -> 1 and *n, *from; unset, empty or bad -> 0. */
++static inline int rsx_pr_test_parse(const char* e, unsigned* n, unsigned* from)
++{
++    char* end = NULL;
++    *n = 0; *from = 300u;
++    if (!e || !*e) return 0;
++    const unsigned long v = strtoul(e, &end, 10);
++    if (end == e || v == 0 || v > 1000000ul) return 0;
++    *n = (unsigned)v;
++    if (*end == '@') {
++        char* e2 = NULL;
++        const unsigned long f = strtoul(end + 1, &e2, 10);
++        if (e2 == end + 1 || *e2 || f > 100000000ul) { *n = 0; return 0; }
++        *from = (unsigned)f;
++    } else if (*end) { *n = 0; return 0; }
++    return 1;
++}
++/* Is the Present at live-draw frame `frame` one of the forced failures? */
++static inline int rsx_pr_test_hit(unsigned n, unsigned from, unsigned frame)
++{
++    return n && frame >= from && frame - from < n;
++}
++#endif

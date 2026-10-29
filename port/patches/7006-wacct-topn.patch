@@ -1,0 +1,29 @@
+KZ2 patch 7006 (diagnostic, opt-in): KZ2_WACCT_TOPN=N makes patch 1032's wait accounting list the N
+costliest sites per thread and window (4..48; default 12 as before). With 12, the short Gfx.Post jobs drop out of the
+SPURS kernel threads' `job:ovlN` lists behind ksleep, pmrun and the long jobs, so the post chain's SPU time per frame
+could only be estimated (an earlier change scaled it from host samples); with 40 every job of a window is listed. Off by
+default: the output is unchanged unless the variable is set. Read once (the printer runs once a window).
+
+diff --git a/runtime/diag/kz3_wait_acct.c b/runtime/diag/kz3_wait_acct.c
+--- a/runtime/diag/kz3_wait_acct.c
++++ b/runtime/diag/kz3_wait_acct.c
+@@ -248,8 +248,17 @@
+             dtop[k] = a - t->p_top_ns[k]; dtopn[k] = b - t->p_top_n[k];
+             t->p_top_ns[k] = a; t->p_top_n[k] = b; tot += dtop[k];
+         }
+-        enum { TOPN = 12 };
+-        int best[TOPN]; uint64_t bns[TOPN], bn[TOPN]; int nb = 0;
++        /* KZ2 patch 7006: KZ2_WACCT_TOPN=N lists the N costliest sites per thread (4..48, default 12), so short jobs
++         * (the Gfx.Post chain's) stay in the job:ovlN lists. */
++        enum { TOPN_MAX = 48 };
++        static int s_topn;
++        if (!s_topn) {
++            const char* e = getenv("KZ2_WACCT_TOPN");
++            const int v = e ? atoi(e) : 12;
++            s_topn = v < 4 ? 4 : v > TOPN_MAX ? TOPN_MAX : v;
++        }
++        const int TOPN = s_topn;
++        int best[TOPN_MAX]; uint64_t bns[TOPN_MAX], bn[TOPN_MAX]; int nb = 0;
+         uint64_t any = 0, skips = 0;
+         uint32_t gs[6]; uint64_t gns[6], gn[6]; int ng = 0;
+         for (int s = 0; s < WA_SLOTS; s++) {

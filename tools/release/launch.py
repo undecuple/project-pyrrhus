@@ -63,6 +63,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import firstrun as fr  # noqa: E402
+import firstrun_check as fc  # noqa: E402
 
 TITLE = "Project Pyrrhus"
 # The only page an update notice may open (security review F2, 2026-10-20): the check's reply cannot send the player
@@ -124,8 +125,11 @@ def version_line(root):
 
 
 def note(root, text):
-    """One line in <root>/logs/launcher.log (what the launcher decided; pythonw has no console). Never fails."""
+    """One line in <root>/logs/launcher.log (what the launcher decided; pythonw has no console). Never fails. The user's
+    home folder becomes %USERPROFILE% (firstrun.redactor; an earlier change, issue #16: logs get attached to public
+    issues, and a vfs/prepare error can name a path)."""
     try:
+        text = fr.redactor()(text)
         d = os.path.join(root, "logs")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "launcher.log"), "a", encoding="utf-8") as f:
@@ -608,6 +612,8 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         return set_prompts(root, a.prompts, ini, ui)
     if a.display:
         return set_display(root, a.display, ini, ui)
+    if not a.print:
+        fr.relocate_saved(root)     # a moved or renamed install folder: saved paths inside it follow (never the old folder)
     action, reason = decide(root)
     paths = load_json(os.path.join(root, "build", "paths.json")) or {}
 
@@ -632,7 +638,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
     if ini["layout_bad"]:
         note(root, f"kz2-install.ini [controls] layout = {ini['layout_bad']!r} is unknown; using original")
     if ini["display_bad"]:
-        note(root, f"kz2-install.ini [display] mode = {ini['display_bad']!r} is unknown; using windowed")
+        note(root, f"kz2-install.ini [display] mode = {ini['display_bad']!r} is unknown; using borderless")
     if ini["prompts_bad"]:
         note(root, f"kz2-install.ini [controls] prompts = {ini['prompts_bad']!r} is unknown; using auto")
     note(root, f"start: {action}" + (f" ({reason})" if reason else ""))
@@ -684,6 +690,11 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
 
     gargv, cwd, env, added = game_env(root, paths, ini["portable"], environ, layout=ini["layout"], prompts=ini["prompts"],
                                             display=ini["display"] if ini["display_set"] else None)
+    up = update_problem(paths)
+    if up:
+        note(root, f"update: {up}")
+        ui.info(f"{up}.{REPORT}")
+        return 1
     try:
         _, err = ensure_vfs(root, paths["dump"])
         note(root, f"vfs: {err or 'ok'}")
@@ -714,6 +725,23 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         ui.info(f"The game stopped unexpectedly (code 0x{rc & 0xFFFFFFFF:08X}). Its log is the newest file in "
                 f"{logs_dir}.{REPORT}")
     return rc
+
+
+def update_problem(paths):
+    """-> "" when the recorded 1.29 update folder still holds what the game reads from it, else the message (release
+    an earlier change, issue #16: a 1.29 build run without the update's data stops at the main menu with exit code 1 and no
+    message: kz2-r33-noupd reproduced the reported NULL call from 0x003F2984). The same files as firstrun_check U2/U3."""
+    upd = paths.get("update") or ""
+    if not upd:
+        return ""
+    u = os.path.join(upd, "USRDIR")
+    gone = [n for n, isdir in (("EBOOT.BIN", False), (fc.UPDATE_DATA, False), (fc.UPDATE_PATCH_DIR, True))
+            if not (os.path.isdir if isdir else os.path.isfile)(os.path.join(u, n))]
+    if not gone:
+        return ""
+    return (f"The 1.29 update folder {upd} no longer holds USRDIR\\" + ", USRDIR\\".join(gone) + ". The game reads "
+            "the update's data from there and stops at the main menu without it. Put the update back in that folder, "
+            "or run the setup again and choose the update folder (the one that holds PARAM.SFO and USRDIR)")
 
 
 def crashed(rc):

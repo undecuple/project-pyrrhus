@@ -289,7 +289,22 @@ def main():
         order = [s.name for s in fr.STEPS]
         check(order.index("ppu-lift") < order.index("spu-lift") < order.index("configure"),
               "11c spu-lift runs between the PPU lift and configure")
+        # issue #16: configure must hand CMake the payload's FFmpeg headers; none -> a plain stop
+        try:
+            fr.cmd_configure(c)
+            check(False, "11d configure without FFmpeg headers stops")
+        except fr.StepFailed as e:
+            check("FFmpeg's headers are missing" in str(e) and "movies" in str(e), "11d configure without FFmpeg headers: plain stop")
+        os.makedirs(os.path.join(vr, "work", "ffmpeg-win", "include", "libavcodec"))
+        open(os.path.join(vr, "work", "ffmpeg-win", "include", "libavcodec", "avcodec.h"), "w").close()
         cf = " ".join(fr.cmd_configure(c)[0]).replace(os.sep, "/")
+        check("-DKZ2_FFMPEG_INCLUDE_DIR=" in cf and cf.split("-DKZ2_FFMPEG_INCLUDE_DIR=")[1].split()[0].endswith("work/ffmpeg-win/include"),
+              "11d a source tree's work/ffmpeg-win/include is used")
+        os.makedirs(os.path.join(vr, "ffmpeg", "include", "libavcodec"))
+        open(os.path.join(vr, "ffmpeg", "include", "libavcodec", "avcodec.h"), "w").close()
+        cf = " ".join(fr.cmd_configure(c)[0]).replace(os.sep, "/")
+        check(cf.split("-DKZ2_FFMPEG_INCLUDE_DIR=")[1].split()[0] == fr.cm_path(os.path.join(vr, "ffmpeg", "include")).replace(os.sep, "/"),
+              "11d the payload's ffmpeg/include comes first")
         check("-DSPU_DIR=" in cf and cf.split("-DSPU_DIR=")[1].split()[0].endswith("b/spu/lift"), "11c configure points SPU_DIR at build/spu/lift")
         h0 = fr.lift_inputs_hash(c)
         os.makedirs(os.path.join(vr, "re"), exist_ok=True)
@@ -392,7 +407,7 @@ def main():
         check(go is False and "install the 1.29 update in RPCS3" in o and "v9.0.0" in o and a12.update == u12, "12 failed check, help, retry")
         check(any("version check (player asked): status=newer" in n for n in notes), f"12 version check logged {notes}")
         ini = open(os.path.join(root12, "kz2-install.ini")).read()
-        check("portable = 0" in ini and "check_updates = 1" in ini and "layout = original" in ini and "prompts = ps4" in ini and "mode = windowed" in ini, f"12 ini after opt-in: {ini!r}")
+        check("portable = 0" in ini and "check_updates = 1" in ini and "layout = original" in ini and "prompts = ps4" in ini and "mode = borderless" in ini, f"12 ini after opt-in: {ini!r}")
         answers = iter([d12, u12, "", "q"])
         go = fr.interactive(a12, root12, "x.log", [], ask=lambda q: next(answers), out=io.StringIO(),
                             check=lambda *x: (1, "FAIL D1: x\n"))

@@ -258,6 +258,39 @@ def debase_includes(sub):
                 open(p, "w").write(n)
 
 
+def native_gates(sub, name):
+    """Spu an earlier change: insert the native gates of re/spu/native_gates.tsv into this image's lifted functions. The gate
+    is the first statement of the function: `if (g_kz2_native_gate[slot] && g_kz2_native_gate[slot](ctx))
+    SPU_RET(ctx);` (a native implementation that ran the whole subroutine returns 1). Returns the gates inserted."""
+    import re
+    tsv = os.path.join(ROOT, "re", "spu", "native_gates.tsv")
+    rows = []
+    if os.path.exists(tsv):
+        for line in open(tsv):
+            if line.startswith("#") or not line.strip():
+                continue
+            f = line.rstrip("\n").split("\t")
+            if f[0] == name:
+                rows.append((int(f[1], 16), int(f[2]), f[3]))
+    p = os.path.join(sub, "spu_recomp.c")
+    if not rows or not os.path.exists(p):
+        return 0
+    t = open(p).read()
+    n = 0
+    for addr, slot, job in rows:
+        head = f"SPU_ABI void {name}_spu_func_{addr:08X}(spu_context* ctx) {{\n"
+        if head not in t:
+            raise SystemExit(f"native gate: no lifted function {name} 0x{addr:X}")
+        gate = (f"    if (__builtin_expect(g_kz2_native_gate[{slot}] != 0, 0) && g_kz2_native_gate[{slot}](ctx)) "
+                f"SPU_RET(ctx);   /* native gate {slot}: {job} 0x{addr:X} (re/spu/native_gates.tsv) */\n")
+        t = t.replace(head, head + gate, 1)
+        n += 1
+    decl = "extern int (*g_kz2_native_gate[])(spu_context*);   /* an earlier change: re/spu/native_gates.tsv */\n"
+    t = re.sub(r'(#include "spu_helpers.h"\n)', lambda m: m.group(1) + decl, t, count=1)
+    open(p, "w").write(t)
+    return n
+
+
 def lift_one(job):
     """Run spu_lifter.main() in-process for one image and collect what it lifted."""
     name, kind, elf_path, argv_extra, meta, pt, outdir = job
@@ -303,6 +336,10 @@ def lift_one(job):
         ok = False
         buf.write(traceback.format_exc())
     debase_includes(sub)
+    if ok:
+        gates = native_gates(sub, name)
+        if gates:
+            buf.write(f"native gates: {gates}\n")
     open(os.path.join(sub, "lift.log"), "w").write(" ".join(sys.argv[1:]) + "\n" + buf.getvalue())
     l = inst.get("l")
     res = dict(name=name, kind=kind, ok=ok, argv=argv_extra, **meta)

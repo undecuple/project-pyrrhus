@@ -1063,12 +1063,459 @@ static const char* kz2_pad_button_name(int32_t b)
     fprintf(stderr, "[kz2-pad] input %s: func %d (%s) <- button %d (%s)\n", kn[kind], func, kz2_pad_func_name(func),
             btn, kz2_pad_button_name(btn));
 }
-#ifdef PPU_OVERRIDE_00082248
-void func_00082248(ppu_context* ctx) { kz2_pad_query(ctx, func_00082248__lifted, 0); }   // @0x00082248 (1.29)
-#endif
+/* @0x00082248 (1.29): also the cover_toggle hook, defined with the gameplay settings below (kz2_cover_held_q). */
 #ifdef PPU_OVERRIDE_00082290
 void func_00082290(ppu_context* ctx) { kz2_pad_query(ctx, func_00082290__lifted, 1); }   // @0x00082290 (1.29)
 #endif
 #ifdef PPU_OVERRIDE_000822F0
 void func_000822F0(ppu_context* ctx) { kz2_pad_query(ctx, func_000822F0__lifted, 2); }   // @0x000822F0 (1.29)
+#endif
+
+/* ---- the Edge zlib inflate job on the host (KZ2_NATIVE_ZLIB) ----
+ * @0x003C8BA0 (1.29) / @0x003BCAA0 (v1.01, same first 80 bytes) = edgeZlibAddInflateQueueElement(q r3, in r4, inSize r5,
+ * out r6, skipBegin r7, partial r8, skipEnd r9, counter r10, eventFlag = caller stack +0x74, bits = u16 at +0x7E,
+ * mode = +0x84). Its callers are FIOS's dearchiver only: func_0002CD20 (mode 1, in = block + 2, i.e. the zlib header
+ * skipped) and func_0002CFD8 (mode 0 = a plain copy of >= 0x1000 bytes; smaller copies are a PPU memmove, 0x7B9170),
+ * both through the wrapper func_003C8E40 (skips 0), counter = dearchiver +0x2C00, event flag = +0x2980 (direction
+ * SPU2PPU), bits = slot +0x1E. The SPU task's behaviour is in kz2_edge_zlib.h; kz2_edge_run does it here.
+ * KZ2_NATIVE_ZLIB=1: run the element on the calling PPU thread (inflate or copy, the window, the counter decrement, the
+ *   event flag), return without pushing; anything the task would refuse, or that fails, goes to the lifted push
+ *   unchanged. Default on (scripted in-play A/B, 3 pairs: level start 9.7-10.9 s sooner, frame times
+ *   within noise; equality 400/400 on two captures); KZ2_NATIVE_ZLIB=0 is the fallback to the lifted push (task
+ *   image 35).
+ * KZ2_NATIVE_ZLIB_STATS=1: one line every 1000 elements or 5 s of elements, and at exit: native / fallback (by reason) /
+ *   lifted counts, mode-0 count, bytes in and out, host time.
+ * KZ2_NATIVE_ZLIB_RECORD=N[:STRIDE[:SKIP]] (diagnostic, the round's diff test; an earlier change added STRIDE and SKIP: every
+ *   STRIDE-th element after the first SKIP, so a capture can span a whole level load): with the lifted path, N elements are also
+ *   inflated on the host before the push; after the task completes (the counter drops) the window the SPU wrote is
+ *   compared byte for byte ([kz2-zlib] rec lines), and each record (element, input, SPU window) is written to
+ *   kz2-zrec/NNNNN.bin in the working directory for tools/runtime/edge_zlib_check.py. Game bytes: keep them in work/. */
+#include "kz2_edge_zlib.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
+extern "C" int kz2_guest_put(uint32_t ea, const void* src, uint32_t n);   /* kz2_edge_guest.c */
+extern "C" int32_t cellSpursEventFlagSet(void* eventFlag, uint16_t bits);  /* libs/spurs/cellSpurs.c: takes the EA */
+
+namespace {
+struct Kz2ZlibStats {
+    std::atomic<uint64_t> native{0}, lifted{0}, mode0{0}, in{0}, out{0}, host_ns{0}, max_ns{0}, last_print{0};
+    std::atomic<uint64_t> fb[KZ2_EDGE_NSTATUS] = {};
+    std::atomic<uint64_t> rec_ok{0}, rec_bad{0}, rec_timeout{0};
+};
+Kz2ZlibStats g_kz2_zlib;
+int g_kz2_zlib_mode = -1, g_kz2_zlib_stats = 0, g_kz2_zlib_rec = 0;
+int g_kz2_zlib_rec_stride = 1, g_kz2_zlib_rec_skip = 0;   /* KZ2_NATIVE_ZLIB_RECORD=N:STRIDE:SKIP */
+std::atomic<int> g_kz2_zlib_rec_seen{0};
+std::atomic<int> g_kz2_zlib_rec_n{0};
+
+uint64_t kz2_zlib_now_ns()
+{
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void kz2_zlib_print(const char* why)
+{
+    Kz2ZlibStats& s = g_kz2_zlib;
+    fprintf(stderr, "[kz2-zlib] KZ2_NATIVE_ZLIB_STATS (%s) native=%llu fallback=%llu (args %llu src %llu inflate %llu copy %llu "
+            "put %llu) lifted=%llu mode0=%llu in=%llu out=%llu host_ms=%.1f max_us=%.0f rec ok=%llu bad=%llu timeout=%llu\n",
+            why, (unsigned long long)s.native.load(),
+            (unsigned long long)(s.fb[1] + s.fb[2] + s.fb[3] + s.fb[4] + s.fb[5]), (unsigned long long)s.fb[1].load(),
+            (unsigned long long)s.fb[2].load(), (unsigned long long)s.fb[3].load(), (unsigned long long)s.fb[4].load(),
+            (unsigned long long)s.fb[5].load(), (unsigned long long)s.lifted.load(), (unsigned long long)s.mode0.load(),
+            (unsigned long long)s.in.load(), (unsigned long long)s.out.load(), s.host_ns.load() / 1e6, s.max_ns.load() / 1e3,
+            (unsigned long long)s.rec_ok.load(), (unsigned long long)s.rec_bad.load(),
+            (unsigned long long)s.rec_timeout.load());
+}
+void kz2_zlib_atexit() { kz2_zlib_print("exit"); }
+
+void kz2_zlib_init()
+{
+    if (g_kz2_zlib_mode >= 0) return;
+    const char* e = getenv("KZ2_NATIVE_ZLIB");
+    const char* st = getenv("KZ2_NATIVE_ZLIB_STATS");
+    const char* rc = getenv("KZ2_NATIVE_ZLIB_RECORD");
+    g_kz2_zlib_stats = (st && *st && *st != '0') ? 1 : 0;
+    g_kz2_zlib_rec = rc ? atoi(rc) : 0;
+    if (rc && g_kz2_zlib_rec > 0) {   /* N:STRIDE:SKIP (every STRIDE-th element after the first SKIP) */
+        int n = 0, stride = 1, skip = 0;
+        if (sscanf(rc, "%d:%d:%d", &n, &stride, &skip) >= 2) {
+            g_kz2_zlib_rec_stride = stride > 0 ? stride : 1;
+            g_kz2_zlib_rec_skip = skip > 0 ? skip : 0;
+        }
+    }
+    if (g_kz2_zlib_stats) atexit(kz2_zlib_atexit);
+    g_kz2_zlib_mode = (e && *e == '0') ? 0 : 1;   /* on unless KZ2_NATIVE_ZLIB=0 */
+    fprintf(stderr, "[kz2-zlib] Edge zlib job: %s (host decoder %s)%s\n",
+            g_kz2_zlib_mode ? "native, on the PPU thread (default; KZ2_NATIVE_ZLIB=0 for the SPU task)" : "SPU task image 35 (lifted push)",
+            kz2_edge_backend(), g_kz2_zlib_rec ? ", recording the SPU's output for the diff test" : "");
+    if (g_kz2_zlib_rec)
+        fprintf(stderr, "[kz2-zlib] recording %d elements: every %d after the first %d\n", g_kz2_zlib_rec,
+                g_kz2_zlib_rec_stride, g_kz2_zlib_rec_skip);
+}
+
+void kz2_zlib_tick(uint64_t n)
+{
+    if (!g_kz2_zlib_stats) return;
+    const uint64_t now = kz2_zlib_now_ns(), last = g_kz2_zlib.last_print.load();
+    if (n % 1000 == 0 || now - last > 5000000000ull) {
+        g_kz2_zlib.last_print = now;
+        kz2_zlib_print(n % 1000 == 0 ? "1000" : "5s");
+    }
+}
+
+const uint8_t* kz2_zlib_src(void*, uint32_t ea, uint32_t n)
+{
+    if (ea < 0x10000u || (uint64_t)ea + n > 0xF0000000ull) return nullptr;
+    return (const uint8_t*)vm_base + ea;
+}
+int kz2_zlib_put(void*, uint32_t ea, const uint8_t* p, uint32_t n) { return kz2_guest_put(ea, p, n); }
+/* lwarx/stwcx. through the runtime's reservation emulation (the same path the caller's increment at 0x2CEE8 takes, and
+ * the one that breaks an SPU GETLLAR reservation on the line), so the decrement is atomic against both. */
+uint32_t kz2_zlib_dec(void* user, uint32_t ea)
+{
+    ppu_context* ctx = (ppu_context*)user;
+    const uint64_t ra = ctx->reserve_addr, rv = ctx->reserve_value;
+    uint32_t old;
+    for (;;) {
+        old = vm_read32(ea);
+        ctx->reserve_addr = ea;
+        ctx->reserve_value = old;
+        if (ppu_stwcx32(ea, old, old - 1u)) break;
+    }
+    ctx->reserve_addr = ra;
+    ctx->reserve_value = rv;
+    if (old == 0) {
+        static int warned;
+        if (warned++ < 4) fprintf(stderr, "[kz2-zlib] work-to-do counter 0x%08X already at zero (the task's error)\n", ea);
+    }
+    return old;
+}
+int kz2_zlib_flag(void*, uint32_t ea, uint16_t bits) { return (int)cellSpursEventFlagSet((void*)(uintptr_t)ea, bits); }
+
+/* The diff test: the host result first (nothing written), then the lifted push, then wait for the task's decrement. */
+void kz2_zlib_record(ppu_context* ctx, const kz2_edge_elem& e, void (*lifted)(ppu_context*))
+{
+    static thread_local uint8_t host[KZ2_EDGE_MAX];
+    const int idx = g_kz2_zlib_rec_n++;
+    const uint32_t counter = e.counter_mode & ~1u;
+    const uint32_t expected = (uint32_t)e.skip_begin + e.partial + e.skip_end;
+    int hn = -1;
+    const uint8_t* in = kz2_zlib_src(nullptr, e.in, e.in_size);
+    if (in && expected <= KZ2_EDGE_MAX && e.in_size <= KZ2_EDGE_MAX) {
+        if (e.counter_mode & 1u) hn = kz2_edge_inflate_raw(host, expected, in, e.in_size);
+        else if (e.in_size == expected) { memcpy(host, in, expected); hn = (int)expected; }
+    }
+    std::vector<uint8_t> inb(in ? in : host, (in ? in : host) + (in ? e.in_size : 0));
+    const uint32_t c0 = counter ? vm_read32(counter) : 0;
+    lifted(ctx);
+    bool done = false;
+    const uint64_t t0 = kz2_zlib_now_ns();
+    while (counter && !(done = (vm_read32(counter) != c0)) && kz2_zlib_now_ns() - t0 < 5000000000ull)
+        std::this_thread::yield();
+    if (!done) { g_kz2_zlib.rec_timeout++; fprintf(stderr, "[kz2-zlib] rec %d: no completion seen\n", idx); return; }
+    const uint8_t* spu = kz2_zlib_src(nullptr, e.out, e.partial);
+    uint32_t diff = UINT32_MAX;
+    if (hn != (int)expected || !spu) diff = 0;
+    else for (uint32_t i = 0; i < e.partial; i++) if (host[e.skip_begin + i] != spu[i]) { diff = i; break; }
+    if (diff == UINT32_MAX) g_kz2_zlib.rec_ok++; else g_kz2_zlib.rec_bad++;
+    if (diff != UINT32_MAX || idx < 8 || idx % 500 == 0)
+        fprintf(stderr, "[kz2-zlib] rec %d mode=%u in=%u expected=%u skip=%u/%u partial=%u host=%d -> %s (first diff %d)\n",
+                idx, e.counter_mode & 1u, e.in_size, expected, e.skip_begin, e.skip_end, e.partial, hn,
+                diff == UINT32_MAX ? "MATCH" : "DIFFER", diff == UINT32_MAX ? -1 : (int)diff);
+    if (spu) {
+        char name[64];
+        static std::atomic<int> dir_made{0};
+        if (!dir_made.exchange(1)) {
+#ifdef _WIN32
+            _mkdir("kz2-zrec");
+#else
+            mkdir("kz2-zrec", 0755);
+#endif
+        }
+        snprintf(name, sizeof name, "kz2-zrec/%05d.bin", idx);
+        if (FILE* f = fopen(name, "wb")) {
+            uint8_t el[32] = {};
+            auto w32 = [&](int o, uint32_t v) { el[o] = v >> 24; el[o + 1] = v >> 16; el[o + 2] = v >> 8; el[o + 3] = v; };
+            auto w16 = [&](int o, uint16_t v) { el[o] = v >> 8; el[o + 1] = (uint8_t)v; };
+            w32(0, e.in); w32(4, e.out); w32(8, e.in_size); w32(0xC, e.partial); w32(0x10, e.counter_mode);
+            w32(0x14, e.event_flag); w16(0x18, e.bits); w16(0x1A, e.skip_begin); w16(0x1C, e.skip_end);
+            fwrite(el, 1, 32, f);
+            fwrite(inb.data(), 1, inb.size(), f);
+            fwrite(spu, 1, e.partial, f);
+            fclose(f);
+        }
+    }
+}
+}  // namespace
+
+[[maybe_unused]] static void kz2_edge_add(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    kz2_zlib_init();
+    const uint32_t sp = (uint32_t)ctx->gpr[1];
+    const uint32_t mode = vm_read32(sp + 0x84);
+    kz2_edge_elem e;
+    e.in = (uint32_t)ctx->gpr[4];
+    e.in_size = (uint32_t)ctx->gpr[5];
+    e.out = (uint32_t)ctx->gpr[6];
+    e.skip_begin = (uint16_t)ctx->gpr[7];
+    e.partial = (uint32_t)ctx->gpr[8];
+    e.skip_end = (uint16_t)ctx->gpr[9];
+    e.counter_mode = (uint32_t)ctx->gpr[10] | mode;
+    e.event_flag = vm_read32(sp + 0x74);
+    e.bits = vm_read16(sp + 0x7E);
+    Kz2ZlibStats& s = g_kz2_zlib;
+    if (g_kz2_zlib_mode == 1 && mode <= 1u && !((uint32_t)ctx->gpr[10] & 3u)) {
+        static thread_local uint8_t scratch[KZ2_EDGE_MAX];
+        const kz2_edge_ops ops = { ctx, kz2_zlib_src, kz2_zlib_put, kz2_zlib_dec, kz2_zlib_flag };
+        kz2_edge_result r;
+        const uint64_t t0 = kz2_zlib_now_ns();
+        const int st = kz2_edge_run(&e, &ops, scratch, &r);
+        const uint64_t dt = kz2_zlib_now_ns() - t0;
+        if (st == KZ2_EDGE_DONE) {
+            s.host_ns += dt;
+            for (uint64_t m = s.max_ns.load(); dt > m && !s.max_ns.compare_exchange_weak(m, dt);) {}
+            s.in += e.in_size;
+            s.out += e.partial;
+            if (!mode) s.mode0++;
+            ctx->gpr[3] = 0;   /* the lifted body ends with the unlock's result (0); its callers ignore r3 */
+            kz2_zlib_tick(++s.native);
+            return;
+        }
+        s.fb[st]++;
+        static int fb_lines;
+        if (fb_lines++ < 16)
+            fprintf(stderr, "[kz2-zlib] fallback %d: in=0x%08X size=%u out=0x%08X skip=%u/%u partial=%u mode=%u counter=0x%08X\n",
+                    st, e.in, e.in_size, e.out, e.skip_begin, e.skip_end, e.partial, mode, (uint32_t)ctx->gpr[10]);
+    } else if (g_kz2_zlib_mode == 1) {
+        s.fb[KZ2_EDGE_FB_ARGS]++;
+    }
+    s.in += e.in_size;
+    s.out += e.partial;
+    if (!mode) s.mode0++;
+    int seen = -1;   /* the element's number among the lifted ones, for the record's stride and skip */
+    if (g_kz2_zlib_mode == 0 && g_kz2_zlib_rec > 0 && g_kz2_zlib_rec_n.load() < g_kz2_zlib_rec)
+        seen = g_kz2_zlib_rec_seen++;
+    if (seen >= g_kz2_zlib_rec_skip && (seen - g_kz2_zlib_rec_skip) % g_kz2_zlib_rec_stride == 0)
+        kz2_zlib_record(ctx, e, lifted);
+    else lifted(ctx);
+    kz2_zlib_tick(++s.lifted);
+}
+#ifdef PPU_OVERRIDE_003C8BA0
+void func_003C8BA0(ppu_context* ctx) { kz2_edge_add(ctx, func_003C8BA0__lifted); }   // @0x003C8BA0 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_003BCAA0
+void func_003BCAA0(ppu_context* ctx) { kz2_edge_add(ctx, func_003BCAA0__lifted); }   // @0x003BCAA0 (v1.01)
+#endif
+
+/* ---- Player gameplay settings (ENHANCEMENT, original behaviour is the default) ------------------------
+ * kz2_gameplay.h has the settings (gameplay.ini [gameplay], KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE) and
+ * the pure logic; this is the guest glue. Addresses are 1.29 with the v1.01 twin in the table (found with the
+ * name_census call-graph map and checked by disassembling the call sites). C = SoldierJoystickController, E = C+0x10,
+ * P = the PlayerProfile (*(0x11B0540 + 0x240) in 1.29, *(0x117E740 + 0x240) in v1.01). KZ2_GP_LOG=1 logs what the hooks see.
+ *
+ *  aim_assist   ApplyInputModifier @0x2F0120 (v1.01 0x2E4EF8) when lr is 0x174160 (v1.01 0x16E900) and the shoot/zoom
+ *               assist helper @0x2F0880 (0x2E5658) when lr is 0x1741F8 or 0x1742CC (0x16E998 / 0x16EA2C): UpdateLook
+ *               @0x173E80 (0x16E620) only. They return early when the assist is off; the modifier pointer C+0x30C is
+ *               never touched (the sprint slowdown shares that gate), the follow camera (0xBF398) and mounted gun
+ *               (0x102148) callers keep running. Results are not read by the callers (they reload from memory).
+ *  crouch_toggle  Crouch decision @0x176208 (0x170990): P+0x61 (CrouchButtonIsToggle) is set to 1 around the body and
+ *               put back after it, so the saved profile keeps the player's own value; the net-state test @0x7B388
+ *               (0x7A098) is forced to 1 at its only use there (lr 0x1762AC, v1.01 0x170A34), since the retail toggle
+ *               also needs it (UNKNOWN offline: KZ2_GP_LOG prints the raw result).
+ *  cover_toggle   held(11) @0x82248 (0x80D38) at the cover query (lr 0x1764A8, v1.01 0x170C30) returns a latch flipped by
+ *               pressed(11) @0x82290 (0x80D80); the cover finder @0xB1E78 (0xAD4F0) at lr 0x1764D0 (0x170C58) reports
+ *               "found"; the cover function @0x1763B0 (0x170B38) resets and closes the frame (kz2_cover_end). */
+#include "kz2_gameplay.h"
+
+static int kz2_gp_log_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("KZ2_GP_LOG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    return on;
+}
+static float kz2_gp_f32(uint32_t ea) { const uint32_t u = vm_read32(ea); float f; memcpy(&f, &u, 4); return f; }
+
+[[maybe_unused]] static void kz2_aim_gate(ppu_context* ctx, void (*lifted)(ppu_context*), const uint32_t* sites, int n,
+                                          int stick_args, const char* name)
+{
+    const int on = kz2_gp_aim_on(kz2_gameplay_get(), 0);   /* no mouse look yet: auto == on */
+    const uint32_t lr = (uint32_t)ctx->lr;
+    static unsigned skipped, ran_site, changed, ran_other;
+    if (kz2_gp_aim_skip(on, lr, sites, n)) {
+        if (kz2_gp_log_on() && (++skipped == 1 || skipped % 600 == 0))
+            fprintf(stderr, "[gameplay] aim assist off: %s skipped at lr 0x%08X (%u skipped, %u ran at the look sites, %u other callers)\n",
+                    name, lr, skipped, ran_site, ran_other);
+        else skipped++;
+        return;
+    }
+    int site = 0;
+    for (int i = 0; i < n; i++) site |= sites[i] == lr;
+    if (!site) { ran_other++; lifted(ctx); return; }
+    ran_site++;
+    if (!kz2_gp_log_on() || !stick_args) { lifted(ctx); return; }
+    const uint32_t px = (uint32_t)ctx->gpr[5], py = (uint32_t)ctx->gpr[6];
+    const float fx = kz2_gp_f32(px), fy = kz2_gp_f32(py);
+    lifted(ctx);
+    if (kz2_gp_f32(px) != fx || kz2_gp_f32(py) != fy) {   /* float compare: -0.0 -> 0.0 is no edit */
+        if (++changed <= 5 || changed % 300 == 0)
+            fprintf(stderr, "[gameplay] aim assist on: %s edited the stick at lr 0x%08X: (%.3f, %.3f) -> (%.3f, %.3f)"
+                    " (%u edits in %u calls)\n", name, lr, fx, fy, kz2_gp_f32(px), kz2_gp_f32(py), changed, ran_site);
+    } else if (ran_site % 600 == 1) {
+        fprintf(stderr, "[gameplay] aim assist on: %s left the stick alone (%u edits in %u calls)\n", name, changed, ran_site);
+    }
+}
+static const uint32_t kz2_aim_sites_modifier_129[] = { 0x00174160u };
+static const uint32_t kz2_aim_sites_shoot_129[] = { 0x001741F8u, 0x001742CCu };
+static const uint32_t kz2_aim_sites_modifier_101[] = { 0x0016E900u };
+static const uint32_t kz2_aim_sites_shoot_101[] = { 0x0016E998u, 0x0016EA2Cu };
+#ifdef PPU_OVERRIDE_002F0120
+void func_002F0120(ppu_context* ctx) { kz2_aim_gate(ctx, func_002F0120__lifted, kz2_aim_sites_modifier_129, 1, 1, "ApplyInputModifier"); }   // @0x002F0120 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002F0880
+void func_002F0880(ppu_context* ctx) { kz2_aim_gate(ctx, func_002F0880__lifted, kz2_aim_sites_shoot_129, 2, 0, "ShootZoomAssist"); }   // @0x002F0880 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002E4EF8
+void func_002E4EF8(ppu_context* ctx) { kz2_aim_gate(ctx, func_002E4EF8__lifted, kz2_aim_sites_modifier_101, 1, 1, "ApplyInputModifier"); }   // @0x002E4EF8 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_002E5658
+void func_002E5658(ppu_context* ctx) { kz2_aim_gate(ctx, func_002E5658__lifted, kz2_aim_sites_shoot_101, 2, 0, "ShootZoomAssist"); }   // @0x002E5658 (v1.01)
+#endif
+
+/* crouch_toggle. prof_global = the address holding the PlayerProfile pointer. */
+[[maybe_unused]] static void kz2_crouch_body(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t prof_global)
+{
+    const kz2_gameplay_cfg* c = kz2_gameplay_get();
+    const uint32_t C = (uint32_t)ctx->gpr[3];
+    const uint32_t P = vm_read32(prof_global);
+    const int active = c->crouch_toggle && P;
+    uint8_t saved = 0;
+    if (active) { saved = vm_read8(P + 0x61); vm_write8(P + 0x61, 1); }
+    lifted(ctx);
+    if (active) vm_write8(P + 0x61, saved);   /* the save keeps the player's own value */
+    if (kz2_gp_log_on() && C) {
+        static uint32_t last = 0xFFFFFFFFu; static unsigned lines;
+        const uint32_t E = vm_read32(C + 0x10);
+        const uint32_t st = (uint32_t)(vm_read8(C + 0x3BC) | (vm_read8(C + 0x3B8) << 8) | ((E ? vm_read32(E + 0x360) : 0xFF) << 16));
+        if (st != last && lines < 200) {
+            lines++; last = st;
+            fprintf(stderr, "[gameplay] crouch: want C+0x3BC=%u latch C+0x3B8=%u stance E+0x360=%u (toggle %d, P+0x61 %u, ret %u)\n",
+                    st & 0xFF, (st >> 8) & 0xFF, st >> 16, c->crouch_toggle, vm_read8(P + 0x61), (uint32_t)ctx->gpr[3]);
+        }
+    }
+}
+[[maybe_unused]] static void kz2_net_state(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t site_lr)
+{
+    const uint32_t lr = (uint32_t)ctx->lr;
+    lifted(ctx);
+    if (lr != site_lr) return;
+    const kz2_gameplay_cfg* c = kz2_gameplay_get();
+    static int32_t last = 0x7FFFFFFF; static unsigned lines;
+    const int32_t r = (int32_t)ctx->gpr[3];
+    if (kz2_gp_log_on() && r != last && lines++ < 20) {
+        last = r;
+        fprintf(stderr, "[gameplay] 0x7B388() at the crouch decision (lr 0x%08X) = %d%s\n", lr, r,
+                c->crouch_toggle && !r ? " (forced to 1: crouch_toggle)" : "");
+    }
+    if (c->crouch_toggle) ctx->gpr[3] = 1;
+}
+#ifdef PPU_OVERRIDE_00176208
+void func_00176208(ppu_context* ctx) { kz2_crouch_body(ctx, func_00176208__lifted, 0x011B0540u + 0x240u); }   // @0x00176208 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_0007B388
+void func_0007B388(ppu_context* ctx) { kz2_net_state(ctx, func_0007B388__lifted, 0x001762ACu); }   // @0x0007B388 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00170990
+void func_00170990(ppu_context* ctx) { kz2_crouch_body(ctx, func_00170990__lifted, 0x0117E740u + 0x240u); }   // @0x00170990 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_0007A098
+void func_0007A098(ppu_context* ctx) { kz2_net_state(ctx, func_0007A098__lifted, 0x00170A34u); }   // @0x0007A098 (v1.01)
+#endif
+
+/* cover_toggle. */
+static kz2_cover_latch kz2_cover;
+static unsigned kz2_cover_lines;
+[[maybe_unused]] static void kz2_cover_frame(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    kz2_cover_begin(&kz2_cover);
+    const int before = kz2_cover.latch;
+    const uint32_t C = (uint32_t)ctx->gpr[3];
+    lifted(ctx);
+    kz2_cover_end(&kz2_cover);
+    static unsigned latched_frames;
+    const unsigned was_latched = latched_frames;   /* frames the latch had been on before this one */
+    latched_frames = kz2_cover.latch ? latched_frames + 1 : 0;
+    if (kz2_gp_log_on() && kz2_gameplay_get()->cover_toggle && kz2_cover_lines < 300 &&
+        (kz2_cover.latch != before || kz2_cover.queried != 0) ) {
+        static int last_l = -1, last_q = -1, last_f = -1;
+        if (kz2_cover.latch != last_l || kz2_cover.queried != last_q || kz2_cover.found != last_f) {
+            last_l = kz2_cover.latch; last_q = kz2_cover.queried; last_f = kz2_cover.found;
+            kz2_cover_lines++;
+            const uint32_t E = vm_read32(C + 0x10);
+            fprintf(stderr, "[gameplay] cover frame: latch %d -> %d (query reached %d, cover found %d), C+0x13C=0x%08X"
+                    " stance E+0x360=%u, latched for %u frames before\n", before, kz2_cover.latch, kz2_cover.queried, kz2_cover.found,
+                    vm_read32(C + 0x13C), E ? vm_read32(E + 0x360) : 0xFFu, was_latched);
+        }
+    }
+}
+[[maybe_unused]] static void kz2_cover_held_q(ppu_context* ctx, void (*lifted)(ppu_context*), void (*pressed)(ppu_context*),
+                                              uint32_t site_lr)
+{
+    if ((uint32_t)ctx->lr != site_lr || !kz2_gameplay_get()->cover_toggle) { kz2_pad_query(ctx, lifted, 0); return; }
+    const uint64_t input = ctx->gpr[3], lr = ctx->lr;
+    lifted(ctx);
+    const int orig = (uint32_t)ctx->gpr[3] & 1u;
+    int p[3];
+    static const int ids[3] = { 11, 5, 4 };   /* Cover, Jump, SprintToggle */
+    for (int i = 0; i < 3; i++) { ctx->gpr[3] = input; ctx->gpr[4] = (uint64_t)ids[i]; pressed(ctx); p[i] = ((uint32_t)ctx->gpr[3]) != 0; }
+    ctx->lr = lr;
+    const int before = kz2_cover.latch;
+    const int held = kz2_cover_held(&kz2_cover, 1, orig, p[0], p[1], p[2]);
+    ctx->gpr[3] = (uint64_t)held;
+    if (kz2_gp_log_on() && (p[0] || p[1] || p[2]) && kz2_cover_lines < 300) {
+        kz2_cover_lines++;
+        fprintf(stderr, "[gameplay] cover query: pressed cover %d jump %d sprint %d, button held %d: latch %d -> %d, game told held=%d\n",
+                p[0], p[1], p[2], orig, before, kz2_cover.latch, held);
+    }
+}
+[[maybe_unused]] static void kz2_cover_find(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t site_lr)
+{
+    const uint32_t lr = (uint32_t)ctx->lr;
+    lifted(ctx);
+    if (lr == site_lr) {
+        kz2_cover_found(&kz2_cover, (uint32_t)ctx->gpr[3] != 0);
+        static unsigned calls, hits;
+        calls++; hits += kz2_cover.found;
+        if (kz2_gp_log_on() && kz2_gameplay_get()->cover_toggle && (kz2_cover.found || calls == 1 || calls % 50 == 0) && kz2_cover_lines < 300) {
+            kz2_cover_lines++;
+            fprintf(stderr, "[gameplay] cover finder: found %d (%u calls, %u found)\n", kz2_cover.found, calls, hits);
+        }
+    }
+}
+#ifdef PPU_OVERRIDE_001763B0
+void func_001763B0(ppu_context* ctx) { kz2_cover_frame(ctx, func_001763B0__lifted); }   // @0x001763B0 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_000B1E78
+void func_000B1E78(ppu_context* ctx) { kz2_cover_find(ctx, func_000B1E78__lifted, 0x001764D0u); }   // @0x000B1E78 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00170B38
+void func_00170B38(ppu_context* ctx) { kz2_cover_frame(ctx, func_00170B38__lifted); }   // @0x00170B38 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_000AD4F0
+void func_000AD4F0(ppu_context* ctx) { kz2_cover_find(ctx, func_000AD4F0__lifted, 0x00170C58u); }   // @0x000AD4F0 (v1.01)
+#endif
+#if defined(PPU_OVERRIDE_00082248) && defined(PPU_OVERRIDE_00082290)
+void func_00082248(ppu_context* ctx) { kz2_cover_held_q(ctx, func_00082248__lifted, func_00082290__lifted, 0x001764A8u); }   // @0x00082248 (1.29)
+#elif defined(PPU_OVERRIDE_00082248)
+void func_00082248(ppu_context* ctx) { kz2_pad_query(ctx, func_00082248__lifted, 0); }   // @0x00082248 (1.29)
+#endif
+#if defined(PPU_OVERRIDE_00080D38) && defined(PPU_OVERRIDE_00080D80)
+void func_00080D38(ppu_context* ctx) { kz2_cover_held_q(ctx, func_00080D38__lifted, func_00080D80__lifted, 0x00170C30u); }   // @0x00080D38 (v1.01)
+void func_00080D80(ppu_context* ctx) { func_00080D80__lifted(ctx); }   // @0x00080D80 (v1.01): listed so the cover hook can call the body
 #endif

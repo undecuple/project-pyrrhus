@@ -37,7 +37,9 @@ REQUIRED = ("run.cmd", "manifest.json", "VERSION.txt",
             "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
             # FFmpeg's LGPL decoders with their licence text, source pointer and build options (assemble_payload FFMPEG_*)
             "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
-            "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt", "licenses/FFmpeg-LICENSE-build.txt")
+            "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt", "licenses/FFmpeg-LICENSE-build.txt",
+            # FFmpeg's headers: the player's build compiles the FFmpeg loader against them (issue #16)
+            "ffmpeg/include/libavcodec/avcodec.h", "ffmpeg/include/libavutil/avutil.h")
 NO_SCRUB_PREFIX = "toolchain/"
 
 

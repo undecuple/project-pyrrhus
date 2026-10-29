@@ -1,5 +1,6 @@
 /* Killzone 2 port: console switch and session log file (kz2_session_log.h has the rules). ENHANCEMENT (port-only). */
 #include "kz2_session_log.h"
+#include "kz2_log_redact.h"
 
 #include <stdlib.h>
 
@@ -9,6 +10,11 @@ int  kz2_console_open(void) { return 0; }
 int  kz2_session_log_start(void) { return 0; }
 const char* kz2_session_log_path(void) { return ""; }
 void kz2_session_log_flush(unsigned timeout_ms) { (void)timeout_ms; fflush(stdout); fflush(stderr); }
+const char* kz2_log_path_w(const wchar_t* path, char* out, size_t n)
+{
+    if (n && snprintf(out, n, "%ls", path) < 0) out[0] = 0;
+    return out;
+}
 int  kz2_stdio_buffer_start(void) { return 0; }
 #else
 
@@ -95,21 +101,90 @@ static void kz2_log_prune(void)
     }
 }
 
-/* The copy thread: pipe -> log file (and the original stdout, if there was one). */
+/* Release an earlier change (issue #16): the user's folders, replaced in every log line (kz2_log_redact.h). Filled once from
+ * the environment, in both spellings the prints can use (the ANSI code page: the runtime's %s paths; UTF-8). */
+static kz2_redactor s_redact;
+static volatile LONG s_redact_init;
+
+static void kz2_redact_env(const wchar_t* var, const char* label)
+{
+    wchar_t w[KZ2_REDACT_FROM];
+    char a[KZ2_REDACT_FROM];
+    DWORD n = GetEnvironmentVariableW(var, w, KZ2_REDACT_FROM);
+    if (!n || n >= KZ2_REDACT_FROM) return;
+    if (WideCharToMultiByte(CP_ACP, 0, w, -1, a, (int)sizeof a, NULL, NULL)) kz2_redact_add(&s_redact, a, label);
+    if (WideCharToMultiByte(CP_UTF8, 0, w, -1, a, (int)sizeof a, NULL, NULL)) kz2_redact_add(&s_redact, a, label);
+}
+
+static void kz2_redact_init(void)
+{
+    if (InterlockedCompareExchange(&s_redact_init, 1, 0) != 0) {   /* 1 = being filled by another thread, 2 = ready */
+        while (s_redact_init != 2) Sleep(0);
+        return;
+    }
+    kz2_redact_env(L"APPDATA", "%APPDATA%");
+    kz2_redact_env(L"LOCALAPPDATA", "%LOCALAPPDATA%");
+    kz2_redact_env(L"USERPROFILE", "%USERPROFILE%");
+    InterlockedExchange(&s_redact_init, 2);
+}
+
+const char* kz2_log_path_w(const wchar_t* path, char* out, size_t n)
+{
+    char a[1200];
+    if (!n) return out;
+    kz2_redact_init();
+    if (!WideCharToMultiByte(CP_ACP, 0, path, -1, a, (int)sizeof a, NULL, NULL)) a[0] = 0;
+    kz2_redact(&s_redact, a, strlen(a), out, n);
+    return out;
+}
+
+static void kz2_log_put(const char* p, size_t n)
+{
+    static char red[2 * (16384 + 4096) + 1];
+    DWORD put;
+    size_t m = kz2_redact(&s_redact, p, n, red, sizeof red);
+    WriteFile(s_file, red, (DWORD)m, &put, NULL);
+    if (s_orig_out != INVALID_HANDLE_VALUE) WriteFile(s_orig_out, red, (DWORD)m, &put, NULL);
+}
+
+/* The copy thread: pipe -> log file (and the original stdout, if there was one), whole lines through the redactor.
+ * The text after the last newline waits for the next read while more arrives within 50 ms and it is under 4 KB; then
+ * it is written too, so nothing stays held while the game waits (kz2_session_log_flush, a crash). */
 static DWORD WINAPI kz2_log_copy(LPVOID unused)
 {
-    char buf[16384];
+    static char buf[4096 + 16384];
+    size_t have = 0;
     (void)unused;
     for (;;) {
-        DWORD got = 0, put;
+        DWORD got = 0, avail = 0;
         BOOL ok;
+        size_t end;
         InterlockedExchange(&s_in_read, 1);
-        ok = ReadFile(s_pipe_r, buf, sizeof buf, &got, NULL);
+        ok = ReadFile(s_pipe_r, buf + have, 16384, &got, NULL);
         InterlockedExchange(&s_in_read, 0);
         if (!ok || !got) break;
-        WriteFile(s_file, buf, got, &put, NULL);
-        if (s_orig_out != INVALID_HANDLE_VALUE) WriteFile(s_orig_out, buf, got, &put, NULL);
+        have += got;
+        end = kz2_redact_line_end(buf, have);
+        if (end) {
+            kz2_log_put(buf, end);
+            memmove(buf, buf + end, have - end);
+            have -= end;
+        }
+        if (have && have < 4096) {
+            /* An unbuffered writer (a DLL's own C runtime: Wine's openvr line in kz2-r33-new1) can send one line in
+             * several writes; the rest of the line comes within milliseconds. Wait up to 50 ms for it. */
+            for (int i = 0; i < 10; i++) {
+                if (!PeekNamedPipe(s_pipe_r, NULL, 0, NULL, &avail, NULL) || avail) break;
+                Sleep(5);
+            }
+            if (avail) continue;      /* more is there: read it into the same line */
+        }
+        if (have) {
+            kz2_log_put(buf, have);
+            have = 0;
+        }
     }
+    if (have) kz2_log_put(buf, have);
     return 0;
 }
 
@@ -252,6 +327,7 @@ int kz2_session_log_start(void)
     }
     SetStdHandle(STD_OUTPUT_HANDLE, pw);
     SetStdHandle(STD_ERROR_HANDLE, pw);
+    kz2_redact_init();   /* before the first line is copied */
     CreateThread(NULL, 64 * 1024, kz2_log_copy, NULL, 0, NULL);
     CreateThread(NULL, 64 * 1024, kz2_log_filter_chain, NULL, 0, NULL);
     atexit(kz2_log_atexit);

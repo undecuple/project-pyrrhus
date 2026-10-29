@@ -4,10 +4,15 @@ toolchain, from lift outputs made elsewhere, and time it. Runs firstrun.py's own
 (the same payload_tools / cmd_configure / cmd_compile), so the trial tests what a player's machine will run, minus
 the lift. Standard library only. Meant for Windows (under Proton) with the payload tree; also runs on Linux.
 
-    trial_build.py --root PAYLOAD --build DIR [--jobs N] [--toolchain DIR] [--configure-only]
+    trial_build.py --root PAYLOAD --build DIR [--jobs N] [--toolchain DIR | --cross] [--configure-only] [--stamp]
 
   --build   holds recomp/ (ppu_recomp.h + chunks) copied from a NixOS lift (KZ2 has no SPU lift yet); obj/
             and kz2.exe are written under it (firstrun.py's layout)
+  --cross   no llvm-mingw: firstrun.py's own fallback (port/cmake/mingw-w64.cmake, the NixOS cross compiler; run in
+            `nix develop .#win`). Same configure arguments otherwise, so the CMake decisions are the player's.
+  --stamp   after the compile, firstrun.py's stamp step too: its command (firstrun_check --build-dir, the B rules) and
+            after_stamp (kz2.exe, the decoder DLLs, fonts and SDL3.dll beside it in DIR), so DIR/kz2.exe runs as an
+            installed build does (the issue #16 reproduction and fix check).
 Writes DIR/trial.json: the tools used, the two commands, wall seconds each, return codes, kz2.exe size; and
 DIR/trial.log (all output). Exit 0 = kz2.exe built, 1 = a step failed, 2 = usage / inputs missing.
 """
@@ -39,12 +44,14 @@ def main(argv=None, out=sys.stdout):
     ap.add_argument("--jobs", type=int)
     ap.add_argument("--toolchain", default="")
     ap.add_argument("--configure-only", action="store_true")
+    ap.add_argument("--cross", action="store_true", help="firstrun's fallback cross toolchain (no llvm-mingw)")
+    ap.add_argument("--stamp", action="store_true", help="also run firstrun's stamp step and after_stamp")
     a = ap.parse_args(argv)
     root, build = os.path.abspath(a.root), os.path.abspath(a.build)
     tools = fr.payload_tools(root)
-    tc = os.path.abspath(a.toolchain) if a.toolchain else tools.get("llvm_mingw", "")
+    tc = "" if a.cross else os.path.abspath(a.toolchain) if a.toolchain else tools.get("llvm_mingw", "")
     missing = [p for p in (os.path.join(build, "recomp", "ppu_recomp.h"),) if not os.path.exists(p)]
-    if not tc:
+    if not tc and not a.cross:
         missing.append("an llvm-mingw toolchain (--toolchain or <root>/toolchain/llvm-mingw)")
     if missing:
         print("trial_build: missing " + "; ".join(missing), file=out)
@@ -60,6 +67,8 @@ def main(argv=None, out=sys.stdout):
         steps = [("configure", fr.cmd_configure(ctx)[0])]
         if not a.configure_only:
             steps.append(("compile", fr.cmd_compile(ctx)[0]))
+            if a.stamp:
+                steps.append(("stamp", fr.cmd_stamp(ctx)[0]))
         for name, cmd in steps:
             rc, secs = run(cmd, env, log)
             rep["steps"].append({"name": name, "cmd": cmd, "rc": rc, "seconds": secs})
@@ -67,6 +76,8 @@ def main(argv=None, out=sys.stdout):
             if rc != 0:
                 ok = False
                 break
+    if ok and a.stamp and not a.configure_only:
+        fr.after_stamp(ctx)
     exe = os.path.join(build, "obj", "kz2.exe")
     rep["exe_bytes"] = os.path.getsize(exe) if os.path.isfile(exe) else None
     with open(os.path.join(build, "trial.json"), "w", encoding="utf-8") as f:

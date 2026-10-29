@@ -38,9 +38,17 @@ if [[ "$GO" == 1 && "${KZ2_ALLOW_STALE_PATCHES:-0}" != 1 && "$(realpath -m "$PT"
     "$ROOT/work/ps3recomp-patched (${wt:-no stamp}), not $PT ($(cat "$PT/.kz2-patchset" 2>/dev/null)): run" \
     "tools/ps3recomp-patched.sh without KZ2_OUT too, or build locally" >&2; exit 3; }
 fi
+# FFmpeg headers for the run-time loaded decoders (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): KZ2_FFMPEG_INCLUDE,
+# else the include/ of KZ2_FFMPEG_WIN (default <main>/work/ffmpeg-win, the tools/runtime/ffmpeg-lgpl-win.nix output).
+# None: the developer build goes on without (black movie pictures, silent AC3) with -DKZ2_ALLOW_NO_FFMPEG=ON and says
+# so; CMake itself stops without the headers since an earlier change (issue #16), so a release build cannot miss them.
+FFW="${KZ2_FFMPEG_WIN:-$MAINC/work/ffmpeg-win}"
+want_ff="${KZ2_FFMPEG_INCLUDE:-$FFW/include}"; no_ff=OFF
+[[ -f "$want_ff/libavcodec/avcodec.h" ]] || { echo "build-kz2: WARNING no FFmpeg headers at $want_ff: this developer build has black movies and silent AC3 (see tools/runtime/ffmpeg-lgpl-win.nix)" >&2; want_ff=""; no_ff=ON; }
 if [[ "$GO" != 1 && ! -f "$DIR/CMakeCache.txt" ]]; then
   cmake -S "$ROOT/port/kz2" -B "$DIR" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ROOT/port/cmake/mingw-w64.cmake" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE="$(command -v python3)" \
+    -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" \
     -DPS3RECOMP_DIR="$PT" -DRECOMP_DIR="$OUT/recomp" >"$DIR.configure.log" 2>&1 \
     || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
@@ -49,7 +57,7 @@ fi
 # (the link then fails with undefined _cellSpursLFQueuePushBody).
 pt_stamp="$(cat "$PT/.kz2-patchset" 2>/dev/null || true)"
 if [[ "$GO" != 1 && "$(cat "$DIR/.kz2-toolkit-stamp" 2>/dev/null || true)" != "$pt_stamp" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
   echo "$pt_stamp" > "$DIR/.kz2-toolkit-stamp"
 fi
 # Lifted SPU images (tools/spu/lift_spu.sh): point the cache at $OUT/spu/lift when it has a registration TU
@@ -68,16 +76,10 @@ if [[ -n "$cfg_pt" && "$(realpath -m "$cfg_pt")" != "$(realpath -m "$PT")" && "$
     "matching KZ2_OUT" >&2; exit 3
 fi
 if [[ "$GO" != 1 && "$(sed -n 's/^SPU_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null)" != "$want_spu" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" -DSPU_DIR="$want_spu" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+  cmake -S "$ROOT/port/kz2" -B "$DIR" -DSPU_DIR="$want_spu" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
-# FFmpeg headers for the run-time loaded decoders (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): KZ2_FFMPEG_INCLUDE,
-# else the include/ of KZ2_FFMPEG_WIN (default <main>/work/ffmpeg-win, the tools/runtime/ffmpeg-lgpl-win.nix output);
-# none: the build goes on without (black movie pictures, silent AC3) and says so.
-FFW="${KZ2_FFMPEG_WIN:-$MAINC/work/ffmpeg-win}"
-want_ff="${KZ2_FFMPEG_INCLUDE:-$FFW/include}"
-[[ -f "$want_ff/libavcodec/avcodec.h" ]] || { echo "build-kz2: no FFmpeg headers at $want_ff: movies stay black (see tools/runtime/ffmpeg-lgpl-win.nix)" >&2; want_ff=""; }
 if [[ "$GO" != 1 && "$(sed -n 's/^KZ2_FFMPEG_INCLUDE_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null)" != "$want_ff" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
 # The lift must announce exactly the overrides of its EBOOT's list (a host override is compiled only when the lift
 # announced PPU_OVERRIDE_<addr>): port/kz2/ppu_overrides.txt for 1.29, ppu_overrides-101.txt for v1.01, by the ver=

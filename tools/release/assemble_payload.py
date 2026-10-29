@@ -22,6 +22,11 @@ What goes in (the allowlist, RULES below; nothing else is ever copied):
   runtime/        SDL3.dll, avcodec-63.dll and avutil-61.dll (prebuilt FFmpeg LGPL decoders from --ffmpeg DIR, default
                   <repo>/work/ffmpeg-win = tools/runtime/ffmpeg-lgpl-win.nix's output); first-run copies them beside kz2.exe.
                   at3_standalone.dll is not shipped: the player's build produces it (patch 6022) and first-run checks it.
+  ffmpeg/include/ FFmpeg's headers (libavcodec/, libavutil/; *.h only) from the same --ffmpeg DIR's include/: the
+                  player's build compiles the run-time FFmpeg loader against them (firstrun.py passes
+                  -DKZ2_FFMPEG_INCLUDE_DIR=<root>/ffmpeg/include). Without them kz2.exe never loads the DLLs (black
+                  movies, silent AC-3: issue #16, v0.1.2). Required; their LIBAVCODEC/LIBAVUTIL_VERSION_MAJOR must
+                  match the shipped DLL names (avcodec-63.dll, avutil-61.dll). LGPL like the DLLs (same build, same text).
   fonts/          Rajdhani-Medium.ttf and Rajdhani-Bold.ttf (SIL OFL 1.1) from --fonts DIR (default
                   <repo>/work/release/fonts, filled by installer_art.py --fetch-fonts; never committed), each checked
                   against its SHA-256 pinned in installer/art/art.json, and their OFL text as licenses/Rajdhani-OFL.txt.
@@ -120,6 +125,12 @@ FFMPEG_DLLS = (("bin/avcodec-63.dll", "runtime/avcodec-63.dll"), ("bin/avutil-61
 FFMPEG_TEXTS = (("share/ffmpeg-lgpl/COPYING.LGPLv2.1", "licenses/FFmpeg-COPYING.LGPLv2.1.txt"),
                 ("share/ffmpeg-lgpl/SOURCE.txt", "licenses/FFmpeg-SOURCE.txt"),
                 ("share/ffmpeg-lgpl/LICENSE-build.txt", "licenses/FFmpeg-LICENSE-build.txt"))
+# FFmpeg's headers (issue #16): (folder under --ffmpeg DIR, payload folder), the header that must be
+# there, and the version-major macro that must equal the shipped DLL's number.
+FFMPEG_INCLUDE = ("include", "ffmpeg/include")
+FFMPEG_HEADER_LIBS = (("libavcodec", "version_major.h", "LIBAVCODEC_VERSION_MAJOR", "runtime/avcodec-63.dll"),
+                      ("libavutil", "version.h", "LIBAVUTIL_VERSION_MAJOR", "runtime/avutil-61.dll"))
+FFMPEG_HEADER_REQUIRED = ("libavcodec/avcodec.h", "libavutil/avutil.h")
 SHIPPED_DLLS = {SDL3_DEST[0]} | {d for _, d in FFMPEG_DLLS}   # payload DLLs: PE gate and size cap, not the 2 MiB binary cap
 LAUNCHER = "Project Pyrrhus.exe"   # --launcher: built from installer/launcher/launcher.c, scrubbed like the rest
 ALWAYS_SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "build"}
@@ -425,6 +436,41 @@ def collect_ffmpeg(ff_dir):
             files.append((dest, p))
         else:
             bad.append(f"{p} (FFmpeg LGPL decoders; build tools/runtime/ffmpeg-lgpl-win.nix, see docs/BUILDING.md)")
+    hfiles, hbad = collect_ffmpeg_headers(ff_dir)
+    return files + hfiles, bad + hbad
+
+
+def collect_ffmpeg_headers(ff_dir):
+    """-> (files, problems): FFmpeg's libavcodec/ and libavutil/ headers (*.h) from <ff_dir>/include as
+    ffmpeg/include/... (issue #16: v0.1.2 shipped the DLLs without them, so the player's build
+    configured without PS3RECOMP_FFMPEG_RUNTIME and never loaded the DLLs). Each library's version-major macro must
+    equal the number in its shipped DLL's name: a mismatch would build a loader that looks for another DLL."""
+    src_inc, dest_inc = FFMPEG_INCLUDE
+    inc = os.path.join(ff_dir, src_inc)
+    files, bad = [], []
+    for lib, vfile, macro, dll in FFMPEG_HEADER_LIBS:
+        d = os.path.join(inc, lib)
+        if not os.path.isdir(d) or os.path.islink(d):
+            bad.append(f"{d} (FFmpeg headers; build tools/runtime/ffmpeg-lgpl-win.nix, see docs/BUILDING.md)")
+            continue
+        for n in sorted(os.listdir(d)):
+            p = os.path.join(d, n)
+            if n.endswith(".h") and os.path.isfile(p) and not os.path.islink(p):
+                files.append((f"{dest_inc}/{lib}/{n}", p))
+        want = re.search(r"-(\d+)\.dll$", dll).group(1)
+        try:
+            with open(os.path.join(d, vfile), encoding="utf-8", errors="replace") as f:
+                m = re.search(r"#define\s+" + macro + r"\s+(\d+)", f.read())
+        except OSError:
+            m = None
+        if not m:
+            bad.append(f"{os.path.join(d, vfile)}: no {macro} (FFmpeg headers)")
+        elif m.group(1) != want:
+            bad.append(f"{os.path.join(d, vfile)}: {macro} {m.group(1)}, but the payload ships {dll} "
+                       f"(the headers and the DLLs must come from the same FFmpeg build)")
+    have = {dest for dest, _ in files}
+    bad += [f"{os.path.join(inc, *r.split('/'))} (FFmpeg headers)" for r in FFMPEG_HEADER_REQUIRED
+            if f"{dest_inc}/{r}" not in have and os.path.isdir(os.path.join(inc, r.split('/')[0]))]
     return files, bad
 
 

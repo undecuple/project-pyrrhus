@@ -196,6 +196,32 @@ def check_onedrive_tree(r, root, build, env=None):
                          f"default, {DEFAULT_INSTALL}, is fine) and run the setup again")
 
 
+# P1: the same failure reported on Project Helghast (#20). The build's CMake joins paths into
+# ';'-separated lists: a ';' in a path splits it, and an unbalanced '[' or ']' changes how CMake splits the whole
+# list (bracket rule of CMake's list arguments: no split inside [...]). KZ3 reproduced it on Windows 10 (2026-10-29):
+# the bundled CMake installed under a '[' folder (our toolchain/cmake under the install folder) fails its own compiler
+# detection (CMakeCompilerIdDetection.cmake joins its module list with ';'); ';' fails on Linux too
+# (tools/release/test_cmake_path_chars.py). The trigger is CMake's own location, so quoting our configure call cannot
+# avoid it: the folder is refused before anything is built (KZ3's design, shared-docs "Install folder with [, ] or ;").
+PATH_BAD_CHARS = "[];"
+
+
+def path_bad_chars(path):
+    """-> the characters of PATH_BAD_CHARS found in path, in order ("" when none)."""
+    return "".join(ch for ch in PATH_BAD_CHARS if ch in (path or ""))
+
+
+def check_path_chars(r, root, build):
+    """P1 (FAIL): the install folder or the build folder has '[', ']' or ';' in its path. Silent when fine."""
+    for what, path in (("install folder", root), ("build folder", build)):
+        bad = path_bad_chars(path)
+        if bad:
+            r.fail("P1", f"the {what} {path} has {' and '.join(repr(c) for c in bad)} in its path, which the build's "
+                         "CMake cannot handle (it splits the compiler's paths there). Choose a folder whose path has no "
+                         f"'[', ']' or ';' (for the installer the default, {DEFAULT_INSTALL}, is fine) and run the "
+                         "setup again")
+
+
 def game_files(dump, update, eboot):
     """The game files the build reads (the disc archive as one file or its FAT32 parts)."""
     f = []
@@ -531,15 +557,18 @@ def check_update(r, upd, disc_id=None):
         r.fail("U2", "1.29 update: no USRDIR/EBOOT.BIN (update not installed here)")
     else:
         r.ok("U2", f"update EBOOT.BIN present ({os.path.getsize(eb):,} bytes, {'SELF' if head(eb, 4) == SELF_MAGIC else 'ELF'})")
+    # U3 FAILs (issue #16; WARN before): the 1.29 EBOOT run on the disc's data alone stops at the
+    # main menu (mainmenu.jsp served without the 1.29 patch, NULL call from 0x003F2984, sys_process_exit(1); kz2-r33-noupd).
     data = os.path.join(upd, "USRDIR", UPDATE_DATA)
     if not os.path.isfile(data):
-        r.warn("U3", f"1.29 update: no USRDIR/{UPDATE_DATA}; the update's data layer will be missing (disc data only)")
+        r.fail("U3", f"1.29 update: no USRDIR/{UPDATE_DATA}; without the update's data the game stops at the main menu")
     elif head(data, 4) != PSARC_MAGIC:
-        r.warn("U3", f"1.29 update: USRDIR/{UPDATE_DATA} does not start with PSAR (still encrypted, or damaged)")
+        r.fail("U3", f"1.29 update: USRDIR/{UPDATE_DATA} does not start with PSAR (still encrypted, or damaged)")
     else:
         r.ok("U3", f"update data archive present ({os.path.getsize(data):,} bytes)")
     if not os.path.isdir(os.path.join(upd, "USRDIR", UPDATE_PATCH_DIR)):
-        r.warn("U3", f"1.29 update: no USRDIR/{UPDATE_PATCH_DIR}/ (the update's patch files)")
+        r.fail("U3", f"1.29 update: no USRDIR/{UPDATE_PATCH_DIR}/ (the update's patch files); without them the game "
+                     "stops at the main menu")
 
 
 def check_eboot_elf(r, elf, target="1.29", update=None):
@@ -898,9 +927,44 @@ def check_build(obj_dir):
     return bad
 
 
+# B2 (issue #16): kz2.exe must hold the run-time FFmpeg loader. ps3recomp's libs/codec/ffmpeg_runtime.c
+# is compiled only with PS3RECOMP_FFMPEG_RUNTIME (port/kz2/CMakeLists.txt, FFmpeg's headers given); it names the two
+# DLLs it loads, from the headers' version majors, so both names in the exe = the loader is in and looks for the DLLs
+# the payload ships beside it (firstrun.FFMPEG_DLLS). v0.1.2 built every player's kz2.exe without it: black movies,
+# silent AC-3, no "[ffmpeg]" line in the log.
+FFMPEG_DLL_NAMES = (b"avcodec-63.dll", b"avutil-61.dll")
+
+
+def exe_strings_missing(path, names, chunk=1 << 22):
+    """-> the byte strings of `names` that `path` does not contain (read in chunks; a name split over two chunks is
+    still found)."""
+    left, keep, tail = set(names), max(len(n) for n in names) - 1, b""
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            buf = tail + block
+            left = {n for n in left if n not in buf}
+            if not left:
+                break
+            tail = buf[-keep:] if keep else b""
+    return [n for n in names if n in left]
+
+
+def check_ffmpeg(obj_dir):
+    """-> B2 problems: kz2.exe was built without the FFmpeg loader (or for other DLL names)."""
+    exe = os.path.join(obj_dir, "kz2.exe")
+    if not os.path.isfile(exe):
+        return []          # B1 says so
+    gone = exe_strings_missing(exe, FFMPEG_DLL_NAMES)
+    if not gone:
+        return []
+    return [f"kz2.exe was built without movie decoding (it never loads {', '.join(n.decode() for n in gone)}): the "
+            f"intro and cutscenes would be black and silent. The build was configured without FFmpeg's headers "
+            f"(ffmpeg{os.sep}include in the install); repair or reinstall with the current installer"]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--build-dir", help="check the finished build folder (kz2.exe + at3_standalone.dll) instead of the game files")
+    ap.add_argument("--build-dir", help="check the finished build folder (B1: kz2.exe + at3_standalone.dll; B2: kz2.exe has the FFmpeg loader) instead of the game files")
     ap.add_argument("--dump")
     ap.add_argument("--update")
     ap.add_argument("--eboot")
@@ -919,6 +983,10 @@ def main(argv=None):
         bad = check_build(a.build_dir)
         for b in bad:
             print(f"FAIL B1: {b}")
+        b2 = check_ffmpeg(a.build_dir)
+        for b in b2:
+            print(f"FAIL B2: {b}")
+        bad += b2
         print("build checks:", "FAIL" if bad else "pass")
         return 1 if bad else 0
     if not a.dump:
@@ -932,6 +1000,7 @@ def main(argv=None):
         r.ok("U0", f"INFO: {a.update} is the update's USRDIR; using the update folder: {upd}")
     a.dump, a.update = dump, upd
     check_onedrive_tree(r, a.root, a.build)
+    check_path_chars(r, a.root, a.build)
     iso = os.path.isfile(a.dump)       # a decrypted disc ISO instead of a folder
     # before anything is read: opening an online-only placeholder would start a download of the 6.5 GiB archive
     if check_online_only(r, a.dump if os.path.exists(a.dump) else "",

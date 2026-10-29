@@ -326,6 +326,7 @@ def test_firstrun(tmp, payload_dir):
     for rel in (f"toolchain/llvm-mingw/bin/x86_64-w64-mingw32-clang{exe}", f"toolchain/cmake/bin/cmake{exe}",
                 f"toolchain/ninja/ninja{exe}", "toolchain/python/python.exe"):
         tap.put(root, rel, "x")
+    tap.put(root, "ffmpeg/include/libavcodec/avcodec.h", "/* avcodec */")   # issue #16: the payload ships the headers
     found = fr.payload_tools(root)
     check(set(found) >= {"llvm_mingw", "cmake", "ninja"}, "payload_tools finds compiler, cmake, ninja", found)
     check(("python" in found) == (os.name == "nt"), "bundled python used on Windows only")
@@ -391,6 +392,7 @@ def test_trial_build(tmp):
     cm = tap.put(root, "toolchain/cmake/bin/cmake", FAKE_CMAKE.format(py=sys.executable))
     os.chmod(cm, 0o755)
     tap.put(root, "toolchain/llvm-mingw/bin/x86_64-w64-mingw32-clang", "x")
+    tap.put(root, "ffmpeg/include/libavcodec/avcodec.h", "/* avcodec */")   # issue #16
     build = os.path.join(tmp, "trial-build")
     buf = io.StringIO()
     rc = tb.main(["--root", root, "--build", build, "--jobs", "2"], out=buf)

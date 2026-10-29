@@ -66,13 +66,13 @@ As of 2026-10-27, on Windows x64, tested under Proton on Linux; the installer an
 | SPU programs | the game's SPU programs and job modules are translated and run, including the post-processing chain |
 | Update 1.29 | the build targets the 1.29 update; its added archive and patch files are mapped and read; the effect of the patches on the game data is not checked yet |
 | Saves | the game's save format is mapped; the port writes its own saves, including checkpoint saves in the first level; loading a checkpoint back is not checked yet. Saves copied over from RPCS3 are copied unchanged, with no promise that they load |
-| Input | pads go through SDL3 (PlayStation and Xbox pads; SDL3.dll ships with the port, XInput is the fallback without it); a DualShock 4 was played by hand on 2026-10-22, including its motion sensor; Xbox and DualSense pads are not yet tried by hand; a pad layout setting (Original by default, Modern selectable) writes the chosen layout into the game's profile, and the game's buttons follow it in play (Modern: crouch on Circle, use on Square, zoom and flashlight on L1); on-screen button prompts can show PlayStation 4/5, Xbox or keyboard symbols (set in keybinds.ini), in menus and in the level |
+| Input | pads go through SDL3 (PlayStation and Xbox pads; SDL3.dll ships with the port, XInput is the fallback without it); a DualShock 4 was played by hand on 2026-10-22, including its motion sensor; Xbox and DualSense pads are not yet tried by hand; a pad layout setting (Original by default, Modern selectable) writes the chosen layout into the game's profile, and the game's buttons follow it in play (Modern: crouch on Circle, use on Square, zoom and flashlight on L1); on-screen button prompts can show PlayStation 4/5, Xbox or keyboard symbols (set in keybinds.ini), in menus and in the level; optional, off by default: toggles for crouch and take cover and an aim assist switch (`gameplay.ini`) |
 | Audio, video, online | the intro movie plays with pictures and sound through FFmpeg's LGPL decoders, loaded from separate DLLs (the other 27 movies are not yet tried); the movies' 5.1 tracks decode, but all sound is mixed down to stereo for now (no surround output yet); menu and game sound play; online not started |
 | Installer and portable zip | the first-run checks, generators and packaging (including SDL3.dll and the movie decoders) exist and are tested without the game; the installer compiles; setup can reuse an existing RPCS3 install (tested with stand-in folders only); on 2026-10-27 install, first-run build and uninstall worked in a Windows 10 virtual machine without a GPU, and the game started but exited with a message there (no GPU, no play); nothing is released |
 
 Feature by feature, the PS3 game against the port: [FEATURES.md](docs/FEATURES.md) (generated from the repository's own
 records). What is broken or unfinished today: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). Controls, button prompts,
-display modes and subtitles: [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md).
+display modes (a new install starts borderless; Alt+Enter switches to a window) and subtitles: [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md).
 
 ## What goes online
 
@@ -92,7 +92,7 @@ Online multiplayer, if it comes, will only use a self-hosted server you choose.
 
 ## Getting it
 
-**Pre-release <!-- version -->[v0.1.2](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.2)<!-- /version -->:** a Windows installer (recommended) and
+**Pre-release <!-- version -->[v0.1.3](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.3)<!-- /version -->:** a Windows installer (recommended) and
 a portable zip, on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) with a `.sha256` file for each and `SHA256SUMS`. They check your
 own disc dump (a folder or a decrypted ISO file), the 1.29 update and the decrypted EBOOT ([what each must
 contain](docs/GETTING-FILES.md)), then

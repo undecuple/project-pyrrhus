@@ -1,7 +1,8 @@
 KZ2 patch 2095: display modes and scaled present, from Project Helghast port/patches/2095-display-modes-scaled-present.patch
 (KZ3 patch 2095; credit KZ3). ENHANCEMENT.
 
-- Windowed (default, as KZ3 ships), Borderless (WS_POPUP over the window's monitor) and Fullscreen (DXGI exclusive on
+- Borderless (default since an earlier change, D48: no display.ini = borderless, as KZ3 ships; an existing display.ini keeps its
+  mode), Windowed (Alt+Enter, display.ini), Borderless (WS_POPUP over the window's monitor) and Fullscreen (DXGI exclusive on
   the live-draw swap chain; refused -> Borderless for the session). Alt+Enter toggles Windowed <-> the last fullscreen
   mode on the window's thread and saves it; DXGI's own Alt+Enter is off on the live-draw swap chain
   (MakeWindowAssociation NO_ALT_ENTER), matching the plain D3D12 backend, which keeps its own NO_ALT_ENTER (it has no
@@ -83,10 +84,10 @@ new file mode 100644
 index 0000000..38d7036
 --- /dev/null
 +++ b/libs/video/rsx_display_mode.h
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,249 @@
 +/*
 + * KZ3 patch 2095, ported to Killzone 2 as KZ2 patch 2095: display modes. ENHANCEMENT (display; the
-+ * feature is on, the default mode is Windowed as in KZ3).
++ * feature is on, the default mode is Borderless, D48, as in KZ3).
 + *
 + *   Windowed    the normal resizable window (patch 2062 keeps its client at the guest aspect while dragging).
 + *   Borderless  a WS_POPUP window covering the monitor the window is on.
@@ -96,7 +97,7 @@ index 0000000..38d7036
 + * MakeWindowAssociation(DXGI_MWA_NO_ALT_ENTER), so there is one behaviour). The swap chain follows the client size
 + * (ResizeBuffers); the guest's 1280x720 image is drawn into it with linear filtering, aspect-correct with black bars
 + * (Fit, KZ2's default) or over the whole client (Stretch, KZ3's default) (rsx_live_draw.c). The mode comes from KZ2_DISPLAY=windowed|borderless|fullscreen
-+ * (tests; wins, not saved), else display.ini beside keybinds.ini ([display] mode/scaling/filter), else Windowed;
++ * (tests; wins, not saved), else display.ini beside keybinds.ini ([display] mode/scaling/filter), else RSX_DM_DEFAULT (Borderless);
 + * Alt+Enter saves the new mode. KZ3's in-game Options rows (a GUM page patch through KZ3's Lua bridge) are not ported:
 + * Killzone 2 has no such bridge yet, so display.ini (or a launcher that writes it) is the settings surface.
 + *
@@ -112,6 +113,7 @@ index 0000000..38d7036
 +#include <string.h>
 +
 +enum { RSX_DM_WINDOWED = 0, RSX_DM_BORDERLESS = 1, RSX_DM_FULLSCREEN = 2 };
++#define RSX_DM_DEFAULT RSX_DM_BORDERLESS   /* no display.ini, no KZ2_DISPLAY (D48; windowed was the default before an earlier change) */
 +
 +static inline const char* rsx_dm_name(int m)
 +{
@@ -948,7 +950,7 @@ index e984679..8a218c7 100644
 +    if (e && *e && m < 0) printf("[display] KZ2_DISPLAY=%s not understood (windowed|borderless|fullscreen)\n", e);
 +    if (m >= 0) { s_dm_env = 1; src = "KZ2_DISPLAY"; }
 +    else if (s_dm_cfg >= 0) { m = s_dm_cfg; src = "display.ini"; }
-+    else m = RSX_DM_WINDOWED;
++    else m = RSX_DM_DEFAULT;   /* D48: no display.ini = borderless; exclusive fullscreen stays opt-in */
 +    rsx_dm_init(&s_dm, m);
 +    {   /* scaling and filter: env (tests, never saved), else display.ini, else Stretch / Bilinear */
 +        const char* es = getenv("KZ2_DISPLAY_SCALING");

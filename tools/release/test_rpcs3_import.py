@@ -364,7 +364,7 @@ def main():
         def fake_check(d, u, e, *target):
             seen["args"] = (d, u, e)
             return 0, "PASS fake\n"
-        answers = iter(["", "n", "n", "", "", "n"])   # RPCS3 yes; version check no; modern no; prompts auto; display windowed; build no
+        answers = iter(["", "n", "n", "", "", "n"])   # RPCS3 yes; version check no; modern no; prompts auto; display default (borderless); build no
         out = io.StringIO()
         notes = []
         os.makedirs(os.path.join(tmp, "iroot"))

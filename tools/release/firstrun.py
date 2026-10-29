@@ -233,7 +233,8 @@ class Ctx:
         """The build's inputs as three hashes: `base` = the folders and the EBOOT's identity from
         the check; `lift` = what the lifts read besides the EBOOT (lift_inputs_hash); `runtime` = the port version
         (VERSION.txt). A new release that changes only the runtime glue recompiles without lifting again."""
-        key = {"dump": self.dump, "update": self.update, "eboot": self.eboot,
+        r = lambda p: root_relative(self.root, p)   # noqa: E731  (a folder inside the install moves with it)
+        key = {"dump": r(self.dump), "update": r(self.update), "eboot": r(self.eboot),
                "eboot_elf": self.facts.get("eboot_elf"), "update_sfo": self.facts.get("update")}
         if "lift" not in self.cache:
             self.cache["lift"] = lift_inputs_hash(self)
@@ -426,13 +427,35 @@ def cmake_file(c, name):
     return p if os.path.isfile(p) else os.path.join(c.root, "cmake", name)
 
 
+FFMPEG_INCLUDE = ("ffmpeg", "include")   # the payload's FFmpeg headers (assemble_payload FFMPEG_INCLUDE)
+FFMPEG_INCLUDE_DEV = (("work", "ffmpeg-win", "include"), ("work", "ffmpeg-headers"))   # a source tree's own copies
+
+
+def ffmpeg_include(root):
+    """FFmpeg's headers for the run-time FFmpeg loader (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): the payload's
+    <root>/ffmpeg/include, else a source tree's work/ffmpeg-win/include or work/ffmpeg-headers; "" when none holds
+    libavcodec/avcodec.h. Release an earlier change (issue #16): v0.1.2 passed nothing, so every player's kz2.exe was built
+    without movie pictures and AC-3 sound although the DLLs were installed beside it."""
+    for rel in (FFMPEG_INCLUDE,) + FFMPEG_INCLUDE_DEV:
+        d = os.path.join(root, *rel)
+        if os.path.isfile(os.path.join(d, "libavcodec", "avcodec.h")):
+            return d
+    return ""
+
+
 def cmd_configure(c):
     refuse_future_files(c)
+    ff = ffmpeg_include(c.root)
+    if not ff:
+        raise StepFailed(
+            f"FFmpeg's headers are missing from {os.path.join(c.root, *FFMPEG_INCLUDE)} (ffmpeg{os.sep}include{os.sep}"
+            "libavcodec), so the game would build without its movies and their sound. Repair or reinstall Project "
+            "Pyrrhus with the current installer.")
     a = [c.cmake, "-S", os.path.join(c.root, "port", "kz2"), "-B", c.b("obj"), "-G", "Ninja",
          "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_C_FLAGS_RELEASE={RELEASE_FLAGS}",
          f"-DCMAKE_CXX_FLAGS_RELEASE={RELEASE_FLAGS}", f"-DPS3RECOMP_DIR={cm_path(c.ps3recomp)}",
          f"-DRECOMP_DIR={cm_path(c.b('recomp'))}", f"-DSPU_DIR={cm_path(c.b('spu', 'lift'))}",
-         f"-DPython3_EXECUTABLE={cm_path(c.python)}"]
+         f"-DPython3_EXECUTABLE={cm_path(c.python)}", f"-DKZ2_FFMPEG_INCLUDE_DIR={cm_path(ff)}"]
     if c.ninja:
         a.append(f"-DCMAKE_MAKE_PROGRAM={cm_path(c.ninja)}")
     if c.toolchain:     # llvm-mingw: the release's compiler
@@ -463,14 +486,15 @@ def prepare_sources(c):
     recorded by the last finished build: every changed payload file gets the current time (ninja then rebuilds what
     depends on it), and a changed toolchain/ file empties obj/ (ninja does not track the compiler binary).
     No record (first build, a source tree) touches nothing. -> folders to clean."""
+    stale = [c.b("obj")] if not cache_is_here(c.root, c.b("obj")) else []   # the install folder moved
     cur = payload_hashes(c.root)
     try:
         with open(c.b(*SOURCES_RECORD), encoding="utf-8") as f:
             prev = json.load(f)
     except (OSError, ValueError):
-        return []
+        return stale
     if not cur or not isinstance(prev, dict):
-        return []
+        return stale
     now, touched, tool = time.time(), [], False
     for path, h in sorted(cur.items()):
         if prev.get(path) == h:
@@ -483,7 +507,7 @@ def prepare_sources(c):
             os.utime(f, (now, now))
             touched.append(path)
     c.touched = touched
-    return [c.b("obj")] if tool else []
+    return [c.b("obj")] if tool or stale else []
 
 
 def record_sources(c):
@@ -538,7 +562,11 @@ def refuse_future_files(c):
 
 def cmd_compile(c):
     refuse_future_files(c)
-    return [[c.cmake, "--build", c.b("obj"), "-j", str(c.jobs)]]
+    build = [c.cmake, "--build", c.b("obj"), "-j", str(c.jobs)]
+    if not cache_is_here(c.root, c.b("obj")):     # the folder moved (or no configure ran): configure again, clean
+        remove_stale_obj(c)
+        return [*cmd_configure(c), build]
+    return [build]
 
 
 def after_record(c):
@@ -735,7 +763,8 @@ def place_decoders(root, build, obj=None):
 
 
 def cmd_stamp(c):
-    """Fail the last step, with a message in the log, when the build left no at3_standalone.dll (firstrun_check B1)."""
+    """Fail the last step, with a message in the log, when the build left no at3_standalone.dll (firstrun_check B1) or
+    kz2.exe lacks the FFmpeg loader (B2, an earlier change: issue #16)."""
     return [[*c.py, c.tool("release", "firstrun_check.py"), "--build-dir", c.b("obj")]]
 
 
@@ -907,6 +936,131 @@ def copy_to_install_logs(log_path, logs_dir):
             os.remove(os.path.join(logs_dir, n))
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------- a moved or renamed install folder
+# The portable zip is unpacked, then moved and renamed by players (Project Helghast: absolute paths kept from the old
+# place, CMake files reused, the old folder made again). Nothing here keeps a path of its own place: the markers'
+# fingerprint names a folder inside the install relative to it, kz2-install.ini [paths] and build/paths.json are
+# rebased when the install folder moved (relocate_saved), and build/obj (CMake's cache and build.ninja hold absolute
+# paths, and CMake refuses another source folder) is configured again in an empty folder (cache_is_here,
+# remove_stale_obj). A finished build keeps its kz2.exe; only a later configure or compile pays.
+LOCATION = "location.json"      # under <build>/.firstrun: {"root": the install folder of the last run}
+
+
+def _same(a, b):
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def _under(root, p):
+    """The parts of p below root, or None (case-folded on Windows; another drive is not under)."""
+    if not p:
+        return None
+    r, q = os.path.normcase(os.path.normpath(root)), os.path.normcase(os.path.normpath(p))
+    if q == r or not q.startswith(r + os.sep):
+        return None
+    return os.path.normpath(p)[len(os.path.normpath(root)) + 1:].split(os.sep)
+
+
+def root_relative(root, p):
+    """p as "<root>/rel" when it lies inside the install folder, else unchanged (the fingerprints' form)."""
+    rel = _under(root, p)
+    if not rel:
+        return p
+    return "<root>/" + "/".join(rel if os.name != "nt" else [x.lower() for x in rel])
+
+
+def cmake_home(obj):
+    """(CMAKE_HOME_DIRECTORY, CMAKE_CACHEFILE_DIR) of obj/CMakeCache.txt, or None without a cache."""
+    try:
+        with open(os.path.join(obj, "CMakeCache.txt"), encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+    except OSError:
+        return None
+    got = {}
+    for k in ("CMAKE_HOME_DIRECTORY", "CMAKE_CACHEFILE_DIR"):
+        m = re.search(r"^" + k + r":[A-Z]+=(.*)$", txt, re.M)
+        got[k] = m.group(1).strip() if m else ""
+    return got["CMAKE_HOME_DIRECTORY"], got["CMAKE_CACHEFILE_DIR"]
+
+
+def cache_is_here(root, obj):
+    """True when obj has no CMake files yet (configure makes them) or its cache was made for this install folder."""
+    h = cmake_home(obj)
+    if h is None:
+        return not os.path.exists(os.path.join(obj, "build.ninja"))
+    return _same(h[0], os.path.join(root, "port", "kz2")) and (not h[1] or _same(h[1], obj))
+
+
+def remove_stale_obj(c):
+    """Empty build/obj (inside <build> only: safe_clean) before a configure where the cache is from another place."""
+    safe_clean(c, c.b("obj"))
+
+
+def _old_root_of(root, build):
+    """The install folder of the last run: the record, else (an install from before the record) the CMake cache's
+    source folder minus port/kz2, else None."""
+    try:
+        with open(os.path.join(build, MARKER_DIR, LOCATION), encoding="utf-8") as f:
+            return json.load(f).get("root") or None
+    except (OSError, ValueError, AttributeError):
+        pass
+    h = cmake_home(os.path.join(build, "obj"))
+    if h and h[0]:
+        p, tail = os.path.normpath(h[0]), os.path.join("port", "kz2")
+        if os.path.normcase(p).endswith(os.path.normcase(os.sep + tail)):
+            return p[:-len(tail) - 1]
+    return None
+
+
+def relocate_saved(root, build=None):
+    """Call at every start (first run, launcher). When the install folder is not where the last run was, saved paths
+    that pointed inside the old folder (the extracted ISO's game/disc, a dump or update kept beside the game) are
+    rebased onto this one in build/paths.json and kz2-install.ini [paths]; the record is rewritten. Paths elsewhere
+    stay. Never creates the old folder. -> notes for the log (empty when nothing moved)."""
+    import configparser
+    build = build or os.path.join(root, "build")
+    notes, old = [], _old_root_of(root, build)
+    if old and not _same(old, root):
+        def rebase(p):
+            rel = _under(old, p)
+            return os.path.join(root, *rel) if rel else p
+        pj = os.path.join(build, "paths.json")
+        try:
+            with open(pj, encoding="utf-8") as f:
+                data = json.load(f)
+            new = {k: (rebase(v) if k in ("dump", "iso", "update", "eboot") and isinstance(v, str) else v)
+                   for k, v in data.items()}
+            if new != data:
+                with open(pj, "w", encoding="utf-8") as f:
+                    json.dump(new, f, indent=2)
+        except (OSError, ValueError, AttributeError):
+            pass
+        ini = os.path.join(root, "kz2-install.ini")
+        cp = configparser.ConfigParser()
+        cp.read(ini, encoding="utf-8")
+        if cp.has_section("paths"):
+            ch = False
+            for k in ("dump", "update", "eboot"):
+                v = cp.get("paths", k, fallback="")
+                if v and rebase(v) != v:
+                    cp.set("paths", k, rebase(v))
+                    ch = True
+            if ch:
+                try:
+                    with open(ini, "w", encoding="utf-8") as f:
+                        cp.write(f)
+                except OSError:
+                    pass
+        notes.append("# the install folder moved: saved paths inside it follow; the compiler's build files are made again")
+    if not old or old != root:
+        try:
+            os.makedirs(os.path.join(build, MARKER_DIR), exist_ok=True)
+            with open(os.path.join(build, MARKER_DIR, LOCATION), "w", encoding="utf-8") as f:
+                json.dump({"root": root}, f)
+        except OSError:
+            pass
+    return notes
 
 
 def marker_path(ctx, i, step):
@@ -1362,13 +1516,13 @@ DISPLAY_LABELS = {"windowed": "Windowed", "borderless": "Borderless window", "fu
 
 
 def display_mode(value):
-    """-> (mode, ok): [display] mode; missing/empty -> windowed, ok; window = windowed, exclusive = fullscreen;
-    unknown -> windowed, not ok."""
+    """-> (mode, ok): [display] mode; missing/empty -> borderless (the default), ok; window = windowed, exclusive = fullscreen;
+    unknown -> borderless, not ok."""
     v = (value or "").strip().lower()
     v = {"window": "windowed", "exclusive": "fullscreen", "borderless window": "borderless"}.get(v, v)
     if v in DISPLAY_MODES:
         return v, True
-    return "windowed", v == ""
+    return "borderless", v == ""
 
 
 def write_install_ini(root, portable, check_updates, layout="original", prompts=None, display=None):
@@ -1652,10 +1806,10 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
     if not ok:
         say(f"  unknown {pr!r}; using auto (the launcher can change it later)")
     say("Display: " + ", ".join(DISPLAY_LABELS[k] for k in DISPLAY_MODES) + ". Alt+Enter in the game switches for that session.")
-    dm = ask("Display [windowed/borderless/fullscreen, Enter = windowed]: ").strip()
+    dm = ask("Display [windowed/borderless/fullscreen, Enter = borderless]: ").strip()
     dsel, dok = display_mode(dm)
     if not dok:
-        say(f"  unknown {dm!r}; using windowed (the launcher can change it later)")
+        say(f"  unknown {dm!r}; using borderless (the launcher can change it later)")
     write_install_ini(root, a.portable, online, "modern" if modern else "original", sel, dsel)
     say("Saves and settings stay in this folder (portable)." if a.portable else "")
     return yes("Start the build now? (20-90 minutes)", True)
@@ -1750,6 +1904,8 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
         ap.error("--dump is required (or --interactive)")
     root = os.path.abspath(a.root)
     notes, quit_early = [], False
+    if not a.dry_run:
+        notes += relocate_saved(root, os.path.abspath(a.build) if a.build else None)
     if a.interactive and not a.dry_run:
         if not interactive(a, root, pick_log(a.log_dir or None, a.log_name)[0], notes, ask=ask, out=out):
             quit_early = True

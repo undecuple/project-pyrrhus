@@ -183,8 +183,8 @@ Name: "promptsps4"; Description: "PS4 / PS5"; GroupDescription: "{cm:GrpPrompts}
 Name: "promptsxbox"; Description: "Xbox"; GroupDescription: "{cm:GrpPrompts}"; Flags: exclusive unchecked
 Name: "promptskeyboard"; Description: "Keyboard"; GroupDescription: "{cm:GrpPrompts}"; Flags: exclusive unchecked
 ; Display: one radio choice (exclusive), written to [display] mode; the names are the ones the game reads (KZ2_DISPLAY)
-Name: "displaywindowed"; Description: "Windowed"; GroupDescription: "{cm:GrpDisplay}"; Flags: exclusive
-Name: "displayborderless"; Description: "Borderless window"; GroupDescription: "{cm:GrpDisplay}"; Flags: exclusive unchecked
+Name: "displayborderless"; Description: "Borderless window"; GroupDescription: "{cm:GrpDisplay}"; Flags: exclusive
+Name: "displaywindowed"; Description: "Windowed"; GroupDescription: "{cm:GrpDisplay}"; Flags: exclusive unchecked
 Name: "displayfullscreen"; Description: "Fullscreen"; GroupDescription: "{cm:GrpDisplay}"; Flags: exclusive unchecked
 Name: "checkupdates"; Description: "&Check for new versions: one anonymous request to GitHub, at most once a day"; GroupDescription: "{cm:GrpOnline}"; Flags: unchecked
 
@@ -242,10 +242,10 @@ Filename: "{app}\kz2-install.ini"; Section: "controls"; Key: "prompts"; String: 
 Filename: "{app}\kz2-install.ini"; Section: "controls"; Key: "prompts"; String: "xbox"; Tasks: promptsxbox
 Filename: "{app}\kz2-install.ini"; Section: "controls"; Key: "prompts"; String: "keyboard"; Tasks: promptskeyboard
 Filename: "{app}\kz2-install.ini"; Section: "controls"; Key: "prompts"; String: "auto"; Tasks: not promptsps3 and not promptsps4 and not promptsxbox and not promptskeyboard
-; [display] mode (windowed when nothing else is ticked); the launcher's --display changes it later
-Filename: "{app}\kz2-install.ini"; Section: "display"; Key: "mode"; String: "borderless"; Tasks: displayborderless
+; [display] mode (borderless, the default, when nothing else is ticked); the launcher's --display changes it later
+Filename: "{app}\kz2-install.ini"; Section: "display"; Key: "mode"; String: "windowed"; Tasks: displaywindowed
 Filename: "{app}\kz2-install.ini"; Section: "display"; Key: "mode"; String: "fullscreen"; Tasks: displayfullscreen
-Filename: "{app}\kz2-install.ini"; Section: "display"; Key: "mode"; String: "windowed"; Tasks: not displayborderless and not displayfullscreen
+Filename: "{app}\kz2-install.ini"; Section: "display"; Key: "mode"; String: "borderless"; Tasks: not displaywindowed and not displayfullscreen
 
 [Icons]
 Name: "{group}\{#AppDirName}"; Filename: "{app}\{#LauncherExe}"; WorkingDir: "{app}"
@@ -560,6 +560,14 @@ begin
   end;
 end;
 
+{ True when Dir has a character the build's CMake cannot take in a path: '[' or ']' (CMake's list bracket rule) or ';'
+  (its list separator); the build would fail at the compiler check. The same failure reported on Project Helghast
+  (#20); the same rule as firstrun_check.py P1. }
+function HasBadPathChar(Dir: String): Boolean;
+begin
+  Result := (Pos('[', Dir) > 0) or (Pos(']', Dir) > 0) or (Pos(';', Dir) > 0);
+end;
+
 { '' when Dir (the final install folder) is acceptable, else the reason }
 function InstallDirProblem(Dir: String): String;
 var
@@ -569,7 +577,10 @@ begin
   D := RemoveBackslashUnlessRoot(Dir);
   if InOneDrive(D) then
     Result := 'The folder ' + D + ' is inside OneDrive, which syncs the build''s thousands of files while it runs ' +
-      'and locks them. Choose a folder outside OneDrive (the default, %LOCALAPPDATA%\Programs\{#AppDirName}, is fine).';
+      'and locks them. Choose a folder outside OneDrive (the default, %LOCALAPPDATA%\Programs\{#AppDirName}, is fine).'
+  else if HasBadPathChar(D) then
+    Result := 'The folder ' + D + ' has [, ] or ; in its path, which the game''s build (CMake) cannot handle. ' +
+      'Choose a folder without them (the default, %LOCALAPPDATA%\Programs\{#AppDirName}, is fine).';
 end;
 
 { Before any file is written, for the wizard and for silent installs with /DIR= alike (a silent install never clicks
@@ -815,14 +826,16 @@ begin
       '(dev_hdd0\game\' + DiscId + ').';
 end;
 
-{ The update page's quick check: PARAM.SFO, USRDIR\EBOOT.BIN and the update's own archive USRDIR\added_data_ps3.psarc }
+{ The update page's quick check: PARAM.SFO, USRDIR\EBOOT.BIN, the update's own archive USRDIR\added_data_ps3.psarc
+  and its patch folder USRDIR\patch_data_ps3 (issue #16: the game stops at the main menu without
+  the update's data; firstrun_check.py U3 FAILs for both) }
 function UpdateOK(Dir: String): Boolean;
 var
   D: String;
 begin
   D := AddBackslash(Dir);
   Result := FileExists(D + 'PARAM.SFO') and FileExists(D + 'USRDIR\EBOOT.BIN') and
-    FileExists(D + 'USRDIR\added_data_ps3.psarc');
+    FileExists(D + 'USRDIR\added_data_ps3.psarc') and DirExists(D + 'USRDIR\patch_data_ps3');
 end;
 
 { Why a folder is not the update: the path, what is missing or what is there instead (a disc dump, the disc's
@@ -850,6 +863,10 @@ begin
     if not FileExists(D + 'USRDIR\added_data_ps3.psarc') then begin
       if Miss <> '' then Miss := Miss + ', ';
       Miss := Miss + 'USRDIR\added_data_ps3.psarc';
+    end;
+    if not DirExists(D + 'USRDIR\patch_data_ps3') then begin
+      if Miss <> '' then Miss := Miss + ', ';
+      Miss := Miss + 'USRDIR\patch_data_ps3';
     end;
     Result := Dir + ' does not hold ' + Miss;
     if FileExists(D + 'PARAM.SFO') or FileExists(D + 'USRDIR\EBOOT.BIN') then
@@ -1299,8 +1316,8 @@ begin
         what is wrong there (Project Helghast PR #14).
         ASSUMPTION: the exact RPCS3/PS3 wording is to be checked against RPCS3's own docs before release. }
       MsgBox('The 1.29 update was not found in this folder: ' + UpdateProblem(UpdatePage.Values[0]) + #13#10 + #13#10 +
-        'The update folder is the installed update (dev_hdd0\game\BCUS98116) and holds PARAM.SFO, USRDIR\EBOOT.BIN ' +
-        'and USRDIR\added_data_ps3.psarc. The port is built on 1.29.' + #13#10 + #13#10 +
+        'The update folder is the installed update (dev_hdd0\game\BCUS98116) and holds PARAM.SFO, USRDIR\EBOOT.BIN, ' +
+        'USRDIR\added_data_ps3.psarc and the folder USRDIR\patch_data_ps3. The port is built on 1.29.' + #13#10 + #13#10 +
         'To add it:' + #13#10 +
         '  - on your PS3: install the 1.29 update for Killzone 2, then copy the game''s update ' +
         'folder from dev_hdd0\game\BCUS98116; or' + #13#10 +
