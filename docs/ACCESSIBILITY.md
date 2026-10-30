@@ -12,7 +12,8 @@ is released yet, so the installer and Start menu entries below describe the rele
 - **Pads.** PlayStation and Xbox pads through SDL3, with XInput as the fallback without it. A DualShock 4 was played by
   hand; Xbox and DualSense pads have not been tried by hand yet.
 - **Keyboard.** The main menu has a Keyboard page that saves key choices to `keybinds.ini` (checked in scripted runs
-  so far, not yet by hand). A full keyboard-and-mouse scheme is not in the port yet.
+  so far, not yet by hand). Mouse look is in, with its own sensitivity, zoomed sensitivity and inverted Y
+  (`gameplay.ini`, `[mouse]`); not yet tried by hand.
 - **Crouch, cover and aim assist.** The port can make crouch and take cover toggles (tap to start, tap again to stop)
   instead of hold, and can switch the aim assist off. All three are off or original by default; set them in
   `gameplay.ini` next to `keybinds.ini` (`crouch_toggle = 1`, `cover_toggle = 1`, `aim_assist = off`; see BUILDING.md for

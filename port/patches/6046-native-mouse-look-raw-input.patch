@@ -1,0 +1,327 @@
+KZ2 patch 6046 (ENHANCEMENT): native mouse look, runtime side: Raw Input counts and the in-play pointer clip.
+
+Adapted from Project Helghast, the Killzone 3 PC port (same author, MIT licence): its patches 2069 (native mouse look),
+2097 (cursor hide and mouse lock) and 2123 (mouse feed on the window thread), libs/input/pad_mouse.{h,c}. Cut down to
+what Killzone 2 uses: no menu pointer, no game-clock feed, no late latch.
+
+libs/input/pad_mouse.{h,c}: WM_INPUT counts (relative, unaccelerated, unsmoothed) summed on the window thread and taken
+once per look update by the game glue (port/kz2/kz2_ppu_overrides.cpp). Counts are kept only while the game is in play
+(a look update took counts in the last 300 ms) and the window has the focus, so motion made in a menu or another window
+never reaches the view. The pointer is clipped to the client area while focused and in play, released in menus, on focus
+loss, minimise, a title-bar drag or resize, and on close (pad_mouse_tick from the window thread's loop, every <= 50 ms).
+Mouse buttons stay keybinds (Mouse1 fire, Mouse2 zoom by default, as Project Helghast). KZ2_MOUSE_SCRIPT test input
+(pure parser, host test tools/runtime/test_mouse_look.sh) and pad_mouse_send (SendInput, the full WM_INPUT path).
+
+diff -ruN a/libs/input/pad_keybinds.h b/libs/input/pad_keybinds.h
+--- a/libs/input/pad_keybinds.h	2026-10-29 22:22:04.548495285 -0500
++++ b/libs/input/pad_keybinds.h	2026-10-29 22:22:04.549495308 -0500
+@@ -183,8 +183,8 @@
+     return -1;
+ }
+ 
+-/* Defaults (PC layout on top of the Standard preset; ENHANCEMENT). Mouse look is not wired yet, so the
+- * right stick is on I/J/K/L and the numpad. */
++/* Defaults (PC layout on top of the Standard preset; ENHANCEMENT). The mouse looks (patch 6046); the right stick
++ * also stays on I/J/K/L and the numpad. */
+ static void pad_kb_defaults(PadKeybinds* kb)
+ {
+     static const struct { const char* in; unsigned char a, b; } d[] = {
+diff -ruN a/libs/input/pad_mouse.c b/libs/input/pad_mouse.c
+--- a/libs/input/pad_mouse.c	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/input/pad_mouse.c	2026-10-29 22:22:04.543495169 -0500
+@@ -0,0 +1,150 @@
++/* KZ2 patch 6046: native mouse look, runtime side (pad_mouse.h has the design). Adapted from Project Helghast's
++ * libs/input/pad_mouse.c (the Killzone 3 PC port, same author, MIT; patches 2069 / 2097 / 2123). */
++#include "pad_mouse.h"
++
++#include <stdio.h>
++
++#ifdef _WIN32
++#include <windows.h>
++
++static volatile LONG     s_on = 1;
++static volatile LONG     s_dx, s_dy;            /* counts since the last take (Interlocked) */
++static volatile LONG64   s_last_take_ms;        /* GetTickCount64 of the last take (0 = never) */
++static volatile LONG64   s_raw_events;
++/* window-thread state */
++static int  s_attached, s_focused, s_minimized, s_sizemove, s_closing, s_clipped;
++static RECT s_clip_rc;
++
++void pad_mouse_set_enabled(int on) { InterlockedExchange(&s_on, on ? 1 : 0); }
++int  pad_mouse_enabled(void) { return s_on != 0; }
++unsigned long long pad_mouse_raw_events(void) { return (unsigned long long)s_raw_events; }
++
++int pad_mouse_take(int* dx, int* dy)
++{
++    *dx = (int)InterlockedExchange(&s_dx, 0);
++    *dy = (int)InterlockedExchange(&s_dy, 0);
++    InterlockedExchange64(&s_last_take_ms, (LONG64)GetTickCount64());
++    return *dx || *dy;
++}
++
++void pad_mouse_add(int dx, int dy)
++{
++    InterlockedExchangeAdd(&s_dx, dx);
++    InterlockedExchangeAdd(&s_dy, dy);
++}
++
++int pad_mouse_send(int dx, int dy)
++{
++    INPUT in;
++    memset(&in, 0, sizeof in);
++    in.type = INPUT_MOUSE;
++    in.mi.dx = dx;
++    in.mi.dy = dy;
++    in.mi.dwFlags = MOUSEEVENTF_MOVE;
++    return SendInput(1, &in, sizeof in) == 1;
++}
++
++static int in_play(void)
++{
++    return pad_mouse_in_play(GetTickCount64(), (unsigned long long)s_last_take_ms);
++}
++
++static void apply_clip(HWND hwnd)
++{
++    PadMouseClip c = { s_focused, s_minimized, s_sizemove, s_closing, s_on != 0, in_play() };
++    int want = pad_mouse_clip_want(&c);
++    RECT rc;
++    if (want) {
++        POINT a = {0, 0}, b;
++        if (!GetClientRect(hwnd, &rc)) want = 0;
++        else {
++            b.x = rc.right; b.y = rc.bottom;
++            ClientToScreen(hwnd, &a); ClientToScreen(hwnd, &b);
++            rc.left = a.x; rc.top = a.y; rc.right = b.x; rc.bottom = b.y;
++            if (rc.right <= rc.left || rc.bottom <= rc.top) want = 0;
++        }
++    }
++    if (want) {
++        if (!s_clipped || memcmp(&rc, &s_clip_rc, sizeof rc)) {
++            ClipCursor(&rc);
++            if (!s_clipped) printf("[mouse] pointer held in the game window (in play)\n");
++            s_clip_rc = rc;
++            s_clipped = 1;
++        }
++    } else if (s_clipped) {
++        ClipCursor(NULL);
++        s_clipped = 0;
++        printf("[mouse] pointer released (%s)\n", !s_focused ? "focus lost" : s_minimized ? "minimised" : s_sizemove ? "window move"
++                                               : s_closing ? "closing" : !s_on ? "mouse look off" : "not in play");
++    }
++}
++
++static void attach(HWND hwnd)
++{
++    RAWINPUTDEVICE rid;
++    s_attached = 1;
++    rid.usUsagePage = 0x01;   /* generic desktop */
++    rid.usUsage = 0x02;       /* mouse */
++    rid.dwFlags = 0;          /* legacy messages and GetAsyncKeyState keep working (mouse buttons are keybinds) */
++    rid.hwndTarget = hwnd;
++    const BOOL ok = RegisterRawInputDevices(&rid, 1, sizeof rid);
++    s_focused = GetForegroundWindow() == hwnd;
++    printf("[mouse] raw input %s (mouse look %s; KZ2_MOUSE_LOOK / gameplay.ini [mouse] mouse_look)\n",
++           ok ? "registered" : "registration failed", s_on ? "on" : "off");
++}
++
++int pad_mouse_wndmsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
++{
++    if (!s_attached) attach(hwnd);
++    switch (msg) {
++    case WM_INPUT: {
++        RAWINPUT ri;
++        UINT sz = sizeof ri;
++        if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
++            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
++            InterlockedIncrement64(&s_raw_events);
++            /* only while in play and focused: motion in menus or another window is not look input */
++            if (s_on && s_focused && in_play() && (ri.data.mouse.lLastX || ri.data.mouse.lLastY))
++                pad_mouse_add((int)ri.data.mouse.lLastX, (int)ri.data.mouse.lLastY);
++        }
++        apply_clip(hwnd);
++        return 0;
++    }
++    case WM_ACTIVATE:
++        s_focused = LOWORD(wp) != WA_INACTIVE;
++        if (!s_focused) { InterlockedExchange(&s_dx, 0); InterlockedExchange(&s_dy, 0); }
++        apply_clip(hwnd);
++        return 0;
++    case WM_SETFOCUS:   s_focused = 1; apply_clip(hwnd); return 0;
++    case WM_KILLFOCUS:  s_focused = 0; apply_clip(hwnd); return 0;
++    case WM_ENTERSIZEMOVE: case WM_ENTERMENULOOP: s_sizemove = 1; apply_clip(hwnd); return 0;
++    case WM_EXITSIZEMOVE:  case WM_EXITMENULOOP:  s_sizemove = 0; apply_clip(hwnd); return 0;
++    case WM_SIZE:
++        s_minimized = wp == SIZE_MINIMIZED;
++        apply_clip(hwnd);
++        return 0;
++    case WM_MOVE:       if (s_clipped) apply_clip(hwnd); return 0;
++    case WM_CLOSE: case WM_DESTROY: s_closing = 1; apply_clip(hwnd); return 0;
++    }
++    return 0;
++}
++
++void pad_mouse_tick(HWND hwnd)
++{
++    if (!hwnd) return;
++    if (!s_attached) attach(hwnd);
++    apply_clip(hwnd);
++}
++
++#else   /* no window system: the accumulator only (host builds) */
++
++static int s_on = 1;
++static int s_dx, s_dy;
++void pad_mouse_set_enabled(int on) { s_on = on ? 1 : 0; }
++int  pad_mouse_enabled(void) { return s_on; }
++unsigned long long pad_mouse_raw_events(void) { return 0; }
++int  pad_mouse_take(int* dx, int* dy) { *dx = s_dx; *dy = s_dy; s_dx = s_dy = 0; return *dx || *dy; }
++void pad_mouse_add(int dx, int dy) { s_dx += dx; s_dy += dy; }
++int  pad_mouse_send(int dx, int dy) { pad_mouse_add(dx, dy); return 1; }
++
++#endif
+diff -ruN a/libs/input/pad_mouse.h b/libs/input/pad_mouse.h
+--- a/libs/input/pad_mouse.h	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/input/pad_mouse.h	2026-10-29 22:22:04.539495077 -0500
+@@ -0,0 +1,104 @@
++/* KZ2 patch 6046 (ENHANCEMENT): native mouse look, runtime side. Adapted from Project Helghast (the Killzone 3 PC
++ * port, same author, MIT): patches 2069 / 2097 / 2099 (libs/input/pad_mouse.{h,c}), cut down to what Killzone 2 needs.
++ *
++ * Raw Input counts (WM_INPUT: relative, unaccelerated, no smoothing) are summed on the window thread and taken once per
++ * look update by the game glue (port/kz2/kz2_ppu_overrides.cpp, the pre-hook on the soldier's view setter), which adds
++ * them to the yaw rate and the pitch the game computed from the stick. The stick's dead zone, curves and assist never
++ * see the mouse. Counts arrive only while the game is in play (a look update took counts in the last
++ * PAD_MOUSE_PLAY_MS): the motion made in a menu, a pause or a cutscene is dropped, so the first update after one never
++ * jumps.
++ *
++ * Cursor: while the window has the focus, is not minimised, not being dragged or resized, and the game is in play, the
++ * pointer is clipped to the client area (it is already hidden there by patch 2098). In menus, or when the focus goes,
++ * the clip is released.
++ *
++ * Header-only pure helpers (host test tools/runtime/test_mouse_look.sh); the Win32 side is pad_mouse.c. */
++#ifndef PAD_MOUSE_H
++#define PAD_MOUSE_H
++
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define PAD_MOUSE_PLAY_MS 300u   /* a look update within this long = in play (clip on, counts kept) */
++
++/* Clip decision (from KZ3 2097's pad_cursor_decide, without its menu-pointer part). */
++typedef struct {
++    int focused;     /* window active with the keyboard focus */
++    int minimized;
++    int sizemove;    /* title-bar drag, frame resize or a menu loop */
++    int closing;
++    int look_on;     /* mouse look enabled */
++    int in_play;     /* a look update took counts within PAD_MOUSE_PLAY_MS */
++} PadMouseClip;
++
++static inline int pad_mouse_clip_want(const PadMouseClip* s)
++{
++    return s->focused && !s->minimized && !s->sizemove && !s->closing && s->look_on && s->in_play;
++}
++
++static inline int pad_mouse_in_play(unsigned long long now_ms, unsigned long long last_take_ms)
++{
++    return last_take_ms != 0 && now_ms >= last_take_ms && now_ms - last_take_ms <= PAD_MOUSE_PLAY_MS;
++}
++
++/* Test input KZ2_MOUSE_SCRIPT: "T:dx,dy[*N]" events separated by ' ', ';' or '|'. T = seconds since the first look
++ * update; the event adds dx,dy counts to each of N consecutive look updates (default 1). Example "5:600,0 8:0,-100*4". */
++typedef struct { double t; int dx, dy, left; } PadMouseEv;
++#define PAD_MOUSE_SCRIPT_MAX 64
++
++static inline int pad_mouse_script_parse(const char* s, PadMouseEv* ev, int max, int* bad)
++{
++    int n = 0, b = 0;
++    while (s && *s) {
++        while (*s == ' ' || *s == ';' || *s == '|' || *s == '\t') s++;
++        if (!*s) break;
++        char* e;
++        double t = strtod(s, &e);
++        int ok = e != s && *e == ':';
++        long dx = 0, dy = 0, cnt = 1;
++        if (ok) { s = e + 1; dx = strtol(s, &e, 10); ok = e != s && *e == ','; }
++        if (ok) { s = e + 1; dy = strtol(s, &e, 10); ok = e != s; }
++        if (ok && *e == '*') { s = e + 1; cnt = strtol(s, &e, 10); ok = e != s && cnt > 0 && cnt <= 10000; }
++        if (ok && *e && *e != ' ' && *e != ';' && *e != '|' && *e != '\t') ok = 0;
++        if (ok && t >= 0.0 && n < max) { ev[n].t = t; ev[n].dx = (int)dx; ev[n].dy = (int)dy; ev[n].left = (int)cnt; n++; }
++        else b++;
++        while (*e && *e != ' ' && *e != ';' && *e != '|' && *e != '\t') e++;
++        s = e;
++    }
++    if (bad) *bad = b;
++    return n;
++}
++
++/* Counts due at `t` seconds: every event whose time has come and still has updates left gives its dx,dy once. */
++static inline int pad_mouse_script_due(PadMouseEv* ev, int n, double t, int* dx, int* dy)
++{
++    int any = 0;
++    for (int i = 0; i < n; i++)
++        if (ev[i].left > 0 && t >= ev[i].t) { *dx += ev[i].dx; *dy += ev[i].dy; ev[i].left--; any = 1; }
++    return any;
++}
++
++/* Runtime side (pad_mouse.c). */
++void pad_mouse_set_enabled(int on);   /* the game's setting; off = no Raw Input counts, no clip */
++int  pad_mouse_enabled(void);
++/* Counts since the last take (the window thread's sum plus pad_mouse_add's); stamps "in play". Returns 1 if any. */
++int  pad_mouse_take(int* dx, int* dy);
++void pad_mouse_add(int dx, int dy);   /* test input: counts as if from the mouse */
++int  pad_mouse_send(int dx, int dy);  /* test input through SendInput (relative move): the full WM_INPUT path */
++unsigned long long pad_mouse_raw_events(void);   /* WM_INPUT mouse moves seen (log) */
++#ifdef _WIN32
++#include <windows.h>
++/* Called first in the window procedure (any thread that owns the window); registers Raw Input on the first call.
++ * Returns 0 (DefWindowProc still runs). */
++int  pad_mouse_wndmsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
++void pad_mouse_tick(HWND hwnd);       /* the window thread's loop (every <= 50 ms): applies the clip decision */
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff -ruN a/libs/video/rsx_cursor.h b/libs/video/rsx_cursor.h
+--- a/libs/video/rsx_cursor.h	2026-10-29 22:22:04.558495516 -0500
++++ b/libs/video/rsx_cursor.h	2026-10-29 22:22:04.559495539 -0500
+@@ -1,7 +1,8 @@
+ /* KZ2 patch 2098: the mouse cursor over the game window (pure decision, host test tools/runtime/test_cursor.c).
+  * The pointer is hidden while it is over the client area of the focused game window, in every display mode
+  * (windowed, borderless, fullscreen); over the title bar or the borders, or when another window has the focus, the
+- * normal arrow shows. RSX_CURSOR=1 keeps the arrow everywhere. No ClipCursor or raw input: mouse look is not wired. */
++ * normal arrow shows. RSX_CURSOR=1 keeps the arrow everywhere. Patch 6046 adds the in-play
++ * pointer clip and Raw Input (libs/input/pad_mouse.c). */
+ #ifndef RSX_CURSOR_H
+ #define RSX_CURSOR_H
+ 
+diff -ruN a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+--- a/libs/video/rsx_null_backend.c	2026-10-29 22:22:04.553495401 -0500
++++ b/libs/video/rsx_null_backend.c	2026-10-29 22:22:04.554495424 -0500
+@@ -455,9 +455,12 @@
+     return 0;
+ }
+ 
++#include "../input/pad_mouse.h"   /* patch 6046 */
++
+ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     LRESULT sized;
++    pad_mouse_wndmsg(hwnd, msg, wp, lp);   /* patch 6046: Raw Input counts and the in-play pointer clip */
+     if (rsx_cursor_msg(hwnd, msg, wp, lp, &sized)) return sized;   /* patch 2098 */
+     if (rsx_dm_wndmsg(hwnd, msg, wp, lp, &sized)) return sized;   /* patch 2095 */
+     /* patch 2062's aspect-keeping drag and maximize: windowed only (patch 2095) */
+@@ -747,6 +750,7 @@
+         if (s_dm_pending == RSX_DM_FULLSCREEN && !s_dm_wait) rsx_dm_apply(RSX_DM_FULLSCREEN, "start");
+         rsx_dm_script_step();
+         rsx_null_title_tick();
++        pad_mouse_tick(s_state.hwnd);   /* patch 6046: release the pointer when play stops (menu, pause) */
+         QueryPerformanceCounter(&last);
+     }
+ }

@@ -105,25 +105,30 @@ int main(void)
     expect("EdgeAnim on by default", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
     expect("EdgeAnim keys on by default", EK, "Anim.EdgeAnim", 76, "KZ2_NATIVE_JOB_EDGEANIM default");
     expect("VJCLEAR on by default", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77, "KZ2_NATIVE_JOB_VJCLEAR default");
-    expect("VJCOPY off by default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
+    expect("VJCOPY on by default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY default");
     expect("EdgeAnim on an unrecorded slot: off", EA, "Anim.EdgeAnim", 99, NULL);
     setenv_(0, "KZ2_NATIVE_JOB_POST", "0");
     expect("POST=0 leaves EdgeAnim on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
     setenv_(0, "KZ2_NATIVE_JOB_POST", "1");
     expect("POST=1 leaves EdgeAnim default", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
-    expect("POST=1 leaves VJCOPY off", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
+    expect("POST=1 leaves VJCOPY default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78,
+           "KZ2_NATIVE_JOB_VJCOPY default");
     setenv_(0, EA, "0");
     expect("EDGEANIM=0 off", EA, "Anim.EdgeAnim", 75, NULL);
     expect("EDGEANIM=0 turns the keys off", EK, "Anim.EdgeAnim", 76, NULL);
     setenv_(0, "KZ2_NATIVE_JOB_EDGEANIM_KEYS", "0");
     expect("EDGEANIM_KEYS=0: keys off", EK, "Anim.EdgeAnim", 76, NULL);
     expect("EDGEANIM_KEYS=0 leaves the decoder on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJCOPY", "0");
+    expect("VJCOPY=0 off", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
+    expect("VJCOPY=0 leaves VJCLEAR on", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77,
+           "KZ2_NATIVE_JOB_VJCLEAR default");
     setenv_(0, "KZ2_NATIVE_JOB_VJCOPY", "1");
     expect("VJCOPY=1 on", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY=1");
     /* the default list is exactly k_def's flags */
     const size_t n = sizeof kz2_native_default_on / sizeof kz2_native_default_on[0];
-    if (n != NDEF + 2) {   /* + EDGEANIM, VJCLEAR */
-        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 2);
+    if (n != NDEF + 3) {   /* + EDGEANIM, VJCLEAR, VJCOPY */
+        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 3);
         fails++;
     }
     for (size_t i = 0; i < NDEF; i++)

@@ -124,6 +124,26 @@ endif()
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
 
+# Shader translator identity (patch 6047): a hash of the renderer's sources (libs/video), compiled into
+# rsx_live_draw.c as RSX_TRANSLATOR_ID and written into the PSO preload's key file, so a shader cache made by another
+# build (an older version installed underneath) is discarded instead of handing this build the old shaders. Any change
+# to a file there re-runs this configure step (CMAKE_CONFIGURE_DEPENDS), so the id never goes stale.
+file(GLOB _kz2_xl_files LIST_DIRECTORIES false "${PS3RECOMP_DIR}/libs/video/*.c" "${PS3RECOMP_DIR}/libs/video/*.h")
+list(SORT _kz2_xl_files)
+set(_kz2_xl_cat "")
+foreach(_kz2_xl_f IN LISTS _kz2_xl_files)
+    file(SHA256 "${_kz2_xl_f}" _kz2_xl_h)
+    get_filename_component(_kz2_xl_n "${_kz2_xl_f}" NAME)
+    string(APPEND _kz2_xl_cat "${_kz2_xl_n}:${_kz2_xl_h};")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_kz2_xl_f}")
+endforeach()
+string(SHA256 _kz2_xl_id "${_kz2_xl_cat}")
+string(SUBSTRING "${_kz2_xl_id}" 0 16 _kz2_xl_id)
+set_property(SOURCE "${PS3RECOMP_DIR}/libs/video/rsx_live_draw.c" DIRECTORY "${PS3RECOMP_DIR}"
+             APPEND PROPERTY COMPILE_DEFINITIONS "RSX_TRANSLATOR_ID=0x${_kz2_xl_id}ull")
+list(LENGTH _kz2_xl_files _kz2_xl_count)
+message(STATUS "Shader translator id: ${_kz2_xl_id} (${_kz2_xl_count} files in libs/video)")
+
 # ---------------------------------------------------------------------------
 # The HLE NID table
 # ---------------------------------------------------------------------------
@@ -269,6 +289,27 @@ if(SPU_SOURCES)
         endif()
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "${_kz2_spu_opts}")
     endif()
+endif()
+
+# The build header at the top of the game log (kz2_build_info.h): the patch-set id of the toolkit copy this exe is
+# built from (.kz2-patchset, written by tools/ps3recomp-patched.sh) and the source tree's installer/VERSION, the
+# last fallback when the exe has no version resource (a developer build has no app.rc). Both re-read when they change.
+set(_kz2_bi_defs "")
+foreach(_kz2_bi IN ITEMS "PATCHSET|${PS3RECOMP_DIR}/.kz2-patchset" "VERSION|${CMAKE_CURRENT_SOURCE_DIR}/../../installer/VERSION")
+    string(REPLACE "|" ";" _kz2_bi "${_kz2_bi}")
+    list(GET _kz2_bi 0 _kz2_bi_key)
+    list(GET _kz2_bi 1 _kz2_bi_file)
+    if(EXISTS "${_kz2_bi_file}")
+        file(READ "${_kz2_bi_file}" _kz2_bi_val)
+        string(STRIP "${_kz2_bi_val}" _kz2_bi_val)
+        if(_kz2_bi_val MATCHES "^[0-9A-Za-z.-]+$")
+            list(APPEND _kz2_bi_defs "KZ2_BUILD_${_kz2_bi_key}=\"${_kz2_bi_val}\"")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_kz2_bi_file}")
+    endif()
+endforeach()
+if(_kz2_bi_defs)
+    set_source_files_properties(kz2_session_log.c PROPERTIES COMPILE_DEFINITIONS "${_kz2_bi_defs}")
 endif()
 
 # app.rc carries the icon, the version block and the manifest, and needs a

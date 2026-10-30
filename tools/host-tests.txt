@@ -70,3 +70,6 @@ nix develop .#re --command python3 tools/release/test_version_ini.py
 nix develop .#re --command python3 tools/release/test_install_responsive.py
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_toggle.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjcopy.sh
+nix develop --command tools/sandbox.sh -- tools/runtime/test_mouse_look.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_live_proof.sh
+nix develop --command tools/sandbox.sh -- tools/runtime/test_pso_keys_hdr.sh

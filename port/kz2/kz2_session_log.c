@@ -1,6 +1,7 @@
 /* Killzone 2 port: console switch and session log file (kz2_session_log.h has the rules). ENHANCEMENT (port-only). */
 #include "kz2_session_log.h"
 #include "kz2_log_redact.h"
+#include "kz2_build_info.h"
 
 #include <stdlib.h>
 
@@ -9,6 +10,8 @@ const char* kz2_exe_dir(void) { return "."; }
 int  kz2_console_open(void) { return 0; }
 int  kz2_session_log_start(void) { return 0; }
 const char* kz2_session_log_path(void) { return ""; }
+void kz2_build_header(void) {}
+int  kz2_exe_version(char* out, size_t n) { if (n) out[0] = 0; return 0; }
 void kz2_session_log_flush(unsigned timeout_ms) { (void)timeout_ms; fflush(stdout); fflush(stderr); }
 const char* kz2_log_path_w(const wchar_t* path, char* out, size_t n)
 {
@@ -67,6 +70,120 @@ int kz2_console_open(void)
 }
 
 const char* kz2_session_log_path(void) { return s_log_path; }
+
+/* <dir>\<name> as text (at most max bytes), or NULL. */
+static char* kz2_read_small(const wchar_t* dir, const wchar_t* name, DWORD max)
+{
+    wchar_t p[1200];
+    HANDLE h;
+    DWORD sz, got = 0;
+    char* t;
+    _snwprintf(p, 1200, L"%ls\\%ls", dir, name);
+    p[1199] = 0;
+    h = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    sz = GetFileSize(h, NULL);
+    if (sz == INVALID_FILE_SIZE || sz > max) { CloseHandle(h); return NULL; }
+    t = (char*)malloc(sz + 1);
+    if (t && !ReadFile(h, t, sz, &got, NULL)) got = 0;
+    CloseHandle(h);
+    if (t) t[got] = 0;
+    return t;
+}
+
+/* The product version in kz2.exe's own version resource (installer/app.rc.in; a developer build has none). */
+int kz2_exe_version(char* out, size_t n)
+{
+    HRSRC r = FindResourceW(NULL, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16) /* RT_VERSION */);
+    HGLOBAL g = r ? LoadResource(NULL, r) : NULL;
+    const unsigned char* d = g ? (const unsigned char*)LockResource(g) : NULL;
+    if (n) out[0] = 0;
+    return d ? kz2_bi_fixed_version(d, SizeofResource(NULL, r), out, n) : 0;
+}
+
+/* The [build] lines (kz2_build_info.h), made once. */
+static char s_bi_text[900];
+static void kz2_build_text(void)
+{
+    static LONG done;
+    wchar_t dir[1024], up[1024];
+    DWORD n;
+    char ver[64] = "", built[64] = "", sps[160] = "", text[900];
+    char* stamp;
+    kz2_build_info b;
+    if (InterlockedExchange(&done, 1)) return;   /* ASSUMPTION: one caller at a time (start-up, single thread) */
+    memset(&b, 0, sizeof b);
+    n = GetModuleFileNameW(NULL, dir, 1024);
+    if (!n || n >= 1024) dir[0] = 0;
+    else { wchar_t* sl = wcsrchr(dir, L'\\'); if (sl) *sl = 0; }
+    wcscpy(up, dir);
+    { wchar_t* sl = wcsrchr(up, L'\\'); if (sl) *sl = 0; else up[0] = 0; }
+
+    /* version: the exe's own version resource first */
+    if (kz2_exe_version(ver, sizeof ver)) b.version_from = "kz2.exe version resource";
+    stamp = dir[0] ? kz2_read_small(dir, L"build-stamp.json", 4u << 20) : NULL;
+    if (!ver[0] && kz2_bi_json_str(stamp, "version", ver, sizeof ver)) b.version_from = "build-stamp.json";
+    if (!ver[0]) {
+        char* t = dir[0] ? kz2_read_small(dir, L"VERSION.txt", 256) : NULL;
+        if (!t && up[0]) t = kz2_read_small(up, L"VERSION.txt", 256);
+        if (kz2_bi_version_txt(t, ver, sizeof ver)) b.version_from = "VERSION.txt";
+        free(t);
+    }
+#ifdef KZ2_BUILD_VERSION
+    if (!ver[0]) { snprintf(ver, sizeof ver, "%s", KZ2_BUILD_VERSION); b.version_from = "source tree installer/VERSION"; }
+#endif
+    b.version = ver;
+
+    /* built: the build step's stamp, else the exe's own file time (the link) */
+    if (kz2_bi_json_str(stamp, "built", built, sizeof built)) b.built_from = "build-stamp.json";
+    else {
+        wchar_t exe[1024];
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        FILETIME lt;
+        SYSTEMTIME st;
+        n = GetModuleFileNameW(NULL, exe, 1024);
+        if (n && n < 1024 && GetFileAttributesExW(exe, GetFileExInfoStandard, &fa) &&
+            FileTimeToLocalFileTime(&fa.ftLastWriteTime, &lt) && FileTimeToSystemTime(&lt, &st)) {
+            snprintf(built, sizeof built, "%04u-%02u-%02uT%02u:%02u:%02u", st.wYear, st.wMonth, st.wDay, st.wHour,
+                     st.wMinute, st.wSecond);
+            b.built_from = "exe file time";
+        }
+    }
+    b.built = built;
+#ifdef KZ2_BUILD_PATCHSET
+    b.patchset = KZ2_BUILD_PATCHSET;
+#endif
+    if (kz2_bi_json_str(stamp, "patchset", sps, sizeof sps)) b.stamp_patchset = sps;
+    free(stamp);
+
+    /* install kind: kz2-install.ini beside the exe, then one level up (the keybinds rule, patch 2037) */
+    {
+        const wchar_t* where[2] = { dir, up };
+        const char* name[2] = { "beside the exe", "one level up" };
+        int i, found = -1;
+        for (i = 0; i < 2; i++) {
+            char* t = where[i][0] ? kz2_read_small(where[i], L"kz2-install.ini", 1u << 16) : NULL;
+            if (t && kz2_bi_ini_portable(t)) { b.install = 2; b.install_where = name[i]; free(t); break; }
+            if (t && found < 0) found = i;
+            free(t);
+        }
+        if (!b.install && found >= 0) { b.install = 1; b.install_where = name[found]; }
+    }
+    if (kz2_bi_format(&b, text, sizeof text) > 0) memcpy(s_bi_text, text, strlen(text) + 1);
+}
+
+/* Printed on stdout once, before anything else: from a constructor that runs ahead of the other static initialisers
+ * (the native SPU job table prints its lines from those), so the header is the first text of stdout too. The session
+ * log file gets the same lines as its first lines (kz2_session_log_start writes them into the new file). */
+void kz2_build_header(void)
+{
+    static LONG printed;
+    if (InterlockedExchange(&printed, 1)) return;
+    kz2_build_text();
+    fputs(s_bi_text, stdout);
+    fflush(stdout);
+}
+__attribute__((constructor(101))) static void kz2_build_header_early(void) { kz2_build_header(); }
 
 static void kz2_log_prune(void)
 {
@@ -298,6 +415,17 @@ int kz2_session_log_start(void)
         return 0;
     }
     snprintf(s_log_path, sizeof s_log_path, "%s/logs/%s", s_exe_dir, name);
+    /* The [build] lines first in the file (stdout had them from kz2_build_header already), redacted, CRLF as the
+     * text-mode pipe writes every other line. */
+    kz2_build_text();
+    kz2_redact_init();
+    {
+        char red[2 * sizeof s_bi_text + 1], crlf[4 * sizeof s_bi_text + 1];
+        size_t m = kz2_redact(&s_redact, s_bi_text, strlen(s_bi_text), red, sizeof red), i, o = 0;
+        DWORD put;
+        for (i = 0; i < m && o + 2 < sizeof crlf; i++) { if (red[i] == '\n') crlf[o++] = '\r'; crlf[o++] = red[i]; }
+        WriteFile(s_file, crlf, (DWORD)o, &put, NULL);
+    }
 
     /* The original stdout (a redirect or the console), if any: the copy goes there too. */
     fflush(stdout);

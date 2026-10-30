@@ -42,6 +42,7 @@ How far the port is, feature by feature, against the PS3 game. Statuses: works, 
 | Front end | Front-end page engine (SVML menus) | the game's kin/*.jsp pages from the psarc (interface/svo/svml/<lang>/kin), drawn by the SVO browser | partial |
 | Enhancement | Gyro stand-in for SIXAXIS | ENHANCEMENT: stick or mouse | in progress |
 | Enhancement | Display modes | ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini | in progress |
+| Enhancement | Keyboard and mouse | ENHANCEMENT: mouse look (raw input) and the keyboard | partial |
 | Enhancement | Gamepads: PlayStation and Xbox | ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only | partial |
 | Enhancement | Button prompt choice and pad layouts | ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout | partial |
 | Enhancement | Gameplay options: aim assist switch, crouch and cover toggles | ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE) | partial |

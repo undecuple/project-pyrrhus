@@ -7,10 +7,13 @@ spu_lockline_lock key each call by their return address and count calls, contend
 spent acquiring and the ticks held until the thread's matching unlock; GETLLAR's seqlock spins (a writer holding the
 line's stripe) are counted apart. "[ll-prof]" lines every 10 s (RVAs in the exe: resolve with nm). Off by default
 (one env lookup); no behaviour change.
+An earlier change: the 10 s print check looked at time() on every unlock; under Wine time() is GetTimeZoneInformation ->
+NtQuerySystemInformation, a system call, and that was an earlier change's "86 % of UpdateJob's samples in a blocked system
+call" (named with patch 7011's caller chains). The clock is now read once per 4096 unlocks per thread.
 
 --- a/runtime/spu/spu_coherency.c
 +++ b/runtime/spu/spu_coherency.c
-@@ -153,17 +153,109 @@
+@@ -153,17 +153,111 @@
      volatile uint32_t* w = &s_ll[i].seq;
      __atomic_store_n(w, *w + 1u, __ATOMIC_RELEASE);
  }
@@ -54,6 +57,8 @@ line's stripe) are counted apart. "[ll-prof]" lines every 10 s (RVAs in the exe:
 +{
 +    static volatile long last;
 +    static volatile int busy;
++    static __thread unsigned calls;   /* time() is a syscall under Wine; look at the clock 1 call in 4096 */
++    if ((++calls & 0xFFF) != 0) return;
 +    const long t = (long)time(NULL);
 +    if (!last) { last = t; return; }
 +    if (t - last < 10 || __atomic_exchange_n(&busy, 1, __ATOMIC_ACQUIRE)) return;
@@ -123,7 +128,7 @@ line's stripe) are counted apart. "[ll-prof]" lines every 10 s (RVAs in the exe:
  void spu_lockline_unlock(void) { spu_ll_unlock_mask(~0ull); }
  
  /* Seqlock read side for GETLLAR: an even count to read under, 0xFFFFFFFF if
-@@ -203,7 +295,15 @@
+@@ -203,7 +297,15 @@
      if (!spu_ll_old()) {
          for (int tries = 0; tries < 64; tries++) {
              uint32_t s = spu_ll_read_begin(ea);

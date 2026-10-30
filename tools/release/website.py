@@ -484,7 +484,7 @@ def render(root, problems):
       f"<p>Or build the port from source: <a href=\"{REPO}/blob/main/docs/BUILDING.md\">building</a>.</p>\n"
       "<h3>What goes online</h3>\n<p>Nothing unless you ask. The port starts no connection of its own; the version "
       "check and update download are off until you turn them on. Online multiplayer, if it comes, will only use a "
-      f"self-hosted server you choose. See the <a href=\"{REPO}#what-goes-online\">README</a>.</p>\n"
+      f"self-hosted server you choose. See the <a href=\"{REPO}/blob/main/docs/PRIVACY.md\">README</a>.</p>\n"
       "<p class=\"small\">Viewing this website loads the Rajdhani font from Google Fonts, which sees your visit; the "
       "repository, installer and game do not.</p>\n</section>\n")
 

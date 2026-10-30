@@ -6,7 +6,7 @@ downloaded.
 
 There are two ways to get a build:
 
-- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.5](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5)<!-- /version -->.**
+- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.6](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6)<!-- /version -->.**
   It checks your disc dump and the 1.29 update, then lifts and compiles the game's code on your machine with a bundled
   compiler, behind one progress bar, with a full log. Download it from the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). The scripts and the installer definition are in this repository (`installer/`,
@@ -15,7 +15,7 @@ There are two ways to get a build:
   Linux (see [Status](#status-of-the-linux-build)). macOS and Windows (inside WSL2) use the same commands but have not been tried (see
   [Building on macOS](#building-on-macos) and [Building on Windows](#building-on-windows)).
 
-The port is early and partly playable: the first level can be played with a pad (see the [README](../README.md#status) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
+The port is early and partly playable: the first level can be played with a pad (see the [README](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
 A build starts, shows the menus and draws the first level at 23-33 frames per second in our scripted runs under Proton (23.3 over one 330 s run on 2026-10-22, a median of 32.6 in short turn-and-walk windows on 2026-10-29; the PS3 runs it at 30).
 
 **Pinned versions:** the build uses ps3recomp **v0.18.0** (the `third_party/ps3recomp` submodule) with this project's
@@ -224,3 +224,12 @@ On Windows without Nix, the Python tests run with Python 3.12 (`python tools/rel
 tests in `tools/` with Git Bash. The exception is the shell tests in `tools/spu/` and `tools/runtime/` that compile C
 test programs against the runtime with the Nix shell's Linux compilers: they are Linux tests, run by CI, and are not
 expected to pass on Windows.
+
+## Which tools and which route
+
+The port is built with a Nix flake and the patched [ps3recomp](https://github.com/sp00nznet/ps3recomp) it pins (release
+v0.18.0 plus this project's patch set; `tools/ps3recomp-patched.sh` applies it); the
+tested route is Linux with a Windows cross build run under Proton. The steps, the files you need and the
+macOS and Windows notes: this page.
+
+Forking or reusing this project (names, addresses, versions, what to change): [FORKING.md](FORKING.md).

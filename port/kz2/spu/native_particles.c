@@ -1,5 +1,5 @@
 /* native_particles.c -- Particles.VertexJob (job_00cd7180, image 201) native code: the .bss clear (on by default,
- * KZ2_NATIVE_JOB_VJCLEAR=0 turns it off) and the memcpy (off by default, KZ2_NATIVE_JOB_VJCOPY=1 turns it on).
+ * KZ2_NATIVE_JOB_VJCLEAR=0 turns it off) and the memcpy (on by default since an earlier change, KZ2_NATIVE_JOB_VJCOPY=0 turns it off).
  *
  * The job's crt0 .bss clear, the first "continue at" gate (re/spu/native_gates.tsv column 7): the WWS job crt0 that
  * 26 of the 36 job images share zeroes its .bss at every job start (@0x406C ila r3 = start, @0x4070 ila r4 = end,
@@ -57,8 +57,11 @@ static int vj_bss_411C(spu_context* ctx)   // @0x0000411C (job_00cd7180)
  * So the local store ends as memcpy(d, s, n) leaves it when the source quadwords it reads ([s & ~15, s + n + 31))
  * are not written by the copy, every address stays below the end of the local store (lqd/stqd wrap: masked
  * 0x3FFF0) and n is the preferred word (clgti: unsigned). The native code declines otherwise. Scratch registers are
- * not reproduced (r3 is): ASSUMPTION: the callers are compiled code that treats r2-r79 as clobbered by a call
- * (post_kernels.py --live cannot show it: the main loop's indirect calls @0x70D4, 0x7130, 0x7160 stop its walk).
+ * not reproduced (r3 is). An earlier change proved that nothing reads them: tools/spu/live_proof.py walks from both call
+ * sites through the rest of the job, its calls into the job manager (API 0x1820/0x1818 through the table at LS
+ * 0x1330, the command dispatcher, the SPURS kernel entries) and the job manager after the job returns, with the call
+ * stack above 0x50F8 seeded; none of the 54 registers the SPU memcpy writes is read before it is written again
+ * (the RE notes "An earlier change").
  * The pool (the shift table rows 0-15, LS 0x8580-0x8680) is checked: the lifted code reads it. */
 static int vj_memcpy_7F00(spu_context* ctx)   // @0x00007F00 (job_00cd7180)
 {

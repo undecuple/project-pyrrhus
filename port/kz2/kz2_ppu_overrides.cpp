@@ -1093,6 +1093,7 @@ void func_000822F0(ppu_context* ctx) { kz2_pad_query(ctx, func_000822F0__lifted,
 #include "kz2_edge_zlib.h"
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 #include <sys/stat.h>
@@ -1342,10 +1343,12 @@ static int kz2_gp_log_on(void)
 }
 static float kz2_gp_f32(uint32_t ea) { const uint32_t u = vm_read32(ea); float f; memcpy(&f, &u, 4); return f; }
 
+static int kz2_look_is_mouse(void);   /* mouse look, below */
+
 [[maybe_unused]] static void kz2_aim_gate(ppu_context* ctx, void (*lifted)(ppu_context*), const uint32_t* sites, int n,
                                           int stick_args, const char* name)
 {
-    const int on = kz2_gp_aim_on(kz2_gameplay_get(), 0);   /* no mouse look yet: auto == on */
+    const int on = kz2_gp_aim_on(kz2_gameplay_get(), kz2_look_is_mouse());   /* auto: off while the mouse looks */
     const uint32_t lr = (uint32_t)ctx->lr;
     static unsigned skipped, ran_site, changed, ran_other;
     if (kz2_gp_aim_skip(on, lr, sites, n)) {
@@ -1518,4 +1521,167 @@ void func_00082248(ppu_context* ctx) { kz2_pad_query(ctx, func_00082248__lifted,
 #if defined(PPU_OVERRIDE_00080D38) && defined(PPU_OVERRIDE_00080D80)
 void func_00080D38(ppu_context* ctx) { kz2_cover_held_q(ctx, func_00080D38__lifted, func_00080D80__lifted, 0x00170C30u); }   // @0x00080D38 (v1.01)
 void func_00080D80(ppu_context* ctx) { func_00080D80__lifted(ctx); }   // @0x00080D80 (v1.01): listed so the cover hook can call the body
+#endif
+
+/* ---- Mouse look (ENHANCEMENT; adapted from Project Helghast's native mouse look, same author, MIT) -------
+ * Runtime side: libs/input/pad_mouse.{h,c} (patch 6046: Raw Input counts summed on the window thread, the in-play
+ * pointer clip). Settings: gameplay.ini [mouse] (kz2_gameplay.h). The counts are added where the game itself writes the
+ * look, after the stick path, so the dead zone, response curve and aim assist never see them:
+ *   UpdateLook(C, f1 = game clock in s) @0x173E80 (v1.01 0x16E620; the RE notes "An earlier change") is wrapped only to note C
+ *   and the clock step dt (f1 is the clock, not a step: run r63-a).
+ *   Its last act is C->vf44(C, f1 = 0, f2 = pitch) = @0x15A7F0 (vtable 0xF804BC + 0xB0), which stores f1 at C+0x74, the
+ *   pitch at C+0x78 and the pitch rate at C+0xFC; the call returns to lr 0x174CE8. Just before it UpdateLook stored the
+ *   yaw rate at C+0xF8 (0x174CCC `stfs f28,0xF8(r31)`), in stick units: the yaw-rate getter @0x167CF0 returns
+ *   C+0xF8 x HumanoidResource+0x2A8 (turn speed, degrees per second) x pi/180 (the constant at 0x167CE4).
+ *   The pre-hook (lr 0x174CE8 and the C that UpdateLook is running for) takes the counts and adds
+ *     yaw:   C+0xF8 += dyaw / (turn x pi/180 x dt)     (kz2_mouse_rate_for; the body turns by dyaw this update)
+ *     pitch: f2 = clamp(f2 + dpitch, E+0x1A4, E+0x1A8)  (UpdateLook's own clamp at 0x174C64..0x174C9C)
+ *   E = C+0x10, res = E+0xC4. Skipped (counts dropped) while a scripted look-at runs (E+0x6B0 set, 0x174334).
+ *   Zoomed = C+0x13C bit 6 (the RE notes "An earlier change": the zoom bit). ASSUMPTION: mouse_zoom_sensitivity is the only
+ *   zoom scale (the stick's zoom slowdown lives in tables not traced).
+ * 1.29 only: the v1.01 twin of @0x15A7F0 and its return address were not read.
+ * Test input: KZ2_MOUSE_SCRIPT="T:dx,dy[*N] ..." (pad_mouse.h; T = seconds since the first look update), added to the
+ * take, or sent through SendInput (the whole WM_INPUT path) with KZ2_MOUSE_SEND=1; KZ2_MOUSE_ANCHOR=<file> starts its
+ * clock when that file appears. KZ2_MOUSE_LOG=1: one [mouse] line
+ * per update that moved (and the stick's own rate and pitch while it is held); KZ2_MOUSE_DUMP=1 also writes E's first
+ * 0x400 bytes as floats at the first update, at the script's start and one second after each script event ends. The
+ * body heading is atan2(E+0x40, E+0x3C) and the view's forward vector E+0x31C (its z = sin(pitch)): run r63-b. */
+#include "../../libs/input/pad_mouse.h"   /* patch 6046 (from runtime/ppu, as ../diag above) */
+#include <chrono>
+#include <cmath>
+
+static kz2_look_src kz2_look;
+static uint32_t kz2_ul_C;
+static double kz2_ul_dt;
+static int kz2_look_is_mouse(void) { return kz2_look.mouse; }
+
+static int kz2_mouse_env_on(const char* n)
+{
+    const char* e = getenv(n);
+    return e && *e && *e != '0';
+}
+
+static void kz2_mouse_dump(const char* why, uint32_t E, double t)
+{
+    char line[256 * 12 + 128];
+    int n = snprintf(line, sizeof line, "[mouse] dump %s t=%.3f E=0x%08X:", why, t, E);
+    for (uint32_t o = 0; o < 0x400 && n < (int)sizeof line - 16; o += 4) n += snprintf(line + n, sizeof line - n, " %.5g", kz2_gp_f32(E + o));
+    fprintf(stderr, "%s\n", line);
+}
+
+static void kz2_mouse_pre(ppu_context* ctx)
+{
+    static int s_init, s_nev, s_send, s_log, s_dump;
+    static PadMouseEv s_ev[PAD_MOUSE_SCRIPT_MAX];
+    static double s_t0, s_dump_at = -1.0, s_last_line;
+    static unsigned long long s_updates, s_moves;
+    const kz2_gameplay_cfg* c = kz2_gameplay_get();
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!s_init) {
+        s_init = 1;
+        s_t0 = now;
+        pad_mouse_set_enabled(c->mouse_look);
+        int bad = 0;
+        s_nev = pad_mouse_script_parse(getenv("KZ2_MOUSE_SCRIPT"), s_ev, PAD_MOUSE_SCRIPT_MAX, &bad);
+        s_send = kz2_mouse_env_on("KZ2_MOUSE_SEND");
+        s_log = kz2_mouse_env_on("KZ2_MOUSE_LOG");
+        s_dump = kz2_mouse_env_on("KZ2_MOUSE_DUMP");
+        fprintf(stderr, "[mouse] look hook reached (UpdateLook -> view setter, lr 0x%08X): mouse look %s, %.6f rad/count;"
+                        " script %d event(s)%s, %d unreadable\n", (uint32_t)ctx->lr, c->mouse_look ? "on" : "off",
+                kz2_mouse_rad_per_count(c), s_nev, s_send ? " through SendInput" : "", bad);
+    }
+    /* KZ2_MOUSE_ANCHOR=<file>: the script's clock starts at the first update that finds the file (checked twice a second;
+     * tools/runtime/native_ab_drive.py writes it at the settle point after the player gets control) */
+    static const char* s_anchor = getenv("KZ2_MOUSE_ANCHOR");
+    static double s_anchor_next;
+    if (s_anchor && *s_anchor && now >= s_anchor_next) {
+        s_anchor_next = now + 0.5;
+        if (GetFileAttributesA(s_anchor) != INVALID_FILE_ATTRIBUTES) {
+            s_t0 = now; s_anchor = nullptr;
+            fprintf(stderr, "[mouse] script clock starts (anchor found)\n");
+            if (kz2_mouse_env_on("KZ2_MOUSE_DUMP")) kz2_mouse_dump("start", vm_read32((uint32_t)ctx->gpr[3] + 0x10), 0.0);
+        }
+    }
+    const double t = (s_anchor && *s_anchor) ? -1.0 : now - s_t0;
+    const uint32_t C = (uint32_t)ctx->gpr[3], E = vm_read32(C + 0x10), sp = (uint32_t)ctx->gpr[1];
+    const float sx = kz2_gp_f32(sp + 0x78), sy = kz2_gp_f32(sp + 0x7C);   /* UpdateLook's stick floats */
+    int dx = 0, dy = 0;
+    int moved = pad_mouse_take(&dx, &dy);   /* also tells the window thread the game is in play */
+    if (s_nev) {
+        int sdx = 0, sdy = 0;
+        if (pad_mouse_script_due(s_ev, s_nev, t, &sdx, &sdy)) {
+            if (s_send) pad_mouse_send(sdx, sdy);   /* arrives as WM_INPUT, taken by a later update */
+            else { dx += sdx; dy += sdy; moved = dx || dy; }
+            int left = 0;
+            for (int i = 0; i < s_nev; i++) left += s_ev[i].left;
+            if (s_dump) s_dump_at = t + 1.0;
+            if (!left) fprintf(stderr, "[mouse] script done at t=%.3f\n", t);
+        }
+    }
+    s_updates++;
+    if (s_dump && s_updates == 1) kz2_mouse_dump("first", E, t);
+    if (s_dump && s_dump_at > 0.0 && t >= s_dump_at) { s_dump_at = -1.0; kz2_mouse_dump("after", E, t); }
+    if (s_log && (fabsf(sx) > 0.25f || fabsf(sy) > 0.25f)) {   /* stick reference: the game's own rate and pitch */
+        static double s_last_stick = -1.0;
+        if (t - s_last_stick >= 0.2 || t < s_last_stick) {
+            s_last_stick = t;
+            fprintf(stderr, "[mouse] stick t=%.3f stick=%.3f,%.3f rate=%.4f pitch=%.5f dt=%.5f fwd=%.4f,%.4f,%.4f\n", t, sx, sy,
+                    kz2_gp_f32(C + 0xF8), ctx->fpr[2], kz2_ul_dt, kz2_gp_f32(E + 0x31C), kz2_gp_f32(E + 0x320), kz2_gp_f32(E + 0x324));
+        }
+    }
+    if (!c->mouse_look) { kz2_look_note(&kz2_look, sx, sy, 0.25f, 0); return; }
+    const int was_mouse = kz2_look.mouse;
+    kz2_look_note(&kz2_look, sx, sy, 0.25f, moved);
+    if (kz2_look.mouse != was_mouse)
+        fprintf(stderr, "[mouse] look device: %s (aim assist %s)\n", kz2_look.mouse ? "mouse" : "stick",
+                kz2_gp_aim_on(c, kz2_look.mouse) ? "on" : "off");
+    if (!moved) return;
+    if (vm_read32(E + 0x6B0)) return;   /* scripted look-at owns the view: the counts are dropped */
+    const uint32_t res = vm_read32(E + 0xC4);
+    const int zoomed = (vm_read32(C + 0x13C) >> 6) & 1;
+    float dyaw, dpitch;
+    kz2_mouse_angles(c, dx, dy, zoomed, &dyaw, &dpitch);
+    const float turn = res ? kz2_gp_f32(res + 0x2A8) : 0.0f;
+    const float rate0 = kz2_gp_f32(C + 0xF8);
+    /* The game's rate is positive to the LEFT: a pad's right stick held right reads -1 at 0x78(r1) and UpdateLook stores
+     * -0.5 (run r63-b), and the body heading (atan2(E+0x40, E+0x3C)) then decreases. So mouse right = a negative rate. */
+    const float rate = rate0 + kz2_mouse_rate_for(-dyaw, turn, (float)kz2_ul_dt);
+    uint32_t u; memcpy(&u, &rate, 4); vm_write32(C + 0xF8, u);
+    const float pmin = kz2_gp_f32(E + 0x1A4), pmax = kz2_gp_f32(E + 0x1A8), p0 = (float)ctx->fpr[2];
+    ctx->fpr[2] = kz2_mouse_pitch(p0, dpitch, pmin, pmax);
+    s_moves++;
+    if (s_log || t - s_last_line >= 1.0) {
+        s_last_line = t;
+        fprintf(stderr, "[mouse] t=%.3f d=%d,%d dyaw=%.5f dpitch=%.5f dt=%.5f turn=%.2f rate=%.4f->%.4f pitch=%.5f->%.5f"
+                        " lim=[%.4f,%.4f] zoom=%d stick=%.3f,%.3f fwd=%.4f,%.4f,%.4f (%llu moves in %llu updates)\n", t, dx, dy, dyaw,
+                dpitch, kz2_ul_dt, turn, rate0, rate, p0, ctx->fpr[2], pmin, pmax, zoomed, sx, sy, kz2_gp_f32(E + 0x31C),
+                kz2_gp_f32(E + 0x320), kz2_gp_f32(E + 0x324), s_moves, s_updates);
+    }
+}
+
+[[maybe_unused]] static void kz2_update_look(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    /* f1 is the game clock in seconds (r63 run a: 47.33, 47.40, ... one 1/15 s step per update at 15 fps), not a step:
+     * dt = the clock's step since this controller's last update (first update or a jump: 1/30 s). */
+    static uint32_t s_C;
+    static double s_clock;
+    const uint32_t C = (uint32_t)ctx->gpr[3];
+    const double clock = ctx->fpr[1];
+    double dt = clock - s_clock;
+    if (C != s_C || !(dt > 0.0 && dt < 0.5)) dt = 1.0 / 30.0;
+    s_C = C; s_clock = clock;
+    kz2_ul_C = C; kz2_ul_dt = dt;
+    lifted(ctx);
+    kz2_ul_C = 0;
+}
+[[maybe_unused]] static void kz2_view_setter(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t site_lr)
+{
+    if ((uint32_t)ctx->lr == site_lr && kz2_ul_C && (uint32_t)ctx->gpr[3] == kz2_ul_C) kz2_mouse_pre(ctx);
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_00173E80
+void func_00173E80(ppu_context* ctx) { kz2_update_look(ctx, func_00173E80__lifted); }   // @0x00173E80 UpdateLook (1.29)
+#endif
+#ifdef PPU_OVERRIDE_0015A7F0
+void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifted, 0x00174CE8u); }   // @0x0015A7F0 view setter (1.29)
 #endif

@@ -113,7 +113,8 @@ def notes(version, entry, first=False):
         "Windows installer (Project-Pyrrhus-setup.exe, recommended) and portable zip. You need your own Killzone 2 disc "
         "dump (US, BCUS98116), the 1.29 update and a decrypted EBOOT made from your own copy; none of them is included "
         f"or downloaded. What each must contain: [docs/GETTING-FILES.md]({blob}/docs/GETTING-FILES.md). SHA-256 sums: "
-        "SHA256SUMS (and the .sha256 files). See the README for what it does and what goes online.",
+        "SHA256SUMS (and the .sha256 files). What goes online: "
+        f"[docs/PRIVACY.md]({blob}/docs/PRIVACY.md).",
     ]) + "\n"
 
 

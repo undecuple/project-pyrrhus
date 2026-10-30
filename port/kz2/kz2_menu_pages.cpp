@@ -23,6 +23,9 @@
  *    0xE7AB78; no page and no `bl` calls them) are re-registered the same way, as Project Helghast port/kz3/main.cpp does
  *    (its "Keyboard page" bridge, copied and adapted): a "kb:<cmd>" string goes to pad_kb_ui_cmd (cellPad.c, patch
  *    2038), the reply is what the next GetTimeZone() returns; anything else runs the original bodies.
+ * 4. The version line: the served main menu also gets one text line in its lower right corner, "Project Pyrrhus
+ *    <version>" and the newer release the launcher's check found, from version.ini (kz2_version_line.h has the rules;
+ *    KZ2_VERSION_LINE=0: none).
  * All three hooks check the first instruction words before they install (1.29 EBOOT only).
  * KZ2_MENU_PAGES=0 turns the whole feature off (pages served unchanged, no re-registration).
  *
@@ -42,6 +45,7 @@
 
 #include "ppu_recomp.h"
 #include "kz2_menu_text.h"
+#include "kz2_version_line.h"
 #include "ps3emu/split_file.h"   /* patch 6034: data_ps3.psarc or its FAT32 parts .66600, .66601, ... */
 
 extern "C" {
@@ -55,6 +59,10 @@ const char* kz2_update_dir(void);                                               
 void ps3_indirect_call(ppu_context* ctx);
 extern PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*);
 void kz2_request_close(const char* why);                                         /* main.cpp */
+int  kz2_exe_version(char* out, size_t n);                                       /* kz2_session_log.c */
+#ifdef _WIN32
+int  pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);           /* cellPad.c (patch 2095) */
+#endif
 }
 
 namespace {
@@ -315,6 +323,39 @@ std::vector<std::string>& descs_for(const std::string& code)
 }
 
 /* One of the three menu pages with the EXIT TO DESKTOP and KEYBOARD rows; 0 = serve the original (not edited). */
+/* The main menu's version line (kz2_version_line.h): version.ini read once (kz2_menu_install, before the guest runs),
+ * never written. KZ2_VERSION_LINE=0: no line. */
+std::string g_version_line;
+
+void version_line_load(void)
+{
+    const char* e = getenv("KZ2_VERSION_LINE");
+    if (e && e[0] == '0') { fprintf(stderr, "[kz2-menu] version line off (KZ2_VERSION_LINE=0)\n"); return; }
+    char cur[32] = "", nw[32] = "", rc[64] = "", line[160];
+    const char* from = "version.ini";
+    bool ok = false;
+#ifdef _WIN32
+    wchar_t p[1100];
+    if (pad_kb_sibling_path(L"version.ini", p, 1100)) {
+        if (FILE* f = _wfopen(p, L"rb")) {
+            char buf[KZ2_VL_MAX_FILE + 2];
+            const size_t n = fread(buf, 1, sizeof buf, f);
+            fclose(f);
+            ok = kz2_vl_parse(buf, n, cur, sizeof cur, nw, sizeof nw) != 0;
+            if (!ok) from = n > KZ2_VL_MAX_FILE ? "version.ini too large" : "version.ini unusable";
+        } else from = "no version.ini";
+    } else from = "no data folder";
+#endif
+    if (!ok) {
+        nw[0] = 0;
+        if (kz2_exe_version(rc, sizeof rc)) { snprintf(cur, sizeof cur, "%s", rc); }
+    }
+    kz2_vl_text(cur, nw, line, sizeof line);
+    g_version_line = line;
+    fprintf(stderr, "[kz2-menu] version line: %s (%s%s)\n", line[0] ? line : "none", ok ? "version.ini" : from,
+            ok ? "" : (cur[0] ? ", exe version resource" : ", no exe version resource"));
+}
+
 uint32_t edit_page(const std::string& path, const std::string& page, const char* kind)
 {
     const std::string code = lang_of(path);
@@ -333,11 +374,18 @@ uint32_t edit_page(const std::string& path, const std::string& page, const char*
         rows++;
     } catch (const kz2mt::Anchor& e) { fail += std::string(" exit row: ") + e.what() + ";"; }
     try { t = kz2mt::patch_options(t); rows++; } catch (const kz2mt::Anchor& e) { fail += std::string(" keyboard row: ") + e.what() + ";"; }
+    bool vline = false;
+    if (!strcmp(kind, "main") && !g_version_line.empty()) {
+        const std::string v = kz2_vl_page(t, g_version_line);
+        if (!v.empty()) { t = v; vline = true; }
+        else fail += " version line: no single ButtonLegend anchor;";
+    }
     const std::vector<std::string> bad = kz2mt::check(t);
-    const uint32_t ea = (rows && bad.empty()) ? guest_copy(t) : 0;
-    fprintf(stderr, "[kz2-menu] %s (%s, %s, %zu -> %zu bytes): %s%s%s\n", path.c_str(), kind, why.c_str(), text.size(), t.size(),
-            !rows ? "unchanged" : !bad.empty() ? "edit fails the tag check, unchanged" : !ea ? "no guest memory left, unchanged" :
-            rows == 2 ? "EXIT TO DESKTOP and KEYBOARD rows added" : "one row added", fail.empty() ? "" : " |", fail.c_str());
+    const uint32_t ea = ((rows || vline) && bad.empty()) ? guest_copy(t) : 0;
+    fprintf(stderr, "[kz2-menu] %s (%s, %s, %zu -> %zu bytes): %s%s%s%s\n", path.c_str(), kind, why.c_str(), text.size(), t.size(),
+            !(rows || vline) ? "unchanged" : !bad.empty() ? "edit fails the tag check, unchanged" : !ea ? "no guest memory left, unchanged" :
+            rows == 2 ? "EXIT TO DESKTOP and KEYBOARD rows added" : rows == 1 ? "one row added" : "no row added",
+            vline && ea ? ", version line added" : "", fail.empty() ? "" : " |", fail.c_str());
     return ea;
 }
 
@@ -488,6 +536,7 @@ extern "C" void kz2_menu_install(void)
     if (!on()) { fprintf(stderr, "[kz2-menu] off (KZ2_MENU_PAGES=0)\n"); return; }
     {
         std::lock_guard<std::mutex> lk(g_mu);
+        version_line_load();
         if (!guest_copy(std::string())) { fprintf(stderr, "[kz2-menu] no guest memory: off\n"); g_on = 0; return; }
     }
     /* first words: stdu r1 (0xF821....) for ExitAll and SetTimeZone, addic r3,r3,0xAFC (0x30630AFC) for GetTimeZone */

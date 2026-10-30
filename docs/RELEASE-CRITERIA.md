@@ -32,7 +32,7 @@ against.
    pacing (1 % lows and frame-time deviation measured next to the average). Numbers go in the release notes.
 5. **No known crash or soft-lock** on the campaign path; everything else in a published known-issues list.
 6. **Accurate label:** the README and release notes say what is translated, what is reimplemented and what is native,
-   and how AI was used and to what degree (README, "How AI was used").
+   and how AI was used and to what degree (docs/AI.md).
 7. **Something over the original and the emulator, documented:** the port-only rows of [FEATURES.md](FEATURES.md),
    each checked.
 8. **Getting the game files explained:** which files the installer needs from your own copy of the game and the 1.29

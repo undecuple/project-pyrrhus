@@ -22,20 +22,21 @@
 /* Default on: KZ2_NATIVE_JOB_DOF since an earlier change (an earlier change's A/B); the rest of Gfx.Post since an earlier change
  * (its in-play A/B, native_ab.sh, KZ2_NATIVE_JOB_POST=1 against these defaults: the RE notes "An earlier change");
  * Anim.EdgeAnim's two kernels and Particles.VertexJob's .bss clear since an earlier change (the same-run toggle A/B,
- * KZ2_NATIVE_TOGGLE, tools/spu/toggle_ab.py: the RE notes "An earlier change"). */
+ * KZ2_NATIVE_TOGGLE, tools/spu/toggle_ab.py: the RE notes "An earlier change"); VertexJob's memcpy since an earlier change
+ * (its scratch registers proven unread by tools/spu/live_proof.py, and its A/B: the RE notes "An earlier change"). */
 static const char* const kz2_native_default_on[] = {
     "KZ2_NATIVE_JOB_DOF",      "KZ2_NATIVE_JOB_UPSAMPLE",     "KZ2_NATIVE_JOB_POSTMIX",   "KZ2_NATIVE_JOB_BLUR",
     "KZ2_NATIVE_JOB_BLOOM",    "KZ2_NATIVE_JOB_MODULATE",     "KZ2_NATIVE_JOB_BLOOMINT",  "KZ2_NATIVE_JOB_ILR",
     "KZ2_NATIVE_JOB_VIGNETTE", "KZ2_NATIVE_JOB_DEPTHTOFUZZY", "KZ2_NATIVE_JOB_DOWNSAMPLE", "KZ2_NATIVE_JOB_ZERO",
     "KZ2_NATIVE_JOB_DOFPASS",  "KZ2_NATIVE_JOB_EDGEANIM",     "KZ2_NATIVE_JOB_VJCLEAR",
+    "KZ2_NATIVE_JOB_VJCOPY",
 };
 
 /* Slots with recorded-in-play equality (tools/spu/native_diff.py rec, bit-exact, interpreter agreeing): DOF's kernels
- * and Upsample's (rounds 15-16, Corinth River), the blur and bloom kernels called in play, an earlier change's
- * passes; all 25 again on an earlier change's recording (The New Sun, 800/800). The other 34 post slots were never called in
- * a recorded run: off unless their flag is 1 or KZ2_NATIVE_JOB_POST=1. An earlier change: EdgeAnim's kernels (75, 76) and
- * VertexJob's .bss clear (77) and memcpy (78) on the A/B route's recording (464/464 over 29 slots); 78's flag is not
- * default-on (its scratch registers are not reproduced: ASSUMPTION in native_particles.c). */
+ * and Upsample's (Corinth River), the blur and bloom kernels called in play, and the remaining post passes; all 25
+ * again on The New Sun's recording (800/800). The other 34 post slots were never called in a recorded run: off unless
+ * their flag is 1 or KZ2_NATIVE_JOB_POST=1. EdgeAnim's kernels (75, 76) and VertexJob's .bss clear (77) and memcpy
+ * (78) on the A/B route's recording (464/464 over 29 slots, twice). */
 static const int kz2_native_play_recorded[] = { 0, 1, 2, 3, 4, 8, 23, 39, 52, 53, 55, 58, 59, 61, 64, 65,
                                                 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78 };
 

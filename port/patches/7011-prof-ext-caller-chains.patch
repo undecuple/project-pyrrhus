@@ -1,0 +1,203 @@
+KZ2 patch 7011: KZ2_PROF_STACK=1, caller chains for host profiler samples outside the exe.
+
+An earlier change found 86 % of Gfx.Particles.UpdateJob's resident samples at one PC outside the exe (0x6fffffeff0d4, in a
+Wine DLL): its SPU thread blocked in a system call. Patch 1033's sampler keeps only RIP, so it cannot say which call
+or who made it. With KZ3_PROF=FROM,TO and KZ2_PROF_STACK=1, a sample whose RIP is outside the exe also scans the
+suspended thread's stack from RSP up to its stack base (only within the thread's own stack reservation, recorded
+when the thread is attached) for return addresses (a value inside a loaded module that follows a call instruction),
+keeps up to 8 frames per (RIP, job) chain, stops after the second frame in the exe, and prints at the end
+"[prof-stack] job=N n=COUNT rip=WHERE f0=... f1=..." for chains seen KZ2_PROF_STACK_MIN (default 20) times or more:
+exe+0xRVA (resolve with nm) or module+0xOFF(nearest export+0xOFF). No unwinder and no lock in the sampler (the
+module list is read once at the first sample). Off by default (one env lookup at profiler start, only when KZ3_PROF
+is set); no behaviour change. A heuristic: a stale return address left on the stack can show up as a frame.
+
+--- a/runtime/diag/kz3_wait_acct.c
++++ b/runtime/diag/kz3_wait_acct.c
+@@ -31,6 +31,8 @@
+     volatile uint64_t top_ns[KZ3_WA_NKIND], top_n[KZ3_WA_NKIND];
+     int job_img; uint64_t job_t0;
+     void* hthr;   /* patch 1033: duplicated thread handle when the profiler samples this thread */
++    void* stk_hi; /* patch 7011: the sampled thread's stack base (NT_TIB.StackBase), for KZ2_PROF_STACK */
++    void* stk_lo; /* patch 7011: the low end of that stack's reservation */
+     wa_slot tab[WA_SLOTS];
+     /* printer-owned snapshot */
+     uint64_t p_ns[WA_SLOTS], p_n[WA_SLOTS], p_top_ns[KZ3_WA_NKIND], p_top_n[KZ3_WA_NKIND];
+@@ -360,6 +362,131 @@
+     }
+ }
+ 
++/* ---- KZ2 patch 7011: caller chains for profiler samples outside the exe (KZ2_PROF_STACK=1, off by default) ----
++ * A sample whose RIP lies outside the exe (a thread blocked in a system call sits in ntdll) says nothing about who
++ * waits. With KZ2_PROF_STACK=1 the sampler also scans the suspended thread's stack upwards from RSP (no unwinder,
++ * no lock: only reads of that stack and of loaded images) for return addresses: values inside a module listed at
++ * the first sample (Toolhelp) that follow a call instruction (E8 rel32, FF /2 with a disp32, disp8 or register
++ * operand). It keeps the first KZ2_PS_DEPTH such frames (stopping after the second one inside the exe) per
++ * (RIP, job) and prints at the end "[prof-stack] job=N n=COUNT rip=WHERE f0=WHERE f1=..." for chains seen at least
++ * KZ2_PROF_STACK_MIN times (default 20), WHERE being exe+0xRVA (resolve with nm, like [prof] rva=) or
++ * module+0xOFF(export+0xOFF) (the nearest export at or below). A heuristic: a stale return address left on the
++ * stack can appear as a frame; chains are counted, so a stale value shows as a minority chain. */
++#include <tlhelp32.h>
++enum { PS_SLOTS = 1 << 14, KZ2_PS_DEPTH = 8, PS_MODS = 256 };
++typedef struct { uint64_t rip; uint64_t f[KZ2_PS_DEPTH]; int job; uint32_t n; } ps_ent;
++static ps_ent* s_ps;
++static int s_ps_on = 0;
++static struct { uint64_t lo, hi; char name[48]; } s_mods[PS_MODS];
++static int s_nmods = -1;
++
++static void ps_load_mods(void)
++{
++    s_nmods = 0;
++    HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
++    if (sn == INVALID_HANDLE_VALUE) return;
++    MODULEENTRY32 me; me.dwSize = sizeof me;
++    if (Module32First(sn, &me)) do {
++        s_mods[s_nmods].lo = (uint64_t)(uintptr_t)me.modBaseAddr;
++        s_mods[s_nmods].hi = s_mods[s_nmods].lo + me.modBaseSize;
++        strncpy(s_mods[s_nmods].name, me.szModule, sizeof s_mods[0].name - 1);
++        s_nmods++;
++    } while (s_nmods < PS_MODS && Module32Next(sn, &me));
++    CloseHandle(sn);
++}
++
++static int ps_mod(uint64_t v)
++{
++    for (int i = 0; i < s_nmods; i++)
++        if (v >= s_mods[i].lo + 0x1000 && v < s_mods[i].hi) return i;
++    return -1;
++}
++
++static int ps_is_ret(uint64_t v)
++{
++    if (ps_mod(v) < 0) return 0;
++    const uint8_t* p = (const uint8_t*)(uintptr_t)v;
++    if (p[-5] == 0xE8) return 1;                                                     /* call rel32 */
++    if (p[-6] == 0xFF && ((p[-5] >> 3) & 7) == 2 && (p[-5] >> 6) != 1 && (p[-5] >> 6) != 3) return 1; /* [rip+d32] */
++    if (p[-7] == 0xFF && ((p[-6] >> 3) & 7) == 2 && (p[-6] >> 6) == 2) return 1;   /* [r+sib+d32] */
++    if (p[-3] == 0xFF && ((p[-2] >> 3) & 7) == 2 && (p[-2] >> 6) == 1) return 1;   /* [r+d8] */
++    if (p[-4] == 0xFF && ((p[-3] >> 3) & 7) == 2 && (p[-3] >> 6) == 1) return 1;   /* [r+sib+d8] */
++    if (p[-2] == 0xFF && ((p[-1] >> 3) & 7) == 2 && (p[-1] >> 6) == 3) return 1;   /* call reg */
++    if (p[-3] == 0x41 && p[-2] == 0xFF && ((p[-1] >> 3) & 7) == 2 && (p[-1] >> 6) == 3) return 1;
++    if (p[-2] == 0xFF && ((p[-1] >> 3) & 7) == 2 && (p[-1] >> 6) == 0) return 1;   /* call [reg] */
++    return 0;
++}
++
++static void ps_sample(uint64_t rip, uint64_t rsp, const void* stk_lo, const void* stk_hi, int job, uint64_t base,
++                      uint64_t size)
++{
++    if (s_nmods < 0) ps_load_mods();
++    /* only a RSP inside the thread's own stack reservation: from RSP up to the base the pages are in use */
++    if (!stk_hi || !stk_lo || rsp < (uint64_t)(uintptr_t)stk_lo || rsp >= (uint64_t)(uintptr_t)stk_hi) return;
++    uint64_t f[KZ2_PS_DEPTH]; memset(f, 0, sizeof f);
++    const uint64_t* sp = (const uint64_t*)(uintptr_t)(rsp & ~7ull);
++    const uint64_t* hi = (const uint64_t*)stk_hi;
++    int nf = 0, nexe = 0;
++    for (int k = 0; k < 8192 && sp + k < hi && nf < KZ2_PS_DEPTH; k++) {
++        const uint64_t v = sp[k];
++        if (!ps_is_ret(v)) continue;
++        f[nf++] = v;
++        if (v >= base && v < base + size && ++nexe >= 2) break;
++    }
++    uint64_t key = rip ^ ((uint64_t)(uint32_t)job << 40);
++    for (int i = 0; i < KZ2_PS_DEPTH; i++) key = (key ^ f[i]) * 0x100000001B3ull;
++    const uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 40) & (PS_SLOTS - 1);
++    for (int p = 0; p < 64; p++) {
++        ps_ent* e = &s_ps[(h + p) & (PS_SLOTS - 1)];
++        if (e->n && e->rip == rip && e->job == job && memcmp(e->f, f, sizeof f) == 0) { e->n++; return; }
++        if (!e->n) { e->rip = rip; e->job = job; memcpy(e->f, f, sizeof f); e->n = 1; return; }
++    }
++}
++
++static void ps_where(char* out, size_t cap, uint64_t v, uint64_t base, uint64_t size)
++{
++    if (v >= base && v < base + size) { snprintf(out, cap, "exe+0x%llx", (unsigned long long)(v - base)); return; }
++    int m = -1;
++    for (int i = 0; i < s_nmods; i++) if (v >= s_mods[i].lo && v < s_mods[i].hi) { m = i; break; }
++    if (m < 0) { snprintf(out, cap, "0x%llx", (unsigned long long)v); return; }
++    const uint64_t lo = s_mods[m].lo;
++    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(uintptr_t)(lo + ((const IMAGE_DOS_HEADER*)(uintptr_t)lo)->e_lfanew);
++    const IMAGE_DATA_DIRECTORY* dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
++    const char* best = NULL; uint32_t best_rva = 0;
++    const uint32_t rva = (uint32_t)(v - lo);
++    if (dd->VirtualAddress && dd->Size) {
++        const IMAGE_EXPORT_DIRECTORY* ed = (const IMAGE_EXPORT_DIRECTORY*)(uintptr_t)(lo + dd->VirtualAddress);
++        const uint32_t* fn = (const uint32_t*)(uintptr_t)(lo + ed->AddressOfFunctions);
++        const uint32_t* nm = (const uint32_t*)(uintptr_t)(lo + ed->AddressOfNames);
++        const uint16_t* ord = (const uint16_t*)(uintptr_t)(lo + ed->AddressOfNameOrdinals);
++        for (uint32_t i = 0; i < ed->NumberOfNames; i++) {
++            const uint32_t r = fn[ord[i]];
++            if (r <= rva && r >= best_rva && !(r >= dd->VirtualAddress && r < dd->VirtualAddress + dd->Size)) {
++                best_rva = r; best = (const char*)(uintptr_t)(lo + nm[i]);
++            }
++        }
++    }
++    if (best) snprintf(out, cap, "%s+0x%x(%s+0x%x)", s_mods[m].name, rva, best, rva - best_rva);
++    else snprintf(out, cap, "%s+0x%x", s_mods[m].name, rva);
++}
++
++static void ps_print(uint64_t base, uint64_t size)
++{
++    const char* e = getenv("KZ2_PROF_STACK_MIN");
++    const uint32_t min = e ? (uint32_t)atoi(e) : 20u;
++    char w[KZ2_PS_DEPTH + 1][160];
++    for (int i = 0; i < PS_SLOTS; i++) {
++        const ps_ent* p = &s_ps[i];
++        if (!p->n || p->n < min) continue;
++        ps_where(w[0], sizeof w[0], p->rip, base, size);
++        int n = 0;
++        while (n < KZ2_PS_DEPTH && p->f[n]) { ps_where(w[n + 1], sizeof w[0], p->f[n], base, size); n++; }
++        fprintf(stderr, "[prof-stack] job=%d n=%u rip=%s", p->job, p->n, w[0]);
++        for (int k = 0; k < n; k++) fprintf(stderr, " f%d=%s", k, w[k + 1]);
++        fputc('\n', stderr);
++    }
++}
++
+ static DWORD WINAPI prof_thread(LPVOID p)
+ {
+     (void)p;
+@@ -380,7 +507,11 @@
+             HANDLE h = (HANDLE)w->hthr;
+             if (SuspendThread(h) == (DWORD)-1) { miss++; continue; }
+             CONTEXT c; memset(&c, 0, sizeof c); c.ContextFlags = CONTEXT_CONTROL;
+-            if (GetThreadContext(h, &c)) { pr_add((uint64_t)c.Rip, w->job_img); samples++; } else miss++;
++            if (GetThreadContext(h, &c)) {
++                pr_add((uint64_t)c.Rip, w->job_img); samples++;
++                if (s_ps_on && !((uint64_t)c.Rip >= base && (uint64_t)c.Rip < base + size))   /* patch 7011 */
++                    ps_sample((uint64_t)c.Rip, (uint64_t)c.Rsp, w->stk_lo, w->stk_hi, w->job_img, base, size);
++            } else miss++;
+             ResumeThread(h);
+         }
+         __sync_lock_release(&s_pr_lock);
+@@ -395,6 +526,7 @@
+         else
+             fprintf(stderr, "[prof] ext=0x%llx job=%d n=%u\n", (unsigned long long)e->rip, e->job, e->n);
+     }
++    if (s_ps_on) ps_print(base, size);   /* patch 7011 */
+     fflush(stderr);
+     return 0;
+ }
+@@ -408,6 +540,13 @@
+     s_pr = (pr_ent*)calloc(PR_SLOTS, sizeof *s_pr);
+     if (!s_pr) return;
+     s_prof_on = 1;
++    {   /* patch 7011 */
++        const char* ps = getenv("KZ2_PROF_STACK");
++        if (ps && atoi(ps) > 0 && (s_ps = (ps_ent*)calloc(PS_SLOTS, sizeof *s_ps)) != NULL) {
++            s_ps_on = 1;
++            fprintf(stderr, "[prof-stack] on: caller chains of samples outside the exe (KZ2 patch 7011)\n");
++        }
++    }
+     fprintf(stderr, "[prof] on: %.0f..%.0f s, threads matching %s (KZ3 patch 1033)\n", s_prof_from, s_prof_to,
+             s_prof_filter ? s_prof_filter : "spurs-kern|pm-worker");
+     CreateThread(NULL, 1u << 18, prof_thread, NULL, 0, NULL);
+@@ -440,6 +579,11 @@
+     while (__sync_lock_test_and_set(&s_pr_lock, 1)) { }
+     if (t->hthr) CloseHandle((HANDLE)t->hthr);
+     t->hthr = h;
++    t->stk_hi = ((NT_TIB*)NtCurrentTeb())->StackBase;   /* patch 7011: prof_attach runs on the thread itself */
++    {
++        MEMORY_BASIC_INFORMATION mb;
++        t->stk_lo = VirtualQuery(&mb, &mb, sizeof mb) ? mb.AllocationBase : NULL;
++    }
+     __sync_lock_release(&s_pr_lock);
+ }
+ #else

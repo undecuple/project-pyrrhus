@@ -113,4 +113,4 @@ The build can also stop later with a plain message (no code):
 ## More
 
 - [Building the port](BUILDING.md) lists what the whole build needs.
-- The [README](../README.md#requirements) has the requirements in short.
+- The [README](requirements.md) has the requirements in short.

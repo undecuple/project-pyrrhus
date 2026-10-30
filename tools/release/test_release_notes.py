@@ -117,7 +117,7 @@ def main():
                       "CHANGELOG.md) for the full list.", f"{layout}: the CHANGELOG pointer", paras[4])
                 for want in ("Windows installer", "portable zip", "BCUS98116", "1.29 update",
                              "decrypted EBOOT made from your own copy", "none of them is included or downloaded",
-                             "SHA256SUMS", "what goes online", "blob/v0.2.0/docs/GETTING-FILES.md"):
+                             "SHA256SUMS", "What goes online: [docs/PRIVACY.md]", "blob/v0.2.0/docs/GETTING-FILES.md"):
                     check(want in paras[5], f"{layout}: the fixed paragraph says {want}", paras[5])
             check(not re.search(r"\b(PM|lanes?|rounds?|D\d\d)\b", out), f"{layout}: public wording only", out)
             out_file = root / "o" / "notes.md"

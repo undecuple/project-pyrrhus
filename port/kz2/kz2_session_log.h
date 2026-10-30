@@ -12,6 +12,9 @@
  *  - the copy thread writes every line with the user's folders replaced (kz2_log_redact.h, since
  *    issue #16); kz2_log_path_w does the same for one path the port prints itself.
  *
+ *  - kz2_build_header: the first lines of stdout and the session log name the build (version, build time, patch set,
+ *    install kind; kz2_build_info.h): printed on stdout by a constructor before the other static initialisers, and
+ *    written as the first lines of the session log file.
  * The inline functions below are the platform-free parts (host test: tools/runtime/test_session_log.sh). */
 #pragma once
 #include <stddef.h>
@@ -81,6 +84,8 @@ const char* kz2_exe_dir(void);                 /* the exe's folder (ANSI code pa
 int  kz2_console_open(void);                   /* KZ2_CONSOLE=1: 1 = a console was opened */
 int  kz2_session_log_start(void);              /* 1 = logging to a file (path: kz2_session_log_path) */
 const char* kz2_session_log_path(void);        /* "" when no file */
+void kz2_build_header(void);                   /* the [build] lines, once (kz2_build_info.h) */
+int  kz2_exe_version(char* out, size_t n);     /* kz2.exe's version resource "a.b.c"; 0 = none */
 void kz2_session_log_flush(unsigned timeout_ms);
 /* Issue #16 (logs attached to public issues): a path for a log line, with the user's folders as %APPDATA%, %LOCALAPPDATA%,
  * %USERPROFILE% (kz2_log_redact.h; the session log's copy thread applies the same rules to every line). -> out. */

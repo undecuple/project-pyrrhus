@@ -4,7 +4,7 @@
 # job off (also under KZ2_NATIVE_JOB_POST=1), KZ2_NATIVE_JOB_POST=0 turns every Gfx.Post gate off, the post slots never
 # called in a recorded run and the non-post jobs (KZ2_NATIVE_JOB_EDGEANIM) off by default. Also checks that only
 # DepthOfField's kernel entries name KZ2_NATIVE_JOB_DOF, that every default-on flag names a table entry, and that every
-# recorded slot is a gate of re/spu/native_gates.tsv (EdgeAnim and VertexJob's .bss clear on by default). No game data.
+# recorded slot is a gate of re/spu/native_gates.tsv (EdgeAnim and VertexJob's .bss clear on by default; an earlier change: its memcpy too). No game data.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_native_flags.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; O="$ROOT/${KZ2_OUT:-work}/spu"; case "$O" in /*) ;; *) O="$ROOT/$O" ;; esac

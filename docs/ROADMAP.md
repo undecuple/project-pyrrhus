@@ -20,7 +20,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 | 🔧 | **Audio and movies:** menu and in-game sound and music play; the intro movie plays (the other 27 are not tried yet); sound is mixed down to stereo |
 | 🔧 | **Motion-control sections** (valves, charges) without motion sensors: a right-stick stand-in is being tested |
 | 📋 | **The whole campaign, start to finish:** only the first level has been played so far |
-| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.5](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5)<!-- /version -->) |
+| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.6](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6)<!-- /version -->) |
 
 ## 2. PC display and settings  🔧
 
@@ -36,7 +36,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 - 🔧 Gamepads through SDL3: a DualShock 4 was played by hand, with its motion sensor; Xbox and DualSense pads are in the code, not yet tried by hand
 - 🔧 Button prompts for PlayStation 3, PlayStation 4/5, Xbox or keyboard, and an Original or Modern pad layout
 - 🔧 A Keyboard page in the main menu that saves key choices (checked in scripted runs only)
-- 📋 **Keyboard and mouse** play
+- 🔧 **Keyboard and mouse** play: mouse look is in (scripted runs only); vehicles, mounted guns and a settings page to come
 
 ## 4. Multiplayer  📋
 
@@ -55,3 +55,11 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 - Distributing the game or any part of it: you always bring your own copy
 
 Where each feature stands: [FEATURES.md](FEATURES.md).
+
+## In short
+
+A playable first level first (frame rate, shader pauses on a first play, hand play), then the rest of the campaign, sound and the
+local-build installer; later PC display
+options, keyboard and mouse, and a stand-in for the campaign's motion-control sections. Gameplay changes stay optional.
+No dates are given: see the [release criteria](RELEASE-CRITERIA.md). Item by item, with what is done and
+what is planned: [ROADMAP.md](ROADMAP.md).

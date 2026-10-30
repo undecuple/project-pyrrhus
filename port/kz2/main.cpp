@@ -915,6 +915,7 @@ int main(int argc, char** argv)
      * writes <exe dir>/logs/kz2-<date>-<time>.log (KZ2_LOG_FILE=0: off). kz2_session_log.h has the details. */
     kz2_console_open();
     kz2_session_log_start();
+    kz2_build_header();         /* no-op: printed by a constructor before the static initialisers (kz2_session_log.c) */
     kz2_stdio_buffer_start();   /* switches for ppu_run's buffered stdio (upstream #524; kz2_session_log.h) */
     /* PS3_VERBOSE=0 (patch 6030) quiets the per-event diagnostics (patch 6030 and upstream's ps3_log_verbose sites, ~2,000
      * lines/s in a level). The default since the Exit-to-desktop and Keyboard page change (kz2_env below): the load stop it exposed (SPU assert in

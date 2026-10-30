@@ -4,6 +4,25 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [0.1.6] - 2026-10-30 (pre-release)
+
+### Added
+- Mouse look: the mouse turns the view directly through raw input, with no acceleration or smoothing. Sensitivity, zoomed sensitivity and inverted Y are set in `gameplay.ini` under `[mouse]` (`mouse_look`, `mouse_sensitivity`, `mouse_zoom_sensitivity`, `mouse_invert_y`). The pointer stays inside the window while you play and is let go in menus, when paused, or when you switch to another window. It does not work in vehicles or on mounted guns yet. Only checked in scripted test runs so far, not yet by hand. Adapted from Project Helghast.
+- The game's menu shows the installed Project Pyrrhus version, and, when "Check for new versions" is on and the launcher's check found one, the newer release. The launcher passes this to the game in `version.ini`; the game itself still connects to nothing. `KZ2_VERSION_LINE=0` hides the line.
+- The first lines of the game's log name the port version, when it was built, its patch set and whether it is an installed or portable copy.
+- One more SPU job routine runs natively by default: the particle vertex job's copy routine (6 % less time per job run alone, 10 % with the start-up clear, in scripted runs). Its output matches the translated code bit for bit on the tested inputs. `KZ2_NATIVE_JOB_VJCOPY=0` uses the translated code instead.
+- `KZ2_PROF_STACK=1` (off by default) adds caller chains to the profiler's samples outside the game's program.
+
+### Changed
+- The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.
+- With `aim_assist = auto` (the default), aim assist turns off while you aim with the mouse and comes back when you use a controller's stick.
+
+### Fixed
+- After updating over an older version, the game could keep using graphics pipelines saved by the older version, which lost the holographic sight's reticle and glow (#25); a second report of missing effects and models (#27) fits this, not confirmed. The saved pipeline list is now tied to the build that made it and is discarded after an update, with one line in the log; the first start after updating builds them again and can stutter briefly. Shown in scripted runs under Proton with a deliberately different build's cache; not yet confirmed on Windows.
+- The optional lock-line profiler (`KZ2_LL_PROF`, off by default) no longer reads the clock on every unlock; under Wine that is a system call, and it made the profiled jobs look blocked.
+- The game's log also hides the home folder on Linux and under Proton (`Z:/home/<name>`, `/home/<name>`), as it does for `C:\Users\<name>`.
+- A missing downloadable-content licence is logged in one short line.
+
 ## [0.1.5] - 2026-10-30 (pre-release)
 
 ### Fixed

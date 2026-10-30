@@ -13,7 +13,7 @@ Project Pyrrhus is an unofficial PC port of Killzone 2 (PS3, US disc BCUS98116, 
 by **static recompilation**: the game's PPU and SPU code is lifted to C++ ahead of time with
 [ps3recomp](https://github.com/sp00nznet/ps3recomp), compiled into a Windows x64 program, and the PS3 system software
 it calls is reimplemented; graphics go through Direct3D 12. The repository holds only the port. Each player lifts and
-builds the game's code from their own copy of the game. Overview: [README.md](README.md) ("How it works, briefly").
+builds the game's code from their own copy of the game. Overview: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 Status: [docs/FEATURES.md](docs/FEATURES.md), [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md),
 [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md).
 

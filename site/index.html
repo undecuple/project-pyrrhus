@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.5<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.6<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -43,7 +43,7 @@
 <main class="main">
 <article id="status" class="news">
 <h2>Status: Partly playable</h2>
-<p class="meta">generated from the project's records · 18 game features · 19 port rows</p>
+<p class="meta">generated from the project's records · 18 game features · 20 port rows</p>
 <p>The same data as <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">FEATURES.md</a>, where every row has its evidence. <em>Works</em> is claimed only with a recorded result.</p>
 <ul class="portal">
 <li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>PPU lift of the EBOOT</b><span class="blurb">static recompilation of all PPU code</span></div><span class="st st-ok">Works</span></li>
@@ -109,7 +109,7 @@
 </tbody></table></div>
 </details>
 <h3>Port work and additions</h3>
-<p>5 works, 10 partial, 4 in progress, 0 not yet. Changes to how the game plays stay optional.</p>
+<p>5 works, 11 partial, 4 in progress, 0 not yet. Changes to how the game plays stay optional.</p>
 <details><summary>All port rows</summary>
 <div class="tw"><table>
 <thead><tr><th>Feature</th><th>What</th><th>State</th></tr></thead>
@@ -127,6 +127,7 @@
 <tr><td>Front-end page engine (SVML menus)</td><td>the game&#x27;s kin/*.jsp pages from the psarc (interface/svo/svml/&lt;lang&gt;/kin), drawn by the SVO browser</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gyro stand-in for SIXAXIS</td><td>ENHANCEMENT: stick or mouse</td><td><span class="st st-prog">In progress</span></td></tr>
 <tr><td>Display modes</td><td>ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini</td><td><span class="st st-prog">In progress</span></td></tr>
+<tr><td>Keyboard and mouse</td><td>ENHANCEMENT: mouse look (raw input) and the keyboard</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gamepads: PlayStation and Xbox</td><td>ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Button prompt choice and pad layouts</td><td>ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gameplay options: aim assist switch, crouch and cover toggles</td><td>ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE)</td><td><span class="st st-part">Partial</span></td></tr>
@@ -138,6 +139,19 @@
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">Every feature, with evidence<span aria-hidden="true"> &gt;</span></a></p>
 </article>
 <div id="news">
+<article class="news rel">
+<h2>v0.1.6</h2>
+<p class="meta">30 Oct 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Added</span>Mouse look: the mouse turns the view directly through raw input, with no acceleration or smoothing. Sensitivity, zoomed sensitivity and inverted Y are set in <code>gameplay.ini</code> under <code>[mouse]</code> (<code>mouse_look</code>, <code>mouse_sensitivity</code>, <code>mouse_zoom_sensitivity</code>, <code>mouse_invert_y</code>). The pointer stays inside the window while you play and is let go in menus, when paused, or when you switch to another window. It does not work in vehicles or on mounted guns yet. Only checked in scripted test runs so far, not yet by hand. Adapted from Project Helghast.</li>
+<li><span class="sec">Added</span>The first lines of the game&#x27;s log name the port version, when it was built, its patch set and whether it is an installed or portable copy.</li>
+<li><span class="sec">Changed</span>The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.</li>
+<li><span class="sec">Changed</span>With <code>aim_assist = auto</code> (the default), aim assist turns off while you aim with the mouse and comes back when you use a controller&#x27;s stick.</li>
+<li><span class="sec">Fixed</span>After updating over an older version, the game could keep using graphics pipelines saved by the older version, which lost the holographic sight&#x27;s reticle and glow, some post effects and some models, and could run slower (#25, #27). The saved pipeline list is now tied to the build that made it and is discarded after an update, with one line in the log; the first start after updating builds them again and can stutter briefly. Shown in scripted runs under Proton with a deliberately different build&#x27;s cache; not yet confirmed on Windows.</li>
+<li><span class="sec">Fixed</span>A missing downloadable-content licence is logged in one short line.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
 <article class="news rel">
 <h2>v0.1.5</h2>
 <p class="meta">30 Oct 2026 · pre-release</p>
@@ -163,22 +177,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.3</h2>
-<p class="meta">29 Oct 2026 · tagged, not released</p>
-<ul class="rlist">
-<li><span class="sec">Changed</span>A new install starts in a borderless window: the installer, the first-run prompt, the launcher and the game itself all default to it when no display setting exists yet; Alt+Enter switches to a window and back. An existing <code>display.ini</code> keeps its mode, and exclusive fullscreen stays opt-in.</li>
-<li><span class="sec">Changed</span>A frame waiting on a graphics job from the game&#x27;s SPU code is resumed as soon as the job writes its result, instead of after a fixed 4 ms sleep. In two scripted pairs under Proton the wait between the game&#x27;s frame request and the renderer&#x27;s drain fell by 4 to 5 ms (median), and the whole time from a button press to the frame being handed to Windows fell by 2 ms in one pair and 12 ms in the other, to about 60 ms; the screen&#x27;s own delay comes on top and was not measured. Hand play is not measured.</li>
-<li><span class="sec">Changed</span>The release notes on GitHub list each change as its own bullet, with the fixes in a list of their own, instead of one long paragraph.</li>
-<li><span class="sec">Fixed</span>Moving or renaming the unpacked portable folder after (or during) the first run no longer breaks it: CMake&#x27;s build files kept the old folder&#x27;s paths, so the build stopped with &quot;CMakeCache.txt directory ... is different&quot; or wrote into a folder with the old name. The first run and the launcher now notice the move, follow saved paths that were inside the folder (an extracted ISO), start the compiler&#x27;s configure in an empty build folder and keep the lifted code, so only the compile runs again, and only when the game is updated or the build was not finished. A finished game keeps starting as it is. Checked with tests that move a temporary install between runs, not yet with a real portable install on Windows.</li>
-<li><span class="sec">Fixed</span>The intro movie and the cutscenes were black and silent in every v0.1.2 install: the first run built the game without its movie decoder, because the release did not ship FFmpeg&#x27;s headers and the build did not ask for them, so the game never loaded the FFmpeg DLLs installed beside it. The release now ships the headers (<code>ffmpeg/include</code>, from the same LGPL FFmpeg build as the DLLs), the first run passes them to the build, the build stops if they are missing, and the first run&#x27;s last check fails if the game was built without movie decoding. Installing this version over v0.1.2 rebuilds the game once. Reported by @kolomeets80 (#16).</li>
-<li><span class="sec">Fixed</span>The setup and the first run refuse an install or build folder whose path contains <code>[</code>, <code>]</code> or <code>;</code>, with a message, instead of failing later in the build: the bundled CMake cannot work from such a folder. The same failure was reported on Project Helghast (its issue #20, not this repository&#x27;s).</li>
-<li><span class="sec">Fixed</span>On a laptop with two graphics chips (for example an Intel iGPU and an NVIDIA or AMD GPU) the game could draw on the weaker chip. It now picks the high-performance adapter first, falls back to the default adapter and then to the software renderer, and writes every adapter it found and which one it chose to the log. Not yet confirmed on a hybrid laptop. Reported by @feanor-noldorin (#13).</li>
-<li><span class="sec">Fixed</span>Switching to exclusive fullscreen no longer leaves the picture frozen if the next present fails: the swap chain is resized after every switch, a failed present is recovered from (the game leaves fullscreen and keeps drawing in a borderless window; only a lost graphics device, or eight failures in a row, stops the picture). Only tried under Proton, not yet on real Windows.</li>
-<li><span class="sec">Fixed</span>The first-run log no longer keeps the Windows user name when a path is written in its escaped form, with doubled backslashes (an error message, or a list or JSON of paths). Reported by @feanor-noldorin (#9).</li>
-<li><span class="sec">Fixed</span><code>bump_version.py</code> keeps each file&#x27;s line endings instead of writing Windows line endings when run on Windows. Reported by @feanor-noldorin (#9).</li>
-</ul>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -192,14 +190,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> Mouse look: the mouse turns the view directly through raw input, with no acceleration or smoothing. Sensitivity...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> The first lines of the game&#x27;s log name the port version, when it was built, its patch set and whether it is an...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> With aim_assist = auto (the default), aim assist turns off while you aim with the mouse and comes back when you use a...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> After updating over an older version, the game could keep using graphics pipelines saved by the older version, which...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> A missing downloadable-content licence is logged in one short line.</span></li>
 <li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks...</span></li>
 <li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The runtime&#x27;s other timed waits (the game&#x27;s system calls, the SPU runtime and the system libraries) no longer use that...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> SPU interrupts that arrive back to back now resume the interrupted job with its own registers.</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> Your own lines in kz2-install.ini stay: the launcher and the first run used to rewrite the whole file on every change...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> A disc ISO with the install folder on a FAT32 drive: the first-run build now stops before copying anything and says...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The setup and launcher logs also hide the user name in a Documents, Desktop or Downloads folder that Windows keeps...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> Estimated hardware requirements to play and to build (README and docs/requirements.md): estimates, provisional until...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -232,15 +230,15 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">v0.1.5</a><!-- /version --> <span>pre-release</span></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">v0.1.6</a><!-- /version --> <span>pre-release</span></p>
 <p class="small">30 Oct 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">Download v0.1.5</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Download v0.1.6</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>
 <p>Or build the port from source: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/BUILDING.md">building</a>.</p>
 <h3>What goes online</h3>
-<p>Nothing unless you ask. The port starts no connection of its own; the version check and update download are off until you turn them on. Online multiplayer, if it comes, will only use a self-hosted server you choose. See the <a href="https://github.com/undecuple/project-pyrrhus#what-goes-online">README</a>.</p>
+<p>Nothing unless you ask. The port starts no connection of its own; the version check and update download are off until you turn them on. Online multiplayer, if it comes, will only use a self-hosted server you choose. See the <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/PRIVACY.md">README</a>.</p>
 <p class="small">Viewing this website loads the Rajdhani font from Google Fonts, which sees your visit; the repository, installer and game do not.</p>
 </section>
 <section id="requirements" class="promo">
@@ -264,7 +262,7 @@
 <tr><td><strong>Graphics card</strong></td><td>Direct3D 12 (an integrated GPU runs, slowly)</td><td>a discrete Direct3D 12 GPU of the RTX 4060 / RTX 4070 Laptop class (8 GB), driver current</td></tr>
 <tr><td><strong>Disk space</strong></td><td>about 12 GB free beyond the disc dump (estimate)</td><td>the same, on an SSD</td></tr>
 <tr><td><strong>Operating system</strong></td><td>Windows 10 64-bit, or Linux with a current Proton</td><td>Windows 11</td></tr>
-<tr><td><strong>Controller</strong></td><td>a keyboard (the default key layout; no mouse look yet)</td><td>a gamepad</td></tr>
+<tr><td><strong>Controller</strong></td><td>a keyboard and mouse (the default key layout and mouse look)</td><td>a gamepad</td></tr>
 </tbody></table></div>
 <p class="small">Details: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/requirements.md">requirements.md</a>. Hardware figures are estimates, provisional until the game runs at full speed; hand play is not measured.</p>
 </section>

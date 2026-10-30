@@ -1,7 +1,7 @@
 # Known issues
 
 What is wrong or unfinished today, stated plainly. It is checked against [FEATURES.md](FEATURES.md) and the README's
-[status table](../README.md#status); where those change, this page changes with them. Last checked 2026-10-29.
+[status table](STATUS.md); where those change, this page changes with them. Last checked 2026-10-29.
 Unless an entry says otherwise, everything below was observed by us on Windows x64 builds run under Proton on Linux;
 numbers come from scripted runs unless an entry says hand play. On native Windows our own tests covered the installer
 and the first-run build (in a virtual machine without a GPU). Players have since installed and played the game on
@@ -25,7 +25,7 @@ and the newest log file).
   open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players
   (issue #13), not tested by us. See
   [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
-- **Not yet in the port:** the settings and controls menus, mouse look, skirmish with bots, online play,
+- **Not yet in the port:** the settings and controls menus, skirmish with bots, online play,
   trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop"
   entry and a Keyboard page that saves key choices to `keybinds.ini`; both were checked in scripted runs only.
 
@@ -107,11 +107,11 @@ and the newest log file).
 - **Crouch and cover toggles, aim assist switch:** options in `gameplay.ini` (see ACCESSIBILITY.md), off or original by
   default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
   aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
-  the aim assist cannot yet follow a mouse (no mouse look).
+  with `aim_assist = auto` the aim assist turns off while the mouse aims.
 - **Motion sections:** the real motion sensor reaches the game (the loading screen tilts). The campaign's valve and
   charge sections have not been done by hand yet. As a stand-in, holding L1 and R1 and moving the right stick turns the
   valve; that it completes the valve is not proven.
-- **Keyboard and mouse:** the game can be played with a keyboard (the default key layout; a player did so in issue #13), but there is no mouse look yet, so a gamepad is recommended.
+- **Keyboard and mouse:** the game can be played with a keyboard and mouse: the mouse looks and aims, and its buttons fire and zoom by default (`keybinds.ini`). Mouse look has only been checked in scripted test runs, not yet by hand, and it does not work in vehicles or on mounted guns yet.
 
 ## Game data and version
 
