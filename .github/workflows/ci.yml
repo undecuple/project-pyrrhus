@@ -28,13 +28,13 @@ jobs:
       - name: Flake check
         run: nix flake check --no-build
       - name: Patches apply to the pinned ps3recomp
-        run: nix develop .#re --command bash tools/ps3recomp-patched.sh > /dev/null
+        run: nix develop .#ci --command bash tools/ps3recomp-patched.sh > /dev/null
       - name: Release manifests and version (no download)
         run: |
-          nix develop .#re --command python3 tools/release/fetch_toolchain.py --check --strict
-          nix develop .#re --command python3 tools/release/release_version.py --check
+          nix develop .#ci --command python3 tools/release/fetch_toolchain.py --check --strict
+          nix develop .#ci --command python3 tools/release/release_version.py --check
       - name: Host tests (no game data, no network)
-        run: bash tools/release/ci_host_tests.sh --gh --no-sandbox
+        run: bash tools/release/ci_host_tests.sh --gh --no-sandbox --shell ci
 
   secrets:
     runs-on: ubuntu-latest

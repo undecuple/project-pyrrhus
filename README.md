@@ -67,6 +67,10 @@ pre-releases on its [releases page](https://github.com/undecuple/project-helghas
 
 This port currently supports Direct3D 12 only. For a Vulkan version of a Killzone 2 port, please use [Tokisaki Port](https://github.com/YYOzcan/tokisaki-port), which is developed separately by its own author.
 
+## Official channels
+
+Project Pyrrhus is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple), Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** (on the ps3recomp server). Builds and fixes come only from this repository's [GitHub Releases](https://github.com/undecuple/project-pyrrhus/releases); we never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or donations in this project's name is not us.
+
 ## Contributing
 
 Pull requests are welcome: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).

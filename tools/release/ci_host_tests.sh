@@ -4,21 +4,24 @@
 # No game data, no network. One line per test and a summary; exit 1 if any failed.
 # Adapted from Project Helghast's tools/run-host-tests.sh (the Killzone 3 PC port, same author, MIT).
 #
-#   tools/release/ci_host_tests.sh [--gh] [--no-sandbox] [--list FILE]
+#   tools/release/ci_host_tests.sh [--gh] [--no-sandbox] [--shell NAME] [--list FILE]
 #   --gh          GitHub Actions log groups and ::error lines (CI)
 #   --no-sandbox  run a "tools/sandbox.sh -- CMD" line as CMD: a hosted runner has no /run/current-system and may not
 #                 allow bubblewrap's user namespace; these tests read no game data, the sandbox only guards a
 #                 developer's machine
+#   --shell NAME  run the lines written for the default and .#re dev shells in .#NAME (CI: ci, the shell without
+#                 RPCS3 and the GPU tools)
 #   --list FILE   another list (the tests of this script use it)
 # work/ and build/ are created first: tools that write only below work/ (tools/assets/profile_edit.py) expect it, as
 # tools/sandbox.sh creates both.
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 2
-GH=0 NOSB=0 LIST=tools/host-tests.txt
+GH=0 NOSB=0 SHELL_NAME= LIST=tools/host-tests.txt
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --gh) GH=1 ;;
     --no-sandbox) NOSB=1 ;;
+    --shell) SHELL_NAME="${2:?--shell needs a dev shell name}"; shift ;;
     --list) LIST="${2:?--list needs a file}"; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -39,6 +42,8 @@ done
 n=0; failed=()
 for c in "${cmds[@]}"; do
   (( NOSB )) && c="${c//tools\/sandbox.sh -- /}"
+  # --shell NAME: the lines for the default and .#re shells run in .#NAME instead (CI: .#ci, without RPCS3)
+  if [[ -n "$SHELL_NAME" ]]; then c="${c//nix develop --command/nix develop .#$SHELL_NAME --command}"; c="${c//nix develop .#re --command/nix develop .#$SHELL_NAME --command}"; fi
   n=$((n + 1))
   if (( GH )); then
     echo "::group::$c"; bash -c "$c"; rc=$?; echo "::endgroup::"

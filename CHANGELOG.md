@@ -4,6 +4,13 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Changed
+- The game's fast path for system library calls keeps the caller's TOC slot, as the full path does (adapted from a J-Stars Victory VS+ PC port by Tsamiuy, MIT). The translated Killzone 2 code does not read that slot today; it guards against a later toolkit change.
+- The README and NOTICE list the project's official channels, and say that builds come only from this repository's GitHub Releases.
+- CI runs in a smaller Nix shell without RPCS3 and the GPU tools, which were built from source on every run; the checks and host tests are the same.
+
 ## [0.1.6] - 2026-10-30 (pre-release)
 
 ### Added

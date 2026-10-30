@@ -87,6 +87,13 @@
             export VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json
           '';
         };
+        # `nix develop .#ci` : the public CI's host tests and checks: Python, the host compilers and the basic tools,
+        # without the unfree RPCS3 and the GPU tools (which have no binary cache and were built on every run).
+        ci = pkgs.mkShell {
+          packages = [ python pkgs.bubblewrap pkgs.tinyxxd pkgs.binutils pkgs.file pkgs.git ]
+            ++ (with pkgs; [ cmake ninja pkg-config clang_19 lld_19 llvmPackages_19.llvm ]);
+          shellHook = fixLdflags;
+        };
         # `nix develop .#re` : lightweight shell for extraction / analysis
         re = pkgs.mkShell { packages = reTools; shellHook = fixLdflags; };
         # `nix develop .#win` : cross-compile the port to Windows x64 (MinGW-w64).

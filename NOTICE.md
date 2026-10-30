@@ -34,6 +34,7 @@ ps3recomp.
 | Project | Author | Source | Licence | What was used |
 |---|---|---|---|---|
 | Project Helghast (the Killzone 3 PC port) | undecuple (the same author as this project) | [undecuple/project-helghast](https://github.com/undecuple/project-helghast) | MIT (Copyright (c) 2026 undecuple) | the runtime, SPU, RSX/D3D12 and pad patches 0001-5004 in `port/patches/` (headers carry "From KZ3 <commit>"), the split disc archive reader in patch 6034 and its test, the setup's on-screen stop reasons and the EBOOT page's version check (from Project Helghast PR #11), the per-input failure reasons and the setup's dump and update page messages (from Project Helghast PR #14), the first-run folder hints limited to Killzone 2's title id (from Project Helghast PR #17), the published-release check (`release_check.py` and its workflow), the disk cache stamp in patch 6035 (`port/kz2/kz2_fios_stamp.h`) and the window icon in patch 2123, the per-tick message pump in `port/kz2/main.cpp`, the failed-link undo rule and the junction error 1392 wording in `tools/release/launch.py`, the ini decode order in `tools/release/install_ini.py`, the wider RPCS3 search and the user-folder redaction in `tools/release/rpcs3_locate.py` and `firstrun.py` (and their test `test_rpcs3_locate.py`), and the link-free install design (`cache_root_supported` / `link_free` in `launch.py` and `firstrun.py`; adopted, inactive until the runtime reads its cache-folder setting), native mouse look (Raw Input counts, the pointer clip, the sensitivity model; patch 6046 and `port/kz2/kz2_ppu_overrides.cpp`, from Project Helghast's patches 2069, 2097, 2099 and 2123), the lift/build/installer tooling (including the ISO 9660 reader `tools/release/iso9660.py`), the art and website generators and the AGENTS.md guide, adapted for Killzone 2 |
+| A J-Stars Victory VS+ PC port | Tsamiuy | (its patch 0004, the HLE fast path saving the TOC slot) | MIT | ps3_hle_call's fast path stores the caller's TOC slot before the fast call (`port/patches/6045`), adapted to respect FLOW_NOSPILL |
 | A Ratchet & Clank PC port (not public yet) | undecuple (the same author as this project) | not public yet | MIT (Copyright (c) 2026 undecuple) | lv2 mutex and condition-variable rules (R&C patch 7007), adapted in [6027] |
 
 ## Libraries
@@ -112,6 +113,7 @@ summarise, train on or reproduce this repository.
   this repository, must include the copyright notice "Copyright (c) 2026 undecuple" and the MIT permission notice.
 - **The name:** "Pyrrhus" is the name of the game's own city; "Project Pyrrhus" names this fan project only and is not
   affiliated with or endorsed by Sony Interactive Entertainment or Guerrilla Games.
+- **Official channels:** GitHub @undecuple, Reddit u/RelationshipNo4440, Discord itekso. (ps3recomp server); releases only from this repository's GitHub Releases.
 - **Attribution we ask for:** name the source as "Project Pyrrhus by undecuple" with a link to
   <https://github.com/undecuple/project-pyrrhus>, in documentation, answers, summaries or derived projects that use its
   code, patches, findings or write-ups.

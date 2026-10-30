@@ -1,0 +1,36 @@
+KZ2 patch 6045: ps3_hle_call's fast path stores the caller's TOC in its ABI slot, as the import stub would.
+
+The fast forms registered with ps3_hle_register_fast (sys_lwmutex_lock and sys_lwmutex_unlock, ppu_sysprx.cpp) return
+before _TocGuard, which is the only code that writes r2 to 0x28(r1). The lifted import stub is just ps3_hle_call(nid),
+so it never runs the glink stub's `std r2,40(r1)`, yet the caller's `ld r2,40(r1)` after the import still reads the
+slot. Killzone 2's lift is not exposed today: it uses the constant-TOC lowering (--toc), so every `ld r2,N(r1)` in the
+lifted code is the constant 0x00EC3038 (9722 sites, 0 reads of r2 from 0x28(r1); the 456 calls to the two lwmutex stubs
+are followed by no r2 load). A lift without --toc (a second module, a PRX) would be. The slow path already stores the
+slot (unless FLOW_NOSPILL); this makes the fast path match. General ps3recomp fix (upstream candidate).
+
+From a J-Stars Victory VS+ PC port by Tsamiuy (its patch 0004), MIT. Adapted:
+the store honours FLOW_NOSPILL like the slow path's.
+
+--- a/runtime/ppu/ppu_hle.cpp
++++ b/runtime/ppu/ppu_hle.cpp
+@@ -286,8 +286,19 @@
+ extern "C" uint32_t ppu_prof_resolve_host(void* ra);
+ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+ {
+-    if (const hle_fast_fn f = hle_fast(nid))
++    /* The fast forms return before _TocGuard below, which is otherwise the only
++     * code that stores the caller's r2 in its ABI slot at 0x28(r1). The real
++     * import stub did `std r2,40(r1)` before branching, and a caller lifted
++     * without the constant-TOC lowering reloads r2 with `ld r2,40(r1)` after the
++     * call, so on the fast path it would read whatever its frame held there.
++     * Store it here as the stub would, honouring FLOW_NOSPILL like the slow path.
++     * From a J-Stars Victory VS+ PC port by Tsamiuy, MIT. */
++    if (const hle_fast_fn f = hle_fast(nid)) {
++        static int fast_ns = -1;
++        if (fast_ns < 0) fast_ns = getenv("FLOW_NOSPILL") ? 1 : 0;
++        if (!fast_ns) vm_write64(ctx->gpr[1] + 0x28, ctx->gpr[2]);
+         if (f(ctx)) return;
++    }
+ 
+     /* HLE_BT_EVERY=<n>: dump the calling thread's guest stack every nth HLE
+      * call it makes. WAITBT_EVERY only samples threads that are blocking on an
