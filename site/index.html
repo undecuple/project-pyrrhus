@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.4<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.5<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -139,6 +139,23 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.5</h2>
+<p class="meta">30 Oct 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Fixed</span>The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks GitHub for a newer version: these checks now run beside the window, with a short line saying what is happening, instead of holding it until they end (on a slow drive Windows could mark the window &quot;Not responding&quot;). The setup log gives each check&#x27;s time. Refs #22.</li>
+<li><span class="sec">Fixed</span>A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads no longer use a Wine/Proton wait primitive that can corrupt its own wait list under load. No crash in 9 scripted runs since; not yet confirmed on native Windows.</li>
+<li><span class="sec">Fixed</span>The runtime&#x27;s other timed waits (the game&#x27;s system calls, the SPU runtime and the system libraries) no longer use that Wine/Proton wait primitive either; a stress test that makes the primitive fail within a second passes on the replacement. Not yet confirmed on native Windows.</li>
+<li><span class="sec">Fixed</span>SPU interrupts that arrive back to back now resume the interrupted job with its own registers.</li>
+<li><span class="sec">Fixed</span>Your own lines in <code>kz2-install.ini</code> stay: the launcher and the first run used to rewrite the whole file on every change, dropping comments, lower-casing keys and failing on a <code>%</code> in a path, a repeated key or a file saved in the Windows code page. They now change only the value they set; comments, the spelling of keys and keys they do not know stay as you wrote them. Tested with host tests.</li>
+<li><span class="sec">Fixed</span>A disc ISO with the install folder on a FAT32 drive: the first-run build now stops before copying anything and says why (FAT32 cannot hold a file of 4 GiB or more, and the game&#x27;s main archive is about 6.5 GiB), instead of failing part-way through the copy. Tested with host tests.</li>
+<li><span class="sec">Fixed</span>The setup and launcher logs also hide the user name in a Documents, Desktop or Downloads folder that Windows keeps outside your user folder (shown as <code>&lt;Documents&gt;</code>, <code>&lt;Desktop&gt;</code>, <code>&lt;Downloads&gt;</code>), in other accounts&#x27; folders (<code>&lt;user&gt;</code>), and in CMake&#x27;s and URL-encoded forms of your user folder.</li>
+<li><span class="sec">Added</span>Estimated hardware requirements to play and to build (README and <code>docs/requirements.md</code>): estimates, provisional until the game runs at full speed; hand play is not measured.</li>
+<li><span class="sec">Added</span>&quot;Use my RPCS3 install&quot; also finds an unzipped RPCS3 with its version in the folder name (such as <code>rpcs3-v0.0.34-...-win64</code>) in Documents, the Desktop and Downloads (also where Windows has moved them), Games or Emulators in your user folder, Program Files, and each local drive&#x27;s root and its Games, Emulators, Emulator or PS3 folder, and accepts a picked <code>config</code> or <code>dev_hdd0</code> folder inside it. One level deep only. Adapted from Project Helghast. Tested with host tests.</li>
+<li><span class="sec">Changed</span>Correction to 0.1.3&#x27;s notes: zlib is linked into the game only when the build&#x27;s compiler setup has it (our own Linux build). The first-run build of the installer and the portable zip has no zlib and uses the deflate decoder already in the runtime (from stb_image) for the same job; both decoders gave the same output in all 60 checks of our host test.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.4</h2>
 <p class="meta">29 Oct 2026 · pre-release</p>
 <ul class="rlist">
@@ -162,33 +179,6 @@
 <li><span class="sec">Fixed</span><code>bump_version.py</code> keeps each file&#x27;s line endings instead of writing Windows line endings when run on Windows. Reported by @feanor-noldorin (#9).</li>
 </ul>
 </article>
-<article class="news rel">
-<h2>v0.1.2</h2>
-<p class="meta">28 Oct 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Added</span>A decrypted disc image (.iso) can be picked instead of a dump folder (&quot;Browse for ISO file&quot; in the setup, or the path in the console). The first run checks the disc inside it, then copies its game files (about 7 GB) into the install folder once; the ISO itself is only read. An encrypted ISO is refused with &quot;this ISO is encrypted; use a decrypted dump&quot;.</li>
-<li><span class="sec">Added</span>The setup reads the disc&#x27;s title id and shows what it found under the folder (&quot;Found: BCUS98116 (Killzone 2, US disc)&quot;). Another game is refused by its title id and name. The Killzone Trilogy disc, whose Killzone 2 is the same title id, is named and allowed as untested.</li>
-<li><span class="sec">Added</span>The game window shows the project&#x27;s icon in its title bar and taskbar.</li>
-<li><span class="sec">Changed</span>Picking the PS3_GAME or PS3_GAME/USRDIR folder of the dump, or the USRDIR folder of the update, works: the setup and the first run use the folder above.</li>
-<li><span class="sec">Changed</span>When the first start asks for the decrypted EBOOT, a folder is accepted too: it looks for EBOOT.elf in it and in its USRDIR folder, and says where it looked when it is not there. The setup&#x27;s EBOOT page does the same.</li>
-<li><span class="sec">Changed</span>The update must carry the same title id as the disc; the setup and the first-run check say so when it does not.</li>
-<li><span class="sec">Fixed</span>The folder hints of the setup and the first-run check offer only Killzone 2 dumps (other games&#x27; dumps on a drive are not named) and name up to three <code>.iso</code> files in the folder (or one level down on a drive) beside the folder hints. When no more input comes (a closed console), the first-run check stops with its FAIL lines instead of asking again. The same fixes as Project Helghast PR #17.</li>
-<li><span class="sec">Fixed</span>Installing into a OneDrive folder is refused, as a precaution taken from a problem reported on Project Helghast: OneDrive synced the build&#x27;s thousands of files while they were written and locked them. The first-run check also stops when the install or build folder is inside OneDrive (O1), or when a game file is only online in OneDrive (O2, before anything is read, so nothing is downloaded); right-click the game folders and choose &quot;Always keep on this device&quot;.</li>
-<li><span class="sec">Fixed</span>When the first-run console window is closed with its X, the launcher says so (&quot;its window was closed before it finished; finished steps are kept&quot;) instead of showing an error code. It names the first-run log only when the log exists.</li>
-<li><span class="sec">Fixed</span>When the setup or the first run stops, the setup&#x27;s message box, the launcher&#x27;s dialog and the portable zip&#x27;s console say why (the same reason the log has). The next start checks your files first and asks again only for the one that was wrong. The setup&#x27;s EBOOT page refuses the disc&#x27;s 1.01 EBOOT and names the update&#x27;s USRDIR folder, where the 1.29 one is; a silent install with /EBOOT= stops with the same text. Adapted from Project Helghast&#x27;s fix for the same mix-up (its PR #11).</li>
-<li><span class="sec">Fixed</span>When a check of your game files fails, the setup&#x27;s message box, the launcher&#x27;s dialog and the console say which input failed (&quot;Disc dump&quot;, &quot;1.29 update&quot; or &quot;EBOOT&quot;), the path, what is there and what it must hold, and which inputs passed. A disc dump and an update given the wrong way round are named as such, a drive picked instead of a folder gets a pointer to the folders on it that look like the disc or the update, and the disc&#x27;s PS3_GAME folder given as the update fails its check. Adapted from Project Helghast&#x27;s fix for the same mix-ups (its PR #14).</li>
-<li><span class="sec">Fixed</span>The setup&#x27;s disc page says what a folder without PS3_GAME holds and where PS3_GAME is when it is one folder down; the update page names the path and the missing files, or says the folder is a disc dump.</li>
-<li><span class="sec">Fixed</span>With a decrypted ISO as the disc, the first-run check could not load its ISO reader under the bundled Python, which does not look in the check&#x27;s own folder; it now does.</li>
-<li><span class="sec">Fixed</span><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a> lists what each input must contain, says that the update does not hold the disc archive, and warns against picking a drive instead of the dump folder or the .iso file.</li>
-<li><span class="sec">Fixed</span>Uninstalling removes the whole install folder: the first-run logs and their earlier copies no longer keep it behind.</li>
-<li><span class="sec">Fixed</span>&quot;Verify and rebuild&quot; counts only the files it checked.</li>
-<li><span class="sec">Fixed</span>The game window&#x27;s messages (input and window events) are now handled on every frame tick, the same fix as Project Helghast 0.1.4. In our tests a 3.7-second stretch with no messages handled, during a busy catch-up, is gone.</li>
-<li><span class="sec">Fixed</span>The game&#x27;s disk cache is rebuilt once when the installed build changes, so the first start after an update loads a little slower. This is a precaution taken from Project Helghast 0.1.4, where a cache left by an older build ended a level with error 20000; it has not been seen on Killzone 2.</li>
-<li><span class="sec">Fixed</span>Files the game opens to create or append to are now opened the way the console does (the toolkit read three of the open flags with the wrong values). In our tests no visible change yet: the opens seen at start are read-only.</li>
-<li><span class="sec">Fixed</span>The game window keeps responding while the game builds its graphics pipelines on the first start of a level, which can take several seconds with an empty shader cache: the window now has its own thread, so Windows no longer marks it as not responding. In our tests the longest stretch without an answer went from 7.9 s to 0.05 s; the first start of a level is still slower than later ones.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.2">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -202,14 +192,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.4</b> The release build now carries FFmpeg&#x27;s headers into the installer and the portable zip, which the first run needs...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> A new install starts in a borderless window: the installer, the first-run prompt, the launcher and the game itself all...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> A frame waiting on a graphics job from the game&#x27;s SPU code is resumed as soon as the job writes its result, instead of...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The release notes on GitHub list each change as its own bullet, with the fixes in a list of their own, instead of one...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> Moving or renaming the unpacked portable folder after (or during) the first run no longer breaks it: CMake&#x27;s build...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The intro movie and the cutscenes were black and silent in every v0.1.2 install: the first run built the game without...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> The setup and the first run refuse an install or build folder whose path contains [, ] or ;, with a message, instead...</span></li>
-<li><time datetime="2026-10-29">10-29</time><span><b>0.1.3</b> On a laptop with two graphics chips (for example an Intel iGPU and an NVIDIA or AMD GPU) the game could draw on the...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The runtime&#x27;s other timed waits (the game&#x27;s system calls, the SPU runtime and the system libraries) no longer use that...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> SPU interrupts that arrive back to back now resume the interrupted job with its own registers.</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> Your own lines in kz2-install.ini stay: the launcher and the first run used to rewrite the whole file on every change...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> A disc ISO with the install folder on a FAT32 drive: the first-run build now stops before copying anything and says...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The setup and launcher logs also hide the user name in a Documents, Desktop or Downloads folder that Windows keeps...</span></li>
+<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> Estimated hardware requirements to play and to build (README and docs/requirements.md): estimates, provisional until...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -242,9 +232,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">v0.1.4</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">29 Oct 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">Download v0.1.4</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">v0.1.5</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">30 Oct 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">Download v0.1.5</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>

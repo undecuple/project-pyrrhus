@@ -4,7 +4,7 @@
 # job off (also under KZ2_NATIVE_JOB_POST=1), KZ2_NATIVE_JOB_POST=0 turns every Gfx.Post gate off, the post slots never
 # called in a recorded run and the non-post jobs (KZ2_NATIVE_JOB_EDGEANIM) off by default. Also checks that only
 # DepthOfField's kernel entries name KZ2_NATIVE_JOB_DOF, that every default-on flag names a table entry, and that every
-# recorded slot is a Gfx.Post gate of re/spu/native_gates.tsv. No game data.
+# recorded slot is a gate of re/spu/native_gates.tsv (EdgeAnim and VertexJob's .bss clear on by default). No game data.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_native_flags.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; O="$ROOT/${KZ2_OUT:-work}/spu"; case "$O" in /*) ;; *) O="$ROOT/$O" ;; esac
@@ -22,10 +22,10 @@ for f in $flags; do
   awk -F'\t' -v f="$f" '!/^#/ { n = split($5, a, "|"); for (i = 1; i <= n; i++) if (a[i] == f) found = 1 } END { exit !found }' \
     "$ROOT/re/spu/native_gates.tsv" || { echo "FAIL test_native_flags: default-on $f names no gate"; exit 1; }
 done
-# every recorded slot is a Gfx.Post gate
+# every recorded slot is a gate of re/spu/native_gates.tsv (not only Gfx.Post)
 slots=$(sed -n '/kz2_native_play_recorded\[\] = {/,/};/p' "$ROOT/port/kz2/spu/native_flags.h" | sed 's/.*{//' | grep -o '[0-9][0-9]*')
 for s in $slots; do
-  awk -F'\t' -v s="$s" '!/^#/ && $3 == s && $4 ~ /^Gfx\.Post\./ { found = 1 } END { exit !found }' "$ROOT/re/spu/native_gates.tsv" ||
-    { echo "FAIL test_native_flags: recorded slot $s is not a Gfx.Post gate"; exit 1; }
+  awk -F'\t' -v s="$s" '!/^#/ && $3 == s { found = 1 } END { exit !found }' "$ROOT/re/spu/native_gates.tsv" ||
+    { echo "FAIL test_native_flags: recorded slot $s is no gate"; exit 1; }
 done
 echo "PASS test_native_flags ($(echo $flags | wc -w) default-on flags, $(echo $slots | wc -w) recorded slots, DOF_ENV on slots 0-2 only)"

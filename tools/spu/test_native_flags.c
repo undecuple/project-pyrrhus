@@ -1,8 +1,8 @@
 /* Spu rounds 18-19 host test: the native gates' flag rule (port/kz2/spu/native_flags.h) with a fake environment.
  * every Gfx.Post flag on by default for the slots recorded in play, a flag's own 0 turns its job off (also
  * under KZ2_NATIVE_JOB_POST=1), KZ2_NATIVE_JOB_POST=0 turns everything off, slots without a recorded-in-play
- * equality (the shared kernels' copies in the other post images, three blur variants) off unless asked for, and a
- * non-post job (a future KZ2_NATIVE_JOB_EDGEANIM) off by default. No game data. */
+ * equality (the shared kernels' copies in the other post images, three blur variants) off unless asked for. An earlier change:
+ * EdgeAnim (75, 76) and VertexJob's .bss clear (77) on by default, VertexJob's memcpy (78) off. No game data. */
 #include "native_flags.h"
 
 #include <stdio.h>
@@ -98,17 +98,32 @@ int main(void)
     expect("DOF blend, POSTMIX=0: off", DB, DJ, 2, NULL);
     setenv_(0, MIX, "0"); setenv_(1, "KZ2_NATIVE_JOB_DOF", "1");
     expect("DOF blend, POSTMIX=0 DOF=1: an explicit 1 wins", DB, DJ, 2, "KZ2_NATIVE_JOB_DOF=1");
-    /* non-post jobs: off by default, POST=1 does not reach them */
+    /* non-post jobs: EdgeAnim's kernels and VertexJob's .bss clear on by default, POST=0/1 do not reach
+     * them, their own 0 turns them off; VertexJob's memcpy (recorded, flag not default-on) off unless asked for */
+    const char *EA = "KZ2_NATIVE_JOB_EDGEANIM", *EK = "KZ2_NATIVE_JOB_EDGEANIM_KEYS|KZ2_NATIVE_JOB_EDGEANIM";
     clear();
-    expect("EdgeAnim off by default", "KZ2_NATIVE_JOB_EDGEANIM", "Anim.EdgeAnim", 75, NULL);
+    expect("EdgeAnim on by default", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
+    expect("EdgeAnim keys on by default", EK, "Anim.EdgeAnim", 76, "KZ2_NATIVE_JOB_EDGEANIM default");
+    expect("VJCLEAR on by default", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77, "KZ2_NATIVE_JOB_VJCLEAR default");
+    expect("VJCOPY off by default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
+    expect("EdgeAnim on an unrecorded slot: off", EA, "Anim.EdgeAnim", 99, NULL);
+    setenv_(0, "KZ2_NATIVE_JOB_POST", "0");
+    expect("POST=0 leaves EdgeAnim on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
     setenv_(0, "KZ2_NATIVE_JOB_POST", "1");
-    expect("POST=1 leaves EdgeAnim off", "KZ2_NATIVE_JOB_EDGEANIM", "Anim.EdgeAnim", 75, NULL);
-    setenv_(0, "KZ2_NATIVE_JOB_EDGEANIM", "1");
-    expect("EDGEANIM=1 on", "KZ2_NATIVE_JOB_EDGEANIM", "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM=1");
+    expect("POST=1 leaves EdgeAnim default", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
+    expect("POST=1 leaves VJCOPY off", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
+    setenv_(0, EA, "0");
+    expect("EDGEANIM=0 off", EA, "Anim.EdgeAnim", 75, NULL);
+    expect("EDGEANIM=0 turns the keys off", EK, "Anim.EdgeAnim", 76, NULL);
+    setenv_(0, "KZ2_NATIVE_JOB_EDGEANIM_KEYS", "0");
+    expect("EDGEANIM_KEYS=0: keys off", EK, "Anim.EdgeAnim", 76, NULL);
+    expect("EDGEANIM_KEYS=0 leaves the decoder on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJCOPY", "1");
+    expect("VJCOPY=1 on", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY=1");
     /* the default list is exactly k_def's flags */
     const size_t n = sizeof kz2_native_default_on / sizeof kz2_native_default_on[0];
-    if (n != NDEF) {
-        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF);
+    if (n != NDEF + 2) {   /* + EDGEANIM, VJCLEAR */
+        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 2);
         fails++;
     }
     for (size_t i = 0; i < NDEF; i++)

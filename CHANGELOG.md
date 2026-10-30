@@ -4,7 +4,7 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.5] - 2026-10-30 (pre-release)
 
 ### Fixed
 - The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks GitHub for a newer version: these checks now run beside the window, with a short line saying what is happening, instead of holding it until they end (on a slow drive Windows could mark the window "Not responding"). The setup log gives each check's time. Refs #22.
@@ -19,6 +19,7 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - The setup and launcher logs also hide the user name in a Documents, Desktop or Downloads folder that Windows keeps outside your user folder (shown as `<Documents>`, `<Desktop>`, `<Downloads>`), in other accounts' folders (`<user>`), and in CMake's and URL-encoded forms of your user folder.
 
 ### Added
+- Two more SPU jobs run natively by default: the animation job's decoding (15-22 % less time per job run in scripted runs) and the particle vertex job's start-up clear (3-11 % less). Their output matches the translated code bit for bit on the tested inputs. `KZ2_NATIVE_JOB_EDGEANIM=0` or `KZ2_NATIVE_JOB_VJCLEAR=0` uses the translated code instead.
 - Estimated hardware requirements to play and to build (README and `docs/requirements.md`): estimates, provisional until the game runs at full speed; hand play is not measured.
 - "Use my RPCS3 install" also finds an unzipped RPCS3 with its version in the folder name (such as `rpcs3-v0.0.34-...-win64`) in Documents, the Desktop and Downloads (also where Windows has moved them), Games or Emulators in your user folder, Program Files, and each local drive's root and its Games, Emulators, Emulator or PS3 folder, and accepts a picked `config` or `dev_hdd0` folder inside it. One level deep only. Adapted from Project Helghast. Tested with host tests.
 

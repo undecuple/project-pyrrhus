@@ -1,4 +1,5 @@
-/* native_particles.c -- Particles.VertexJob (job_00cd7180, image 201) native code. Off by default (KZ2_NATIVE_JOB_VJCLEAR).
+/* native_particles.c -- Particles.VertexJob (job_00cd7180, image 201) native code: the .bss clear (on by default,
+ * KZ2_NATIVE_JOB_VJCLEAR=0 turns it off) and the memcpy (off by default, KZ2_NATIVE_JOB_VJCOPY=1 turns it on).
  *
  * The job's crt0 .bss clear, the first "continue at" gate (re/spu/native_gates.tsv column 7): the WWS job crt0 that
  * 26 of the 36 job images share zeroes its .bss at every job start (@0x406C ila r3 = start, @0x4070 ila r4 = end,
@@ -44,8 +45,36 @@ static int vj_bss_411C(spu_context* ctx)   // @0x0000411C (job_00cd7180)
     return 1;
 }
 
+/* the job's memcpy @0x7F00 (slot 78, KZ2_NATIVE_JOB_VJCOPY). Called from the main loop @0x525C and
+ * @0x598C: r3 = destination, r4 = source, r5 = bytes (preferred words), returns r3 unchanged. The SPU code:
+ *   n == 0: return.
+ *   both 16-byte aligned (@0x7F40): whole quadwords, then the first n & 15 bytes of the next destination quadword
+ *     from the source's (@0x8070: selb with rotqmby(-1, -rest), the rest of that quadword kept).
+ *   else (@0x7F70): the first destination quadword's bytes [d & 15, min(16, d & 15 + n)) from the source (shifted by
+ *     rotqmby when s & 15 <= d & 15, else shufb of two source quadwords with the shift table at 0x8580 + 16 k: row k
+ *     = bytes k..k+15), the other bytes kept (selb masks from shlqby/rotqmby of -1); then whole destination
+ *     quadwords from source quadword pairs (shufb, table row (source & 15)); the last partial one merged as above.
+ * So the local store ends as memcpy(d, s, n) leaves it when the source quadwords it reads ([s & ~15, s + n + 31))
+ * are not written by the copy, every address stays below the end of the local store (lqd/stqd wrap: masked
+ * 0x3FFF0) and n is the preferred word (clgti: unsigned). The native code declines otherwise. Scratch registers are
+ * not reproduced (r3 is): ASSUMPTION: the callers are compiled code that treats r2-r79 as clobbered by a call
+ * (post_kernels.py --live cannot show it: the main loop's indirect calls @0x70D4, 0x7130, 0x7160 stop its walk).
+ * The pool (the shift table rows 0-15, LS 0x8580-0x8680) is checked: the lifted code reads it. */
+static int vj_memcpy_7F00(spu_context* ctx)   // @0x00007F00 (job_00cd7180)
+{
+    const uint32_t d = ctx->gpr[3]._u32[0], s = ctx->gpr[4]._u32[0], n = ctx->gpr[5]._u32[0];
+    if (!n) return 1;
+    if ((uint64_t)d + n + 16 > SPU_LS_SIZE || (uint64_t)s + n + 32 > SPU_LS_SIZE) return 0;
+    const uint32_t wlo = d & ~15u, whi = (d + n + 15) & ~15u, rlo = s & ~15u, rhi = s + n + 32;
+    if (wlo < rhi && rlo < whi) return 0;   /* the copy would read what it wrote */
+    memcpy(ctx->ls + d, ctx->ls + s, n);
+    return 1;
+}
+
 const kz2_native_entry kz2_native_particles[] = {
     { 77, "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", "job_00cd7180", 0x411Cu, vj_bss_411C, "bss_clear", 0, 0, 0,
       0x407Cu },
+    { 78, "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", "job_00cd7180", 0x7F00u, vj_memcpy_7F00, "vj_memcpy", 0x8580u,
+      0x8680u, 0x2a2ecd46ad5ff165ull, 0 },
 };
 const unsigned kz2_native_particles_n = sizeof kz2_native_particles / sizeof kz2_native_particles[0];

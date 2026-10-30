@@ -1,0 +1,142 @@
+KZ2 patch 7010: KZ2_LL_PROF=1, where the lock-line stripes are waited for and held, by call site.
+
+An earlier change's host profile put about 30 % of Gfx.Particles.UpdateJob's samples in the runtime's lock-line path
+(spu_ll_lock_slow 9.2 %, coherence notify 5.8 %). Which caller waits, and which one holds a stripe long, the profile
+cannot say: spu_ll_lock_slow is one function for every site. With KZ2_LL_PROF=1 spu_ll_lock_mask and
+spu_lockline_lock key each call by their return address and count calls, contended calls, stripes, the TSC ticks
+spent acquiring and the ticks held until the thread's matching unlock; GETLLAR's seqlock spins (a writer holding the
+line's stripe) are counted apart. "[ll-prof]" lines every 10 s (RVAs in the exe: resolve with nm). Off by default
+(one env lookup); no behaviour change.
+
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -153,17 +153,109 @@
+     volatile uint32_t* w = &s_ll[i].seq;
+     __atomic_store_n(w, *w + 1u, __ATOMIC_RELEASE);
+ }
+-void spu_ll_lock_mask(uint64_t m)
++/* KZ2 patch 7010: KZ2_LL_PROF=1, where the stripe lock is waited for and held, by call site. Each
++ * spu_ll_lock_mask / spu_lockline_lock call is keyed by its return address (an RVA in the exe): calls, calls that
++ * found a stripe taken, stripes taken, TSC ticks spent acquiring and ticks held until the matching unlock (the
++ * thread's last lock: the lock sites nest no stripes). Every 10 s "[ll-prof]" lines: the top 12 sites by wait, and
++ * GETLLAR's seqlock spins (a writer held the line's stripe). Off by default (one env lookup); the counting costs two
++ * rdtsc and a few atomics per lock when on. Diagnostic only; no behaviour change. */
++#define LL_PROF_SITES 64
++static struct { void* volatile site; volatile unsigned long long n, cont, stripes, wait, hold; } s_llp[LL_PROF_SITES];
++static volatile unsigned long long s_llp_gspin, s_llp_gspin_t;
++static __thread void* tl_llp_site;
++static __thread unsigned long long tl_llp_t;
++static int ll_prof_on(void)
++{
++    static int s = -1;
++    if (s < 0) { const char* e = getenv("KZ2_LL_PROF"); s = (e && e[0] == '1') ? 1 : 0; }
++    return s;
++}
++static int ll_prof_slot(void* site)
++{
++    unsigned h = (unsigned)(((uintptr_t)site >> 2) * 0x9E3779B1u) >> 26;
++    for (int k = 0; k < LL_PROF_SITES; k++, h = (h + 1) & (LL_PROF_SITES - 1)) {
++        void* cur = __atomic_load_n(&s_llp[h].site, __ATOMIC_ACQUIRE);
++        if (cur == site) return (int)h;
++        if (!cur) {
++            void* none = NULL;
++            if (__atomic_compare_exchange_n(&s_llp[h].site, &none, site, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ||
++                none == site)
++                return (int)h;
++        }
++    }
++    return -1;
++}
++#if defined(_WIN32)
++__declspec(dllimport) void* __stdcall GetModuleHandleA(const char*);
++#endif
++static void ll_prof_print(void)
++{
++    static volatile long last;
++    static volatile int busy;
++    const long t = (long)time(NULL);
++    if (!last) { last = t; return; }
++    if (t - last < 10 || __atomic_exchange_n(&busy, 1, __ATOMIC_ACQUIRE)) return;
++    last = t;
++    uintptr_t base = 0;
++#if defined(_WIN32)
++    base = (uintptr_t)GetModuleHandleA(NULL);
++#endif
++    int idx[LL_PROF_SITES], n = 0;
++    for (int i = 0; i < LL_PROF_SITES; i++) if (s_llp[i].site) idx[n++] = i;
++    for (int i = 1; i < n; i++)
++        for (int j = i; j > 0 && s_llp[idx[j]].wait > s_llp[idx[j - 1]].wait; j--) { int x = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = x; }
++    fprintf(stderr, "[ll-prof] t=%ld sites=%d getllar-seqlock-spins=%llu ticks=%llu\n", t, n, s_llp_gspin,
++            s_llp_gspin_t);
++    for (int k = 0; k < n && k < 12; k++) {
++        const int i = idx[k];
++        fprintf(stderr, "[ll-prof]   rva=0x%llx calls=%llu contended=%llu stripes=%llu wait=%llu hold=%llu\n",
++                (unsigned long long)((uintptr_t)s_llp[i].site - base), s_llp[i].n, s_llp[i].cont, s_llp[i].stripes,
++                s_llp[i].wait, s_llp[i].hold);
++    }
++    fflush(stderr);
++    __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
++}
++static void spu_ll_lock_mask_at(uint64_t m, void* site)
+ {
+     if (spu_ll_old()) m = 1;
+-    for (uint64_t r = m; r; r &= r - 1) spu_ll_lock_i((uint32_t)__builtin_ctzll(r));
++    if (!ll_prof_on()) {
++        for (uint64_t r = m; r; r &= r - 1) spu_ll_lock_i((uint32_t)__builtin_ctzll(r));
++        return;
++    }
++    const unsigned long long t0 = __builtin_ia32_rdtsc();
++    unsigned cont = 0;
++    for (uint64_t r = m; r; r &= r - 1) {
++        volatile uint32_t* w = &s_ll[__builtin_ctzll(r)].seq;
++        uint32_t s = __atomic_load_n(w, __ATOMIC_RELAXED);
++        if ((s & 1u) || !__atomic_compare_exchange_n(w, &s, s + 1u, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
++            cont = 1;
++            spu_ll_lock_slow(w);
++        }
++    }
++    const unsigned long long t1 = __builtin_ia32_rdtsc();
++    const int i = ll_prof_slot(site);
++    if (i >= 0) {
++        __atomic_fetch_add(&s_llp[i].n, 1, __ATOMIC_RELAXED);
++        __atomic_fetch_add(&s_llp[i].cont, cont, __ATOMIC_RELAXED);
++        __atomic_fetch_add(&s_llp[i].stripes, (unsigned long long)__builtin_popcountll(m), __ATOMIC_RELAXED);
++        __atomic_fetch_add(&s_llp[i].wait, t1 - t0, __ATOMIC_RELAXED);
++    }
++    tl_llp_site = site;
++    tl_llp_t = t1;
+ }
++void spu_ll_lock_mask(uint64_t m) { spu_ll_lock_mask_at(m, __builtin_return_address(0)); }
+ void spu_ll_unlock_mask(uint64_t m)
+ {
+     if (spu_ll_old()) m = 1;
++    if (ll_prof_on() && tl_llp_site) {
++        const int i = ll_prof_slot(tl_llp_site);
++        if (i >= 0) __atomic_fetch_add(&s_llp[i].hold, __builtin_ia32_rdtsc() - tl_llp_t, __ATOMIC_RELAXED);
++        tl_llp_site = NULL;
++    }
+     for (uint64_t r = m; r; r &= r - 1) spu_ll_unlock_i((uint32_t)__builtin_ctzll(r));
++    if (ll_prof_on()) ll_prof_print();
+ }
+-void spu_lockline_lock(void)   { LL_ST(s_st_all, 1); spu_ll_lock_mask(~0ull); }
++void spu_lockline_lock(void)   { LL_ST(s_st_all, 1); spu_ll_lock_mask_at(~0ull, __builtin_return_address(0)); }
+ void spu_lockline_unlock(void) { spu_ll_unlock_mask(~0ull); }
+ 
+ /* Seqlock read side for GETLLAR: an even count to read under, 0xFFFFFFFF if
+@@ -203,7 +295,15 @@
+     if (!spu_ll_old()) {
+         for (int tries = 0; tries < 64; tries++) {
+             uint32_t s = spu_ll_read_begin(ea);
+-            if (s == 0xFFFFFFFFu) { LL_PAUSE(); continue; }
++            if (s == 0xFFFFFFFFu) {
++                const unsigned long long p0 = ll_prof_on() ? __builtin_ia32_rdtsc() : 0;   /* KZ2 patch 7010 */
++                LL_PAUSE();
++                if (p0) {
++                    __atomic_fetch_add(&s_llp_gspin, 1, __ATOMIC_RELAXED);
++                    __atomic_fetch_add(&s_llp_gspin_t, __builtin_ia32_rdtsc() - p0, __ATOMIC_RELAXED);
++                }
++                continue;
++            }
+             memcpy(ls, mem, 128);
+             if (!spu_ll_read_valid(ea, s)) { LL_ST(s_st_retry, 1); continue; }
+             memcpy(ctx->resv_line, ls, 128);

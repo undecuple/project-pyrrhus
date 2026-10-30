@@ -608,6 +608,30 @@ static void synth_bss(spu_context* c, uint64_t seed)
     setreg(c, 126, 0);
 }
 
+/* Particles.VertexJob's memcpy @0x7F00 (slot 78, an earlier change): r3 = destination, r4 = source, r5 = bytes. Destinations
+ * above the job's code and shift table (>= 0x8800); every alignment pair of source and destination, lengths 0-4 KB
+ * (a quarter under 48 bytes: the single-quadword merges), sources anywhere in the image or data; 1 in 16 overlapping
+ * ranges and 1 in 32 near the end of the local store (both declined: a fallback), 1 in 4 with unsplatted lanes. */
+static void synth_vjcopy(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    const uint32_t n = rnd() % 32 == 0 ? 0 : rnd() % 4 == 0 ? rnd() % 48 : rnd() % 4 ? rnd() % 4097 : 16 * (rnd() % 257);
+    uint32_t d = 0x8800 + rnd() % 0x30000, s = rnd() % 2 ? 0x4000 + rnd() % 0x4000 : 0x8800 + rnd() % 0x30000;
+    if (rnd() % 4 == 0) d &= ~15u;
+    if (rnd() % 4 == 0) s &= ~15u;
+    if (rnd() % 16 == 0) s = d + (rnd() % 2 ? 1 : -1) * (int32_t)(rnd() % 64);
+    if (rnd() % 32 == 0) d = SPU_LS_SIZE - 16 - rnd() % 64;
+    setreg(c, 3, d);
+    setreg(c, 4, s);
+    setreg(c, 5, n);
+    if (rnd() % 4 == 0)
+        for (int k = 1; k < 4; k++) {
+            c->gpr[3]._u32[k] = rnd();
+            c->gpr[4]._u32[k] = rnd();
+            c->gpr[5]._u32[k] = rnd();
+        }
+}
+
 /* Spu an earlier change: a gate that sits after a lifted prologue (Gfx.Post.ILR's row loop @0x4E20): the state there is made by
  * running the lifted pass from its entry with a gate that copies the state the first time it is reached (and lets the
  * lifted code go on). Synthetic cases build the pass's entry state; recorded states taken at the pass's entry (round
@@ -779,7 +803,7 @@ static const struct {
     {"down8", synth_down8},           {"dofpass", synth_dofpass},
     {"zero", synth_zero},             {"ilr", synth_ilr},
     {"ea_13100", synth_ea13100},      {"ea_12438", synth_ea12438},
-    {"bss_clear", synth_bss},
+    {"bss_clear", synth_bss},         {"vj_memcpy", synth_vjcopy},
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
