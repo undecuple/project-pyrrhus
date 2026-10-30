@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KZ2 SPU lane an earlier change: PUTLLC against PPU stores to the reserved line (tools/spu/test_putllc_ppu.c). The raw-store
+# KZ2 host test: PUTLLC against PPU stores to the reserved line (tools/spu/test_putllc_ppu.c). The raw-store
 # helpers are taken from the patched lifter's preamble (tools/ppu_lifter.py, VM_RAW_LD .. vm_raw_st16) and the raw
 # store instructions from its own lowering (PPULifter._translate_op), so the test follows what the lift emits. With
 # KZ2 patch 7005 in the tree (vm_raw_resv in the preamble) the same-bytes raw-store cases are hard checks. Needs work/ps3recomp-patched (SPU_TREE=DIR); SKIP without it.

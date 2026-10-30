@@ -67,6 +67,42 @@ def rotated(name):
         return out
 
 
+def pascal(text, name):
+    """The body of a [Code] function or procedure."""
+    m = re.search(r"^(?:function|procedure) " + name + r"\b.*?^end;", text, re.M | re.S)
+    return m.group(0) if m else ""
+
+
+def vfs_places(text):
+    """The VFS folders outside the install folder (launch.py alt_vfs_root: %LOCALAPPDATA%\\Project Pyrrhus\\vfs-<key>,
+    one per install) are removed by kz2.iss RemoveVfsFolders at usUninstall: the key is computed the same way on both
+    sides, the launcher's record is the one the uninstaller reads, links go before any recursive delete."""
+    key = pascal(text, "InstallKey")
+    n = len(launch.install_key("C:\\x"))
+    check("GetSHA256OfUnicodeString(S)" in key and f"Copy(Lowercase(GetSHA256OfUnicodeString(S)), 1, {n})" in key
+          and "Lowercase(App)" in key and "StringChangeEx(S, '/', '\\', True)" in key and "Length(S) > 3" in key,
+          "kz2.iss InstallKey: SHA-256 of the UTF-16 path, ASCII lower case, '/' -> '\\', trailing '\\' off, "
+          f"{n} hex digits (as launch.install_key)")
+    check(re.search(r"\\vfs-'\) \+ InstallKey\(ExpandConstant\('\{app\}'\)\)", pascal(text, "RemoveVfsFolders"))
+          and launch.ALT_PREFIX == "vfs-", "the uninstaller's second place is launch.ALT_PREFIX + InstallKey({app})")
+    src = open(os.path.join(HERE, "launch.py"), encoding="utf-8").read()
+    check("GetIniString('vfs', 'alt'" in pascal(text, "RemoveVfsFolders") and 'try_write_ini(root, "vfs", "alt", v' in src,
+          "the launcher's [vfs] alt record is the one the uninstaller reads")
+    check("IsOwnAltVfs(Rec)" in pascal(text, "RemoveVfsFolders"), "a recorded place is used only inside our own folder")
+    rm = pascal(text, "RemoveVfsFolder")
+    links = [rm.find(f"RemoveDir(Dir + '\\{x}')") for x in ("PS3_GAME", launch.LINK_TEST, launch.LINK_TEST + "-target")]
+    guard = rm.find("if DirExists(Dir + '\\PS3_GAME') or DirExists(Dir + '\\" + launch.LINK_TEST + "')")
+    tree = rm.find("DelTree(Dir")
+    check(min(links) >= 0 and 0 <= guard < tree and max(links) < guard and "Exit;" in rm[guard:tree],
+          "RemoveVfsFolder removes the links first and deletes the folder whole only when no link is left")
+    cus = pascal(text, "CurUninstallStepChanged")
+    check(re.search(r"usUninstall then begin.*?RemoveVfsFolders;.*?Exit;", cus, re.S) is not None,
+          "RemoveVfsFolders runs at usUninstall, before [UninstallDelete] (the links go first)")
+    sec = re.search(r"^\[UninstallDelete\]\n(.*?)(?=^\[)", text, re.M | re.S).group(1)
+    check(not [ln for ln in sec.splitlines() if ln.startswith("Type:") and "ps3_game" in ln.lower()],
+          "no [UninstallDelete] line names a PS3_GAME link")
+
+
 def main():
     with open(ISS, encoding="utf-8") as f:
         text = f.read()
@@ -80,6 +116,8 @@ def main():
         "version check log": "logs/version-check.log",
         "copied first-run logs": "logs/firstrun-20260101-120000.log",
         "install settings": "kz2-install.ini",
+        "the menu's version file, portable (launch.VERSION_INI)": launch.VERSION_INI,
+        "its temp file (launch.write_version_ini)": launch.VERSION_INI + ".tmp",
         "build output": "build/kz2.exe",
         "build paths": "build/paths.json",
         "build cache": "build/cache/edat/x",
@@ -105,6 +143,7 @@ def main():
         check(covered(t + "/__pycache__/x.pyc", pats), f"payload folder {t}/ goes whole (any __pycache__ in it)")
     # and the vfs junction to the player's dump is never recursed into
     check(not covered("vfs/PS3_GAME/USRDIR/data_ps3.psarc", pats), "the dump behind vfs/PS3_GAME is never listed")
+    vfs_places(text)
     print("test_uninstall_covers:", "PASS" if not bad else f"FAIL ({bad})")
     return 1 if bad else 0
 

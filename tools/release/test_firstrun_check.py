@@ -119,7 +119,7 @@ def main():
         check("complete set passes", rc == 0 and "FAIL" not in out, out)
         check("1.29 ELF recognised", "1.29" in out and levels(out, "E1") == {"OK"}, out)
         check("update APP_VER ok", levels(out, "U1") == {"OK"}, out)
-        # U3 FAILs since an earlier change (issue #16: the 1.29 EBOOT without the update's data stops at the main menu)
+        # U3 FAILs since issue #16 ( the 1.29 EBOOT without the update's data stops at the main menu)
         ud = os.path.join(u, "USRDIR", fc.UPDATE_DATA)
         os.rename(ud, ud + ".bak")
         rc, out = run(["--dump", d, "--update", u] + small)

@@ -8,7 +8,7 @@ KZ2 has neither yet). Standard library only, Python 3.8+.
     assemble_payload.py --dry-run [--repo DIR] [--toolchain CACHE] [--fonts DIR]
 
 What goes in (the allowlist, RULES below; nothing else is ever copied):
-  kz2-setup/      tools/release/{firstrun,firstrun_check,version_check,launch,lift_fixups,spu_step,rpcs3_locate,rpcs3_import}.py, eboot_sha256.json, psarc_sha256.json,
+  kz2-setup/      tools/release/{firstrun,firstrun_check,version_check,launch,install_ini,lift_fixups,spu_step,rpcs3_locate,rpcs3_import}.py, eboot_sha256.json, psarc_sha256.json,
                   spu/{lift_spu,gen_spu_register,kz2ver}.py (the SPU lift), and
                   eboot_ver.txt (written here: the EBOOT version the tree is built for, firstrun.tree_eboot_ver of the
                   repository, read from tools/lift.sh's constants; lift.sh itself is a developer tool and not shipped)
@@ -87,6 +87,7 @@ RULES = [
     ("tools/release/firstrun_check.py", "kz2-setup/release/firstrun_check.py", "file", {}),
     ("tools/release/version_check.py", "kz2-setup/release/version_check.py", "file", {}),
     ("tools/release/launch.py", "kz2-setup/release/launch.py", "file", {}),
+    ("tools/release/install_ini.py", "kz2-setup/release/install_ini.py", "file", {}),
     ("tools/release/lift_fixups.py", "kz2-setup/release/lift_fixups.py", "file", {}),
     ("tools/release/eboot_sha256.json", "kz2-setup/release/eboot_sha256.json", "file", {}),
     ("tools/release/psarc_sha256.json", "kz2-setup/release/psarc_sha256.json", "file", {}),   # firstrun_check A1

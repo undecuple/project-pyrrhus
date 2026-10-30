@@ -259,9 +259,12 @@ def debase_includes(sub):
 
 
 def native_gates(sub, name):
-    """Spu an earlier change: insert the native gates of re/spu/native_gates.tsv into this image's lifted functions. The gate
+    """Insert the native gates of re/spu/native_gates.tsv into this image's lifted functions. The gate
     is the first statement of the function: `if (g_kz2_native_gate[slot] && g_kz2_native_gate[slot](ctx))
-    SPU_RET(ctx);` (a native implementation that ran the whole subroutine returns 1). Returns the gates inserted."""
+    SPU_RET(ctx);` (a native implementation that ran the whole subroutine returns 1). An earlier change: a row with a 7th column
+    (a hex LS address) is a "continue at" gate for code that is no subroutine: on 1 the gate hops to that address's
+    lifted function (`SPU_HOP`, as the lifted code's own branch there would) instead of returning. Returns the gates
+    inserted."""
     import re
     tsv = os.path.join(ROOT, "re", "spu", "native_gates.tsv")
     rows = []
@@ -271,21 +274,28 @@ def native_gates(sub, name):
                 continue
             f = line.rstrip("\n").split("\t")
             if f[0] == name:
-                rows.append((int(f[1], 16), int(f[2]), f[3]))
+                cont = int(f[6], 16) if len(f) > 6 and f[6].strip() else 0
+                rows.append((int(f[1], 16), int(f[2]), f[3], cont))
     p = os.path.join(sub, "spu_recomp.c")
     if not rows or not os.path.exists(p):
         return 0
     t = open(p).read()
     n = 0
-    for addr, slot, job in rows:
+    for addr, slot, job, cont in rows:
         head = f"SPU_ABI void {name}_spu_func_{addr:08X}(spu_context* ctx) {{\n"
         if head not in t:
             raise SystemExit(f"native gate: no lifted function {name} 0x{addr:X}")
+        then = "SPU_RET(ctx);"
+        if cont:
+            fn = f"{name}_spu_func_{cont:08X}"
+            if f"SPU_ABI void {fn}(spu_context* ctx) {{\n" not in t:
+                raise SystemExit(f"native gate: continue address 0x{cont:X} of {name} 0x{addr:X} is no lifted function")
+            then = f"SPU_HOP(ctx, 0x{cont:X}, {fn});"
         gate = (f"    if (__builtin_expect(g_kz2_native_gate[{slot}] != 0, 0) && g_kz2_native_gate[{slot}](ctx)) "
-                f"SPU_RET(ctx);   /* native gate {slot}: {job} 0x{addr:X} (re/spu/native_gates.tsv) */\n")
+                f"{then}   /* native gate {slot}: {job} 0x{addr:X} (re/spu/native_gates.tsv) */\n")
         t = t.replace(head, head + gate, 1)
         n += 1
-    decl = "extern int (*g_kz2_native_gate[])(spu_context*);   /* an earlier change: re/spu/native_gates.tsv */\n"
+    decl = "extern int (*g_kz2_native_gate[])(spu_context*);   /* native gates: re/spu/native_gates.tsv */\n"
     t = re.sub(r'(#include "spu_helpers.h"\n)', lambda m: m.group(1) + decl, t, count=1)
     open(p, "w").write(t)
     return n

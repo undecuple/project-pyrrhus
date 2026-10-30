@@ -16,7 +16,7 @@ There are two ways to get a build:
   [Building on macOS](#building-on-macos) and [Building on Windows](#building-on-windows)).
 
 The port is early and partly playable: the first level can be played with a pad (see the [README](../README.md#status) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
-A build starts, shows the menus and draws the first level at about 23 frames per second in one scripted run under Proton (the PS3 runs it at 30).
+A build starts, shows the menus and draws the first level at 23-33 frames per second in our scripted runs under Proton (23.3 over one 330 s run on 2026-10-22, a median of 32.6 in short turn-and-walk windows on 2026-10-29; the PS3 runs it at 30).
 
 **Pinned versions:** the build uses ps3recomp **v0.18.0** (the `third_party/ps3recomp` submodule) with this project's
 patch set from `port/patches/` applied on top (step 2). Do not substitute another ps3recomp version: the patches are
@@ -174,9 +174,9 @@ ran to the end and produced `kz2.exe`, linked with the lifted SPU code. Step 5 w
 ## Building on Windows
 
 **Status: partly tested.** The installer's first-run build (the bundled compiler translating and building the game on
-Windows) ran in a Windows 10 virtual machine with no GPU (6 cores, 8 GB of memory) on 2026-10-27 and produced kz2.exe in 18.6 minutes with 2 jobs. Building
-from the repository by hand on Windows is not tested, and the game has not been played on Windows; play is tested
-under Proton on Linux.
+Windows) ran in a Windows 10 virtual machine with no GPU (6 cores, 8 GB of memory) on 2026-10-27 and again on 2026-10-28 and produced kz2.exe in 18.6 minutes with 2 jobs. Building
+from the repository by hand on Windows is not tested. We test play under Proton on Linux; players report play on
+native Windows 11 (issue #13), which we have not tested ourselves.
 
 1. **The route to try first (untested): build on Linux, run on Windows.** Do the [Steps](#steps) 1 to 4 on a Linux
    machine. Copy `kz2.exe` and `at3_standalone.dll` (and, for movies, `avcodec-63.dll` and `avutil-61.dll` from

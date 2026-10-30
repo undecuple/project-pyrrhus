@@ -590,12 +590,12 @@ int kz2_post_blend(spu_context* ctx);
 #define DOF_ENV "KZ2_NATIVE_JOB_DOF"
 const kz2_native_entry kz2_native_dof[] = {
     { 0, DOF_ENV, "Gfx.Post.DepthOfField", "job_00d6d100", 0x5750u, dof_gather_5750, "dof_gather", DOF_CONST_LO,
-      DOF_CONST_HI, DOF_CONST_HASH },
+      DOF_CONST_HI, DOF_CONST_HASH, 0 },
     { 1, DOF_ENV, "Gfx.Post.DepthOfField", "job_00d6d100", 0x5F80u, dof_unpack_5F80, "dof_unpack", DOF_CONST_LO,
-      DOF_CONST_HI, DOF_CONST_HASH },
+      DOF_CONST_HI, DOF_CONST_HASH, 0 },
     { 2, DOF_ENV "|KZ2_NATIVE_JOB_POSTMIX", "Gfx.Post.DepthOfField", "job_00d6d100", 0x4CB0u, kz2_post_blend, "blend",
-      0x6550u, 0x6620u, 0xb65df4abc0d86d6full },
+      0x6550u, 0x6620u, 0xb65df4abc0d86d6full, 0 },
     { 74, "KZ2_NATIVE_JOB_DOFPASS", "Gfx.Post.DepthOfField", "job_00d6d100", 0x4A20u, dof_pass_4A20, "dofpass",
-      DOF_CONST_LO, DOF_CONST_HI, DOF_CONST_HASH },
+      DOF_CONST_LO, DOF_CONST_HI, DOF_CONST_HASH, 0 },
 };
 const unsigned kz2_native_dof_n = sizeof kz2_native_dof / sizeof kz2_native_dof[0];

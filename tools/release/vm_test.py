@@ -32,7 +32,7 @@ Steps (in order; each can be re-run):
   10-leftovers  the install folder, the shortcuts and the key gone; what is left in %APPDATA%\\Project Pyrrhus is
                 user data only (saves and settings, not caches); the dump unchanged (same fingerprint as 02)
 
-Release an earlier change (v0.1.2: what players touch first; wrong inputs that need no game data, made in <base>\\t\\). Each
+First-contact steps (v0.1.2: what players touch first; wrong inputs that need no game data, made in <base>\\t\\). Each
 step shows the text the player would see and what was expected ("ok" / "NOT"). Run order: ORDER below.
   11-setup-onedrive   before 03: silent setup with /DIR= inside OneDrive (this machine's, else a stand-in OneDrive
                       variable given to the setup only: then SKIP when refused) -> exit 7, the reason, nothing installed
@@ -615,8 +615,8 @@ def s_leftovers(st, a):
     return st.end("FAIL" if problems else "PASS", "; ".join(problems) or "only user data left (or nothing)")
 
 
-# ------------------------------------------------------------------- an earlier change: what players touch first
-# v0.1.2's first-contact changes (rounds 25, 28, 29) on the guest's Windows: the setup's silent refusals, the first-run
+# ------------------------------------------------------------------- first contact: what players touch first
+# v0.1.2's first-contact changes on the guest's Windows: the setup's silent refusals, the first-run
 # check's per-input reasons on wrong inputs, the bundled Python, the console's questions, the launcher's dialog and the
 # uninstaller's coverage. The wrong inputs need no game data: empty folders, a drive root, the update given as the
 # disc, a stand-in of the disc's 1.01 EBOOT (an ELF header and zeros of its size), synthetic PARAM.SFO files and a

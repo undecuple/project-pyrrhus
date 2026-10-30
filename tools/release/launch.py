@@ -24,7 +24,15 @@ well the game starts. A "No" starts nothing.
 
 Game environment: PS3_VFS_ROOT=<root>/vfs, a writable folder whose PS3_GAME is a directory junction to
 <dump>/PS3_GAME (ensure_vfs; KZ3: its runtime writes a psarc cache and /dev_hdd1 under the VFS root, so a read-only
-or untouched dump as the root made every asset open fail); KZ2_UPDATE_DIR=<update>/USRDIR (port/kz2/main.cpp reads it:
+or untouched dump as the root made every asset open fail; reading the dump in place is no fallback: every mount,
+/dev_hdd0 and /dev_usb included, maps under the VFS root, so the game would write into the dump). Before any build the
+launcher makes and removes a test link there (probe_link), so a drive that cannot hold one is named within seconds; a
+failed junction leaves no folder behind. When <root>/vfs cannot hold the link, the VFS root is
+%LOCALAPPDATA%/Project Pyrrhus/vfs-<6 hex digits of the install folder's path> instead (alt_vfs_root, one per
+install; issue #20), recorded in kz2-install.ini [vfs] alt for the uninstaller, and stays there; the one shared
+%LOCALAPPDATA%/Project Pyrrhus/vfs of an earlier unreleased build is moved into it (migrate_alt). Link-free (link_free; the
+main path once the runtime reads KZ2_CACHE_ROOT, Project Helghast's design): PS3_VFS_ROOT=<dump>, KZ2_CACHE_ROOT=
+<root>/vfs, no link at all; the link is then the path for builds from older payloads only. KZ2_UPDATE_DIR=<update>/USRDIR (port/kz2/main.cpp reads it:
 the 1.29 update's added_data_ps3.psarc and patch_data_ps3/ are served through it);
 PS3_HDD0_ROOT=<...>/dev_hdd0 only when the update folder sits in an RPCS3 dev_hdd0/game/<id> tree;
 PS3_EDAT_CACHE=<root>/build/cache/edat (port/patches/5002); VKD3D_SHADER_CACHE_PATH=<data>/cache/vkd3d (Proton's
@@ -47,15 +55,28 @@ changed). Never built or inputs gone = the same questions as a normal start. End
 A first run or rebuild that ends with rc != 0: the dialog shows firstrun.py's REASON lines from
 <root>/logs/firstrun-status.txt (--status-file; only when this run wrote it), then where the log is (failure_text).
 
+version.ini (for the game's menu; the game side that draws it is not in yet): at each game start, written whole into
+the player's data folder (the working folder above, where keybinds.ini, display.ini and gameplay.ini live) as
+[version] current=<this port's version>, plus newer=<version> and page=<release page> only while [online]
+check_updates=1 and the last check's result names a release newer than current (write_version_ini). The game never
+connects. A failure is logged and the start goes on.
+
 launcher.log (<root>/logs): one "start: <action>" line and one "version: X.Y.Z (build stamp: ...)" line per start.
+
+kz2-install.ini is read and written through install_ini (comments, key case and keys the launcher does not know stay);
+a file that cannot be read or written (locked, read-only, a folder in its place) is logged and shown once per start,
+and the start goes on with the defaults. Any other unexpected error is logged with its traceback and shown
+(guarded_main): pythonw has no console, so nothing ends without a word.
 
 --print: show the decision, the command, the working folder and the variables it sets, as JSON; starts nothing.
 """
 import argparse
-import configparser
+import contextlib
 import datetime
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -64,6 +85,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import firstrun as fr  # noqa: E402
 import firstrun_check as fc  # noqa: E402
+import install_ini as ii  # noqa: E402
 
 TITLE = "Project Pyrrhus"
 # The only page an update notice may open (security review F2, 2026-10-20): the check's reply cannot send the player
@@ -75,7 +97,7 @@ ISSUES_URL = "https://github.com/undecuple/project-pyrrhus/issues"
 # every failure message says where to report it (the log holds no personal folders)
 REPORT = f"\n\nTo report a problem, attach this log on the issues page: {ISSUES_URL}"
 GAME_VARS = ("KZ2_PAD_LAYOUT", "KZ2_PROMPTS", "KZ2_DISPLAY", "PS3_VFS_ROOT", "KZ2_UPDATE_DIR", "PS3_HDD0_ROOT", "PS3_EDAT_CACHE",
-             "VKD3D_SHADER_CACHE_PATH")
+             "VKD3D_SHADER_CACHE_PATH", "KZ2_CACHE_ROOT")
 # firstrun.py --status-file: its last RESULT line and, after RESULT ok=0, the REASON lines (why it stopped), shown in
 # the launcher's dialog (after Project Helghast PR #11 did the same for its setup's box)
 FIRSTRUN_STATUS = os.path.join("logs", "firstrun-status.txt")
@@ -92,9 +114,14 @@ def load_json(path):
 
 
 def read_ini(root):
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(root, "kz2-install.ini"), encoding="utf-8")
-    g = lambda s, k, d="": cp.get(s, k, fallback=d).strip()  # noqa: E731
+    """kz2-install.ini's settings (install_ini: comments, key case and unknown keys are the player's). A file that
+    cannot be read (locked, a folder in its place) gives the defaults and its reason in "error", which main() logs and
+    shows: under pythonw an exception would end the launcher without a word."""
+    try:
+        cp, err = ii.read(os.path.join(root, ii.NAME)), ""
+    except ii.IniError as e:
+        cp, err = ii.Ini(), str(e)
+    g = lambda s, k, d="": cp.get(s, k, d).strip()  # noqa: E731
     return {"portable": g("install", "portable", "0") == "1", "check_updates": g("online", "check_updates", "0") == "1",
             "last_check": g("online", "last_check"), "dismissed": g("online", "dismissed"),
             "layout": fr.pad_layout(g("controls", "layout"))[0],
@@ -102,18 +129,35 @@ def read_ini(root):
             "prompts_bad": g("controls", "prompts") if not fr.prompt_set(g("controls", "prompts"))[1] else "",
             "display": fr.display_mode(g("display", "mode"))[0], "display_set": g("display", "mode") != "",
             "display_bad": g("display", "mode") if not fr.display_mode(g("display", "mode"))[1] else "",
-            "layout_bad": g("controls", "layout") if not fr.pad_layout(g("controls", "layout"))[1] else ""}
+            "layout_bad": g("controls", "layout") if not fr.pad_layout(g("controls", "layout"))[1] else "",
+            "vfs_alt": g("vfs", "alt"), "error": err}
 
 
 def write_ini(root, section, key, value):
-    p = os.path.join(root, "kz2-install.ini")
-    cp = configparser.ConfigParser()
-    cp.read(p, encoding="utf-8")
-    if not cp.has_section(section):
-        cp.add_section(section)
-    cp.set(section, key, value)
-    with open(p, "w", encoding="utf-8") as f:
-        cp.write(f)
+    """One key in kz2-install.ini; every other line stays (install_ini.set_value). Raises install_ini.IniError."""
+    ii.set_value(os.path.join(root, ii.NAME), section, key, value)
+
+
+def ini_trouble(root, ui, err, shown=None):
+    """Log an ini read or write failure and say it once per start (shown: a set the caller keeps). -> 1."""
+    note(root, f"settings: {err}")
+    if shown is None or not shown:
+        ui.info(f"Project Pyrrhus could not use its settings file: {err}.\n\nThis start uses the default settings "
+                "where the file could not be read, and a change could not be saved. Close any program that has the "
+                "file open, make sure it is not read-only, and start again.")
+        if shown is not None:
+            shown.add(1)
+    return 1
+
+
+def try_write_ini(root, section, key, value, ui, shown=None):
+    """write_ini that logs and shows a failure instead of raising. -> True when written."""
+    try:
+        write_ini(root, section, key, value)
+        return True
+    except ii.IniError as e:
+        ini_trouble(root, ui, str(e), shown)
+        return False
 
 
 def version_line(root):
@@ -126,7 +170,7 @@ def version_line(root):
 
 def note(root, text):
     """One line in <root>/logs/launcher.log (what the launcher decided; pythonw has no console). Never fails. The user's
-    home folder becomes %USERPROFILE% (firstrun.redactor; an earlier change, issue #16: logs get attached to public
+    home folder becomes %USERPROFILE% (firstrun.redactor; issue #16: logs get attached to public
     issues, and a vfs/prepare error can name a path)."""
     try:
         text = fr.redactor()(text)
@@ -202,53 +246,290 @@ def _is_dir_link(p):
     return bool(isj and isj(p))
 
 
-def _make_dir_link(target, link):
-    """Directory junction on Windows (no admin rights or developer mode needed), else a symlink. -> error or ""."""
-    errs = []
-    if os.name == "nt":
-        try:
-            import _winapi
-            _winapi.CreateJunction(target, link)
-            return ""
-        except (ImportError, AttributeError, OSError) as e:
-            errs.append(f"junction: {e}")
+def _junction_api():
+    if os.name != "nt":
+        return None
     try:
-        os.symlink(target, link, target_is_directory=True)
+        import _winapi
+        return _winapi.CreateJunction
+    except (ImportError, AttributeError):
+        return None
+
+
+# The link makers, module-level so a host test can stand in for Windows (a junction that fails half-way).
+create_junction = _junction_api()
+make_symlink = os.symlink
+
+
+def _remove_empty_dir(p):
+    """os.rmdir only: it refuses a folder with anything in it, and on a link or junction it removes the link and never
+    its target. So this can never delete a player's files. -> True when p is gone."""
+    if _is_dir_link(p):
+        try:
+            os.unlink(p)            # a symlink (POSIX rmdir refuses one); Windows removes the link only
+            return True
+        except OSError:
+            pass
+    try:
+        os.rmdir(p)
+        return True
+    except OSError:
+        return False
+
+
+def _make_dir_link(target, link):
+    """Directory junction on Windows (no admin rights or developer mode needed), else a symlink. -> error or "".
+
+    _winapi.CreateJunction makes the folder first and then sets its reparse point; when the second step fails (seen as
+    WinError 1392 on a player's drive) the empty folder stayed behind, the symlink then failed with WinError 183 and
+    every later start refused it as a real folder. A failed attempt now removes what it made (only a folder that did
+    not exist before that attempt, and only when empty or a link). Same rule as Project Helghast's _undo_link (KZ3
+    tools/release/launch.py, same author, MIT)."""
+    errs = []
+    if create_junction is not None:
+        existed = os.path.lexists(link)
+        try:
+            create_junction(target, link)
+            return ""
+        except OSError as e:
+            errs.append(f"junction: {e}")
+            if not existed and os.path.lexists(link):
+                _remove_empty_dir(link)
+    existed = os.path.lexists(link)
+    try:
+        make_symlink(target, link, target_is_directory=True)
         return ""
     except (OSError, NotImplementedError) as e:
         errs.append(f"symlink: {e}")
+        if not existed and os.path.lexists(link):
+            _remove_empty_dir(link)
     return "; ".join(errs)
 
 
-def ensure_vfs(root, dump):
-    """Make <root>/vfs with PS3_GAME -> <dump>/PS3_GAME. -> (vfs folder, error text or "").
+CACHE_ROOT_HEADER = ("port", "kz2", "kz2_cache_root.h")   # the runtime's cache-root support (KZ2_CACHE_ROOT)
 
-    The player's dump is read in place and never written: the runtime's writes (psarc-cache, /dev_hdd1 cache) land
-    in <root>/vfs. A real folder already named PS3_GAME there is never removed (error instead); a link to another
-    dump (the player picked a new folder) is replaced; removing a link leaves its target alone."""
+
+def link_free(root, build=None):
+    """True when the installed kz2.exe takes the game folder and the writable folder apart (build-stamp.json
+    "cache_root", set by firstrun.after_stamp when the payload has port/kz2/kz2_cache_root.h naming KZ2_CACHE_ROOT):
+    PS3_VFS_ROOT = the dump, read in place, and KZ2_CACHE_ROOT = <root>/vfs takes every write, so no folder link is
+    made. The design is Project Helghast's (KZ3 tools/release/launch.py link_free, kz3.ini cache_root, same author,
+    MIT); its reason: a native Windows install could not open anything through the junction. Until the runtime
+    reads KZ2_CACHE_ROOT (requested), every build stamps False and the link below stays the path."""
+    stamp = load_json(os.path.join(build or os.path.join(root, "build"), "build-stamp.json")) or {}
+    return bool(stamp.get("cache_root"))
+
+
+def drop_link(root):
+    """Link-free start: remove the PS3_GAME link an older start left in <root>/vfs (the link only, never its target;
+    a real folder is left alone) and its record. -> error text or ""."""
     v = vfs_root(root)
     link = os.path.join(v, "PS3_GAME")
-    target = os.path.join(dump, "PS3_GAME")
-    rec = os.path.join(v, VFS_LINK)
+    if _is_dir_link(link):
+        try:
+            try:
+                os.unlink(link)
+            except OSError:
+                os.rmdir(link)
+        except OSError as e:
+            return f"Could not remove the old link {link} ({e})"
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(v, VFS_LINK))
     os.makedirs(v, exist_ok=True)
+    return ""
+
+
+ALT_PREFIX = "vfs-"          # %LOCALAPPDATA%\Project Pyrrhus\vfs-<install_key>: one second place per install
+
+
+def install_key(root, absolute=os.path.abspath):
+    """Six hex digits naming one install folder: SHA-256 of its path as UTF-16LE, after these steps (kz2.iss
+    InstallKey does the same, so the uninstaller finds the folder without the launcher): absolute, "/" -> "\\", A-Z
+    lower-cased (ASCII only, as Inno's Lowercase), trailing "\\" removed except after a drive letter."""
+    s = absolute(root).replace("/", "\\")
+    s = "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+    while len(s) > 3 and s.endswith("\\"):
+        s = s[:-1]
+    return hashlib.sha256(s.encode("utf-16-le")).hexdigest()[:6]
+
+
+def alt_vfs_root(environ, root):
+    """The second place for the VFS root when the install folder's drive cannot hold the link: %LOCALAPPDATA%\\Project
+    Pyrrhus\\vfs-<install_key> (the Windows drive, which is NTFS), one per install folder, so two installs never share
+    a link or its record. "" without LOCALAPPDATA (Linux host tests, odd setups)."""
+    la = (environ or {}).get("LOCALAPPDATA", "")
+    return os.path.join(la, SAVE_FOLDER, ALT_PREFIX + install_key(root)) if la else ""
+
+
+def legacy_alt(alt):
+    """%LOCALAPPDATA%\\Project Pyrrhus\\vfs: the one second place shared by every install (an unreleased build of the
+    launcher, before the per-install folders)."""
+    return os.path.join(os.path.dirname(alt), VFS) if alt else ""
+
+
+def migrate_alt(root, dump, alt):
+    """The shared second place (legacy_alt) holding the link to this install's game folder becomes this install's
+    own (renamed, same drive, so the caches stay; its record is rewritten), once. A link to another game folder is
+    left for its own install; a rename that fails leaves it too (a fresh link is made). -> note text or ""."""
+    old = legacy_alt(alt)
+    target = os.path.join(dump, "PS3_GAME")
+    if not old or os.path.lexists(alt) or not _linked(old, target):
+        return ""
+    try:
+        os.rename(old, alt)
+    except OSError as e:
+        return f"vfs: the shared folder {old} stays where it is ({e}); a new link is made in {alt}"
+    try:
+        with open(os.path.join(alt, VFS_LINK), "w", encoding="utf-8") as f:
+            json.dump({"link": os.path.join(alt, "PS3_GAME"), "target": target}, f, indent=1)
+    except OSError:
+        pass        # _linked also accepts the link itself
+    return f"vfs: moved the shared folder {old} to this install's own {alt}"
+
+
+def drive_systems(root, dump):
+    """'install, game files D:\\ NTFS' (one entry per drive) for the log and the link error, or "" (fr.file_systems)."""
+    return fr.file_systems([("install", root), ("game files", dump)])
+
+
+def link_help(places, detail, fs="", dump=""):
+    """The player's text for a folder link that could not be made in any of places (vfs folders). The 1392 sentence
+    is Project Helghast's gated wording (KZ3 tools/release/launch.py _link_error_words, same author, MIT): possible
+    causes, never damage as the cause."""
+    where = " or in ".join(places)
+    why = (" WinError 1392: the drive's file system may not support folder junctions, or it may be damaged; the safe "
+           "step is an install folder on an NTFS drive such as C:." if "1392" in detail else
+           " Folder links need a drive whose file system supports them, such as NTFS (FAT32 and exFAT, common on USB drives and SD cards, cannot hold them); the "
+           "safe step is an install folder on an NTFS drive such as C:.")
+    return (f"Project Pyrrhus could not link your game folder into {where}. The game reads your game folder through "
+            f"that link and writes its caches in the install folder, never into your game folder.{why} Your game "
+            f"folder can stay where it is." + (f" Drives: {fs}." if fs else "") + f" (Details: {detail})")
+
+
+LINK_TEST = "link-test"     # <vfs>/link-test(-target): the early link check's own folders
+
+
+def _probe_in(v):
+    t = os.path.join(v, LINK_TEST + "-target")
+    lk = os.path.join(v, LINK_TEST)
+    os.makedirs(t, exist_ok=True)
+    if _is_dir_link(lk) or os.path.isdir(lk):
+        _remove_empty_dir(lk)       # a test link left by a stopped start (never anything with files in it)
+    err = _make_dir_link(t, lk)
+    if not err:
+        _remove_empty_dir(lk)
+    _remove_empty_dir(t)
+    return err
+
+
+def probe_link(root, alt="", fs_of=None, dump=""):
+    """Make and remove a test link in <root>/vfs (else in alt), before a long build, so a drive that cannot hold the
+    game's link is named within seconds instead of after the build. -> player text or "" (one of them works)."""
+    v = vfs_root(root)
+    try:
+        err = _probe_in(v)
+    except OSError as e:
+        err = f"could not write in {v} ({e})"
+    if not err:
+        return ""
+    if alt and os.path.normcase(alt) != os.path.normcase(v):
+        try:
+            err2 = _probe_in(alt)
+        except OSError as e:
+            err2 = f"could not write in {alt} ({e})"
+        if not err2:
+            note(root, f"vfs: link check: no link possible in {v} ({err}); the game's VFS folder will be {alt}")
+            return ""
+        return link_help([v, alt], f"{err}; {alt}: {err2}", (fs_of or drive_systems)(root, dump))
+    return link_help([v], err, (fs_of or drive_systems)(root, dump))
+
+
+def _linked(v, target):
+    """v/PS3_GAME is the recorded link to target."""
+    link = os.path.join(v, "PS3_GAME")
+    rec = load_json(os.path.join(v, VFS_LINK)) or {}
+    return (rec.get("target") == target and os.path.isdir(link)
+            and (_is_dir_link(link) or rec.get("link") == link))
+
+
+def _link_in(v, target):
+    """Make v/PS3_GAME -> target (v made first). -> error text or ""."""
+    link = os.path.join(v, "PS3_GAME")
+    rec = os.path.join(v, VFS_LINK)
+    try:
+        os.makedirs(v, exist_ok=True)
+    except OSError as e:
+        return f"could not write in {v} ({e})"
     if _is_dir_link(link) or (os.path.isdir(link) and (load_json(rec) or {}).get("link") == link):
         if (load_json(rec) or {}).get("target") == target and os.path.isdir(link):
-            return v, ""
+            return ""
         try:
             try:
                 os.unlink(link)
             except OSError:
                 os.rmdir(link)      # a junction on older Pythons; RemoveDirectory removes the link only
         except OSError as e:
-            return v, f"Could not replace the old link {link} ({e})"
-    elif os.path.lexists(link):
-        return v, f"{link} is a real folder, not a link to the game folder; move it away and start again"
+            return f"Could not replace the old link {link} ({e})."
+    elif os.path.lexists(link) and not _remove_empty_dir(link):
+        return f"{link} is a real folder with files in it, not a link to the game folder; move it away and start again."
     err = _make_dir_link(target, link)
     if err:
-        return v, f"Could not link {target} into {v} ({err})"
-    with open(rec, "w", encoding="utf-8") as f:
-        json.dump({"link": link, "target": target}, f, indent=1)
-    return v, ""
+        return f"linking {target}: {err}"
+    try:
+        with open(rec, "w", encoding="utf-8") as f:
+            json.dump({"link": link, "target": target}, f, indent=1)
+    except OSError as e:
+        return f"could not write {rec} ({e})"
+    return ""
+
+
+def _inside(path, folder):
+    a, b = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return a == b or a.startswith(b.rstrip("\\/") + os.sep)
+
+
+def current_vfs(root, dump, alt=""):
+    """The VFS root the game uses now: alt when only alt holds the link (sticky, so caches and trophies stay put)."""
+    target = os.path.join(dump, "PS3_GAME") if dump else ""
+    if alt and target and _linked(alt, target) and not _linked(vfs_root(root), target):
+        return alt
+    return vfs_root(root)
+
+
+def ensure_vfs(root, dump, alt="", fs_of=None):
+    """Make a VFS root with PS3_GAME -> <dump>/PS3_GAME. -> (vfs folder, error text or "").
+
+    The player's dump is read in place and never written: the runtime's writes (psarc-cache, /dev_hdd1 cache, trophies)
+    land in the VFS folder, <root>/vfs, or alt (%LOCALAPPDATA%\\Project Pyrrhus\\vfs) when <root>/vfs cannot hold the
+    link (a drive without junctions; issue #20) and alt can; once alt is used it stays in use. Reading the dump in
+    place without a link is no fallback: ps3recomp maps every mount (/dev_hdd0 without PS3_HDD0_ROOT, /dev_usb*,
+    /host_root, any path with "USRDIR/" in the sys_fs layer) and cellGame's content root under the VFS root, so the
+    game would write into the dump. A real folder already named PS3_GAME is never removed while it holds anything; an
+    empty one (what a failed junction left in launcher 0.1.2 and earlier) is removed and the link made again. A link to
+    another dump is replaced; removing a link leaves its target alone. An install folder inside the dump's PS3_GAME
+    is refused (the link would contain itself and the game would write into the dump)."""
+    v = vfs_root(root)
+    target = os.path.join(dump, "PS3_GAME")
+    if _inside(v, target):
+        return v, (f"The install folder {root} is inside the game's own PS3_GAME folder ({target}); the game would "
+                   "write into your game files. Install Project Pyrrhus in a folder outside PS3_GAME and start again.")
+    other = alt if alt and os.path.normcase(alt) != os.path.normcase(v) else ""
+    if other:
+        moved = migrate_alt(root, dump, other)
+        if moved:
+            note(root, moved)
+    if other and current_vfs(root, dump, other) == other:
+        return other, ""
+    err = _link_in(v, target)
+    if not err:
+        return v, ""
+    if other:
+        err2 = _link_in(other, target)
+        if not err2:
+            note(root, f"vfs: no link possible in {v} ({err}); using {other}")
+            return other, ""
+        return v, link_help([v, other], f"{err}; {other}: {err2}", (fs_of or drive_systems)(root, dump))
+    return v, link_help([v], err, (fs_of or drive_systems)(root, dump))
 
 
 def game_env(root, paths, portable, environ, appdata=None, layout="original", prompts="auto", display=None):
@@ -256,12 +537,15 @@ def game_env(root, paths, portable, environ, appdata=None, layout="original", pr
     cwd = data_dir(root, portable, environ, appdata)
     # KZ2_PAD_LAYOUT: read by the runtime's SetFunctionButton hook (until the hook is in, no effect)
     added = {"KZ2_PAD_LAYOUT": fr.pad_layout(layout)[0],
-             "PS3_VFS_ROOT": vfs_root(root), "PS3_EDAT_CACHE": os.path.join(root, "build", "cache", "edat"),
+             "PS3_VFS_ROOT": current_vfs(root, paths.get("dump", ""), alt_vfs_root(environ, root)), "PS3_EDAT_CACHE": os.path.join(root, "build", "cache", "edat"),
              # Under Proton/Wine, vkd3d-proton writes its pipeline cache (vkd3d-proton.cache) into the working folder
              # unless this names a folder (it must exist; main() makes it). ENHANCEMENT for Linux players: one per-user
              # place. Native Windows has no vkd3d and ignores the variable. Not a stable vkd3d-proton API: if a later
              # Proton drops it, the cache lands in the working folder (also per user) as before.
              "VKD3D_SHADER_CACHE_PATH": os.path.join(cwd, VKD3D_CACHE)}
+    if link_free(root) and paths.get("dump"):   # the dump read in place, every write under <root>/vfs (no link)
+        added["PS3_VFS_ROOT"] = paths["dump"]
+        added["KZ2_CACHE_ROOT"] = vfs_root(root)
     ps = fr.prompt_set(prompts)[0]
     if ps != "auto":   # patch 4011: ps3|ps4|xbox|keyboard win over keybinds.ini [prompts]; auto leaves the variable unset
         added["KZ2_PROMPTS"] = ps
@@ -283,9 +567,11 @@ def game_env(root, paths, portable, environ, appdata=None, layout="original", pr
 def setup_paths(root):
     """The folders the installer wizard resolved (kz2-install.ini [paths]: dump, update, eboot), or {}. Only a pair of
     dump and update counts: the wizard writes both whenever it writes any (kz2.iss WritePaths)."""
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(root, "kz2-install.ini"), encoding="utf-8")
-    g = {k: cp.get("paths", k, fallback="").strip() for k in ("dump", "update", "eboot")}
+    try:
+        cp = ii.read(os.path.join(root, ii.NAME))
+    except ii.IniError:
+        return {}       # read_ini already logged and showed it
+    g = {k: cp.get("paths", k).strip() for k in ("dump", "update", "eboot")}
     return g if g["dump"] and g["update"] else {}
 
 
@@ -385,6 +671,63 @@ def newer_from_result(path, dismissed):
     return None
 
 
+# ------------------------------------------------------------------------------------------------ version.ini
+# The version block in the game's menu: the launcher writes what the game's menu version block will show, so the
+# game itself never connects. Written whole at each start (a fresh small file, not the line writer: the launcher owns
+# every line, and a stale newer= goes with the rest).
+VERSION_INI = "version.ini"
+_PLAIN = re.compile(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+
+
+def _plain(v):
+    """"v0.1.4" or "0.1.4" -> (0, 1, 4); anything else -> None."""
+    m = _PLAIN.fullmatch((v or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def version_info(root, check_updates, result=None):
+    """-> [(key, value)] for version.ini: current always; newer and page only when the player turned the version check
+    on and the last check (logs/version-check.txt) named a release newer than this one. A "No" to the start's question
+    (dismissed) does not hide it: the menu line is passive. page only when it is one of the project's release pages
+    (the rule the start's question follows)."""
+    cur = fr.port_version(root)
+    out = [("current", cur)]
+    if not check_updates:
+        return out
+    try:
+        with open(result or os.path.join(root, "logs", "version-check.txt"), encoding="utf-8") as f:
+            line = f.readline().strip()
+    except (OSError, ValueError):
+        return out
+    kv = dict(p.split("=", 1) for p in line.split()[1:] if "=" in p)
+    latest, mine = _plain(kv.get("latest")), _plain(cur)
+    if not line.startswith("VERSION ") or kv.get("status") != "newer" or not latest or not mine or latest <= mine:
+        return out
+    out.append(("newer", "%d.%d.%d" % latest))
+    if kv.get("url", "").startswith(RELEASES) and kv["url"].isascii():
+        out.append(("page", kv["url"]))
+    return out
+
+
+def write_version_ini(folder, info):
+    """Write <folder>/version.ini from version_info's pairs (temp file + replace: the game never reads half a file).
+    -> "" or the reason it could not be written; never raises."""
+    path = os.path.join(folder, VERSION_INI)
+    tmp = path + ".tmp"
+    text = ("; Written by the Project Pyrrhus launcher at each start for the game's menu; changes here are replaced.\n"
+            "[version]\n" + "".join(f"{k}={v}\n" for k, v in info))
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(tmp, "w", encoding="ascii", newline="\r\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        return ""
+    except (OSError, ValueError) as e:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        return f"could not write {path} ({e})"
+
+
 # "Update this installation" (opt-in twice: the player ticked the version check, then says Yes to the question): the
 # setup and its .sha256 come only from the project's own release downloads, the hash is checked before anything runs,
 # and the setup is started for this folder (it keeps the build, saves and settings; ninja rebuilds what changed).
@@ -458,7 +801,7 @@ CONTROLS_TEXT = ("Pad controls. Original (default) keeps the game's own button l
                  "\n(Currently: {cur}.)")
 
 
-def set_controls(root, value, ini, ui):
+def set_controls(root, value, ini, ui, shown=None):
     """The launcher's Controls choice -> [controls] layout in kz2-install.ini (the game reads it at the next start)."""
     if value == "ask":
         value = "modern" if ui.ask(CONTROLS_TEXT.format(cur=ini["layout"])) else "original"
@@ -466,13 +809,14 @@ def set_controls(root, value, ini, ui):
     if not ok or not value.strip():
         ui.info(f"Unknown layout {value!r}; use original or modern.")
         return 2
-    write_ini(root, "controls", "layout", layout)
+    if not try_write_ini(root, "controls", "layout", layout, ui, shown):
+        return 1
     note(root, f"controls: {layout}")
     ui.info(f"Controls: {layout.capitalize()}. It applies the next time the game starts.")
     return 0
 
 
-def set_prompts(root, value, ini, ui):
+def set_prompts(root, value, ini, ui, shown=None):
     """The launcher's Button prompts choice -> [controls] prompts in kz2-install.ini. No value: the next set in the
     cycle Auto, PS3, PS4/PS5, Xbox, Keyboard (the launcher has message boxes only, no list)."""
     if value == "ask":
@@ -482,14 +826,15 @@ def set_prompts(root, value, ini, ui):
     if not ok or not value.strip():
         ui.info(f"Unknown button prompts {value!r}; use auto, ps3, ps4, xbox or keyboard.")
         return 2
-    write_ini(root, "controls", "prompts", sel)
+    if not try_write_ini(root, "controls", "prompts", sel, ui, shown):
+        return 1
     note(root, f"button prompts: {sel}")
     ui.info(f"Button prompts: {fr.PROMPT_LABELS[sel]}. It applies the next time the game starts. "
             "Run this again to move to the next set.")
     return 0
 
 
-def set_display(root, value, ini, ui):
+def set_display(root, value, ini, ui, shown=None):
     """The launcher's Display choice -> [display] mode in kz2-install.ini. No value: the next mode in the cycle
     Windowed, Borderless, Fullscreen (the launcher has message boxes only, no list)."""
     if value == "ask":
@@ -499,7 +844,8 @@ def set_display(root, value, ini, ui):
     if not ok or not value.strip():
         ui.info(f"Unknown display mode {value!r}; use windowed, borderless or fullscreen.")
         return 2
-    write_ini(root, "display", "mode", sel)
+    if not try_write_ini(root, "display", "mode", sel, ui, shown):
+        return 1
     note(root, f"display: {sel}")
     ui.info(f"Display: {fr.DISPLAY_LABELS[sel]}. It applies the next time the game starts. "
             "Run this again to move to the next mode.")
@@ -606,12 +952,15 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
     environ = dict(os.environ if environ is None else environ)
     today = today or datetime.date.today()
     ini = read_ini(root)
+    shown = set()       # an ini problem is shown once per start
+    if ini["error"] and not a.print:
+        ini_trouble(root, ui, ini["error"], shown)
     if a.controls:
-        return set_controls(root, a.controls, ini, ui)
+        return set_controls(root, a.controls, ini, ui, shown)
     if a.prompts:
-        return set_prompts(root, a.prompts, ini, ui)
+        return set_prompts(root, a.prompts, ini, ui, shown)
     if a.display:
-        return set_display(root, a.display, ini, ui)
+        return set_display(root, a.display, ini, ui, shown)
     if not a.print:
         fr.relocate_saved(root)     # a moved or renamed install folder: saved paths inside it follow (never the old folder)
     action, reason = decide(root)
@@ -660,19 +1009,29 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
             if nv[1].startswith(RELEASES):
                 ui.open_url(nv[1])
         else:
-            write_ini(root, "online", "dismissed", nv[0])
+            try_write_ini(root, "online", "dismissed", nv[0], ui, shown)
     if check_due(ini, today):
         os.makedirs(logs, exist_ok=True)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         start([sys.executable, os.path.join(HERE, "version_check.py"), "--current", fr.port_version(root),
                "--timeout", "8", "--result-file", os.path.join(logs, "version-check.txt"),
                "--log", os.path.join(logs, "version-check.log")], creationflags=flags)
-        write_ini(root, "online", "last_check", today.isoformat())
+        try_write_ini(root, "online", "last_check", today.isoformat(), ui, shown)
 
     if a.repair:
         return repair(root, action, reason, paths, ini, ui, run)
 
     if action != "run":
+        # The game needs a folder link in <root>/vfs; check the drive can hold one now, not after a long build.
+        try:
+            perr = "" if fr.cache_root_supported(root) else \
+                probe_link(root, alt_vfs_root(environ, root), dump=paths.get("dump") or setup_paths(root).get("dump", ""))
+        except OSError as e:
+            perr = f"Could not write in {vfs_root(root)} ({e})."
+        if perr:
+            note(root, f"vfs: link check: {perr}")
+            ui.info(f"{perr}{REPORT}")
+            return 1
         if not ui.ask(f"{reason}.\n\n{QUESTION[action]}"):
             return 0
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -696,10 +1055,18 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         ui.info(f"{up}.{REPORT}")
         return 1
     try:
-        _, err = ensure_vfs(root, paths["dump"])
-        note(root, f"vfs: {err or 'ok'}")
+        if link_free(root):
+            err = drop_link(root)
+            note(root, f"vfs: {err or 'no link (game folder read in place, writes under ' + vfs_root(root) + ')'}")
+        else:
+            v, err = ensure_vfs(root, paths["dump"], alt_vfs_root(environ, root))
+            note(root, f"vfs: {err or 'ok (' + v + ')'}")
+            if not err and v != vfs_root(root) and ini["vfs_alt"] != v:
+                # the uninstaller removes this folder by its record too (kz2.iss RemoveVfsFolders)
+                try_write_ini(root, "vfs", "alt", v, ui, shown)
+            env["PS3_VFS_ROOT"] = added["PS3_VFS_ROOT"] = v
         if err:
-            ui.info(f"{err}.{REPORT}")
+            ui.info(f"{err}{REPORT}")
             return 1
         note(root, "game: " + " ".join(gargv + extra) + f" (cwd {cwd}; the game's log is in build\\logs)")
         fr.place_fonts(root, os.path.dirname(gargv[0]))     # the notice fonts next to kz2.exe (KZ3's error notice)
@@ -716,6 +1083,9 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                 f"and in {cwd}: the build, the link to your game files and the caches live there. Install it in a "
                 f"folder your user can write to (the default is fine).{REPORT}")
         return 1
+    info = version_info(root, ini["check_updates"])
+    verr = write_version_ini(cwd, info)
+    note(root, "version.ini: " + (verr or ", ".join(f"{k} {v}" for k, v in info)))
     rc = run(gargv + extra, cwd=cwd, env=env)
     if crashed(rc):
         # The runtime prints its [CRASH] lines to the session log and shows nothing (VM kit pre-flight: no D3D12
@@ -728,9 +1098,9 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
 
 
 def update_problem(paths):
-    """-> "" when the recorded 1.29 update folder still holds what the game reads from it, else the message (release
-    an earlier change, issue #16: a 1.29 build run without the update's data stops at the main menu with exit code 1 and no
-    message: kz2-r33-noupd reproduced the reported NULL call from 0x003F2984). The same files as firstrun_check U2/U3."""
+    """-> "" when the recorded 1.29 update folder still holds what the game reads from it, else the message (issue
+    #16: a 1.29 build run without the update's data stops at the main menu with exit code 1 and no message: a
+    test run without the update data reproduced the reported NULL call from 0x003F2984). The same files as firstrun_check U2/U3."""
     upd = paths.get("update") or ""
     if not upd:
         return ""
@@ -750,5 +1120,22 @@ def crashed(rc):
     return rc is not None and (rc & 0xFFFFFFFF) >= 0xC0000000
 
 
+def guarded_main(argv=None):
+    """main() for pythonw: an unexpected error is logged with its traceback and shown, never a silent end."""
+    try:
+        return main(argv)
+    except SystemExit:
+        raise
+    except Exception as e:     # noqa: BLE001 (the last line of defence; the details go to launcher.log)
+        import traceback
+        ap = argparse.ArgumentParser(add_help=False)
+        ap.add_argument("--root", default=os.path.dirname(os.path.dirname(HERE)))
+        root = os.path.abspath(ap.parse_known_args(argv)[0].root)
+        note(root, "error: " + " | ".join(traceback.format_exc().strip().splitlines()[-6:]))
+        UI().info(f"Project Pyrrhus stopped on an unexpected error: {type(e).__name__}: {e}\n\nThe details are in "
+                  f"{os.path.join(root, 'logs', 'launcher.log')}.{REPORT}")
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(guarded_main())

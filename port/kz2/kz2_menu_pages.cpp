@@ -1,11 +1,12 @@
 /* Killzone 2 port: "Exit to desktop" and the Keyboard page in the game's own front end (
- * ENHANCEMENT). Plan A of an earlier change (the RE notes "An earlier change" and "An earlier change"):
+ * ENHANCEMENT). Plan A of the static study of the front end's pages (the RE notes, 2026-10-22 and
+ * 2026-10-26: "Exit to desktop" and the controls page; cached page scripts and the Keyboard page generator):
  *
  * 1. Page text. The browser's "file" fetch (1.29 @0x0049EA38; override list, KZ2_PAGE_LOG) first asks every loaded
  *    CachedJspResource for the page through the lookup @0x0049E5C0 and on a miss reads the file; either way the page
  *    TEXT reaches the parser (its <_s> scripts are compiled from that text, keyed by its MD5, so a cached chunk never
- *    shadows edited text: an earlier change). Re-data's plan A edited the lookup's answer, but the first main menu
- *    after boot is read from the file before CachedJspMainMenu.core is loaded (kz2-r47-m2: no lookup call at all), so
+ *    shadows edited text: found by that study). Its plan A edited the lookup's answer, but the first main menu
+ *    after boot is read from the file before CachedJspMainMenu.core is loaded (a test run showed no lookup call at all), so
  *    the edit sits one level up: for
  *      .../kin/menu/mainmenu.jsp, .../kin/menu/campaign/options.jsp, .../kin/menu/online/game/options.jsp
  *    kz2_menu_fetch serves an edited copy (kz2_menu_text.h: the EXIT TO DESKTOP row, the KEYBOARD row of the options
@@ -351,7 +352,7 @@ uint32_t keyboard_page(const std::string& path, bool ingame)
     try {
         const std::vector<std::string>& d = descs_for(code);
         std::string page = kz2mt::keyboard_page(gamma, d, ingame);
-        {   /* KZ2_KB_PAGE_TEST (diagnostic, an earlier change): gamma = the gamma page itself; noscript = without keyboardscript */
+        {   /* KZ2_KB_PAGE_TEST (diagnostic, added with the Keyboard page): gamma = the gamma page itself; noscript = without keyboardscript */
             const char* tm = getenv("KZ2_KB_PAGE_TEST");
             if (tm && !strcmp(tm, "gamma")) page = gamma;
             if (tm && !strcmp(tm, "noscript")) {

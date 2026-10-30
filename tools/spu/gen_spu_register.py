@@ -190,7 +190,7 @@ def main():
         L.append(f"extern void {m['name']}_spu_recomp_register(void);")
         if m["kind"] in ("pm", "elf"):
             L.append(f"extern SPU_ABI void {m['entry_sym']}(spu_context*);")   # patch 1099 (from Project Helghast)
-    L += ["", "/* Spu an earlier change: native gates (re/spu/native_gates.tsv; tools/spu/lift_spu.py puts the checks in the lifted",
+    L += ["", "/* Native gates (re/spu/native_gates.tsv; tools/spu/lift_spu.py puts the checks in the lifted",
           " * functions). NULL = run the lifted body; port/kz2/spu/kz2_native_jobs.c fills the slots of the jobs whose",
           " * KZ2_NATIVE_JOB_<NAME> flag is set. */",
           "int (*g_kz2_native_gate[128])(spu_context*);   /* KZ2_NATIVE_SLOTS (port/kz2/spu/kz2_native_jobs.h) */",

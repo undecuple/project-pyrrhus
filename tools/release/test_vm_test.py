@@ -2,7 +2,7 @@
 """Host test for tools/release/vm_test.py (the Windows VM kit's steps): the parts that do not need Windows, on fake
 trees with no game data: 02-verify (kit hashes, game file presence, dump fingerprint), 10-leftovers (user data versus
 caches, the dump fingerprint), 08-readonly's deny (file creation on the install folder only, removed after, the launch
-still run), the RESULT line and exit codes, a crash turned into a FAIL, a cp1252 console; an earlier change's steps
+still run), the RESULT line and exit codes, a crash turned into a FAIL, a cp1252 console; the first-contact steps
 11-21 and 23 on a fake install (this tools/release, this Python with -I as the embeddable one) with synthetic game
 files (headers, zeros, a sparse archive), the setup stood in by its log lines for 11 and 12, controls that fail, and
 the run order (ORDER, COMMANDS.md, vm_kit.sh).
@@ -111,7 +111,7 @@ def synthetic_game(base):
 
 
 def round30(tmp):
-    """Release an earlier change's steps 11-21 and 23 on a fake install with synthetic game files (22 needs Windows)."""
+    """The first-contact steps 11-21 and 23 on a fake install with synthetic game files (22 needs Windows)."""
     base = os.path.join(tmp, "r30")
     os.makedirs(os.path.join(base, "kit"))
     for n in ("vm_test.py", "iso_fixture.py"):

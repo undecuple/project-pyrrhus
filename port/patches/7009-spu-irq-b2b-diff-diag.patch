@@ -1,0 +1,72 @@
+KZ2 patch 7009: KZ2_IRQ_B2B_DIFF=1, a count of what patch 7008's back-to-back restore changed.
+
+7008 completes a pending iret before the next SPU interrupt is taken; before it, spu_irq_regs_save stored the
+handler's registers as the interrupted code's and the second iret handed them to the job. Whether that corrupted
+live state depends on which registers differ between the two files at that point. With KZ2_IRQ_B2B_DIFF set,
+spu_take_interrupt compares ctx->irq_gpr (the interrupted code's file, about to be restored) with ctx->gpr (the
+handler's live file) register by register, before 7008's restore, and prints "[irq-b2b-diff]" lines: the first 8
+differing events (register bitmasks, r0 and r1 before -> after), then a summary at 1024, 2048, 4096, ... events and
+every 2^20: events, events with any difference, per-register counts, the srr0s of differing events (16 slots).
+Off by default (PS3_GETENV_ONCE: one lookup). Diagnostic only; no behaviour change.
+
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -566,6 +566,50 @@
+     fflush(stderr);
+ }
+ 
++/* KZ2 patch 7009: KZ2_IRQ_B2B_DIFF=1 counts, at 7008's pending-iret restore, the registers in which
++ * the saved (interrupted) file differs from the live (handler's) file: the registers the code before 7008 handed
++ * to the job wrong. Off by default; one line per 2^k events from 1024 on and every 1M: events, events with any
++ * difference, per-register counts (registers that never differed are left out) and the srr0s of differing events. */
++static void kz2_b2b_diff(const spu_context* ctx)
++{
++    static volatile long s_ev, s_dev, s_reg[128];
++    static volatile uint32_t s_pc[16]; static volatile long s_pcn[16];
++    int any = 0; uint32_t lo = 0, mid = 0, hi = 0, top = 0;   /* bitmask r0-31, r32-63, r64-95, r96-127 */
++    for (int i = 0; i < 128; i++)
++        if (memcmp(&ctx->irq_gpr[i], &ctx->gpr[i], sizeof ctx->gpr[i])) {
++            __atomic_add_fetch(&s_reg[i], 1, __ATOMIC_RELAXED); any = 1;
++            uint32_t b = 1u << (i & 31);
++            if (i < 32) lo |= b; else if (i < 64) mid |= b; else if (i < 96) hi |= b; else top |= b;
++        }
++    const long n = __atomic_add_fetch(&s_ev, 1, __ATOMIC_RELAXED);
++    if (any) {
++        const long d = __atomic_add_fetch(&s_dev, 1, __ATOMIC_RELAXED);
++        const uint32_t pc = (ctx->irq_resume_pc & SPU_LS_MASK) | 0x80000000u;   /* bit 31: slot in use */
++        for (int k = 0; k < 16; k++) {
++            uint32_t cur = __atomic_load_n(&s_pc[k], __ATOMIC_RELAXED);
++            if (!cur) { uint32_t z = 0;
++                if (__atomic_compare_exchange_n(&s_pc[k], &z, pc, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) cur = pc;
++                else cur = z; }
++            if (cur == pc) { __atomic_add_fetch(&s_pcn[k], 1, __ATOMIC_RELAXED); break; }
++        }
++        if (d <= 8)
++            fprintf(stderr, "[irq-b2b-diff] #%ld img=%d srr0=0x%05X regs r0-31=%08X r32-63=%08X r64-95=%08X r96-127=%08X "
++                    "r0 %08X->%08X r1 %08X->%08X\n", d, ctx->image_id, ctx->irq_resume_pc & SPU_LS_MASK,
++                    lo, mid, hi, top, spu_preferred_u32(&ctx->irq_gpr[0]), spu_preferred_u32(&ctx->gpr[0]),
++                    spu_preferred_u32(&ctx->irq_gpr[1]), spu_preferred_u32(&ctx->gpr[1]));
++    }
++    if ((n >= 1024 && !(n & (n - 1))) || !(n & 0xFFFFF)) {
++        char buf[2048]; int o = 0;
++        for (int i = 0; i < 128 && o < (int)sizeof buf - 32; i++)
++            if (s_reg[i]) o += snprintf(buf + o, sizeof buf - o, " r%d=%ld", i, s_reg[i]);
++        fprintf(stderr, "[irq-b2b-diff] summary events=%ld differing=%ld regs:%s\n", n, s_dev, buf);
++        o = 0; buf[0] = 0;
++        for (int k = 0; k < 16 && s_pc[k]; k++)
++            o += snprintf(buf + o, sizeof buf - o, " 0x%05X=%ld", s_pc[k] & SPU_LS_MASK, s_pcn[k]);
++        fprintf(stderr, "[irq-b2b-diff] summary srr0 of differing events:%s\n", buf);
++    }
++}
++
+ void (SPU_ABI *spu_take_interrupt(spu_context* ctx,
+                           void (SPU_ABI *tf)(spu_context*)))(spu_context*)
+ {
+@@ -588,6 +632,7 @@
+         if (n <= 8 || (n & 4095) == 0)
+             fprintf(stderr, "[irq] back-to-back: pending iret restored before the next take (n=%ld img=%d srr0=0x%05X)\n",
+                     n, ctx->image_id, ctx->irq_resume_pc & SPU_LS_MASK);
++        if (PS3_GETENV_ONCE("KZ2_IRQ_B2B_DIFF")) kz2_b2b_diff(ctx);   /* patch 7009 */
+         extern int spu_irq_regs_maybe_restore(spu_context*);
+         spu_irq_regs_maybe_restore(ctx);
+     }

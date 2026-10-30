@@ -3,7 +3,8 @@
  * A native gate is a check at the top of a lifted SPU function (inserted by tools/spu/lift_spu.py from
  * re/spu/native_gates.tsv): when g_kz2_native_gate[slot] is set and returns 1, the native code has done the whole
  * subroutine (its local-store writes and the registers its caller reads) and the lifted function returns to its link
- * as the SPU's `bi $r0` would. Returning 0 runs the lifted body (unexpected arguments, a debug gate armed, the job's
+ * as the SPU's `bi $r0` would; a "continue at" gate (native_gates.tsv column 7, the entry's `cont`) covers
+ * code that is not a subroutine and hops on to that address instead. Returning 0 runs the lifted body (unexpected arguments, a debug gate armed, the job's
  * constant tables not what the native code was written for). Which gates are filled: native_flags.h. A gate is
  * filled when one of its entry's flags is 1 (`env` lists KZ2_NATIVE_JOB_<NAME> alternatives separated by '|'), or
  * KZ2_NATIVE_JOB_POST=1 for a Gfx.Post gate, or by default: every Gfx.Post flag is on by default
@@ -46,6 +47,10 @@ typedef struct {
     const char* kind;      /* kernel family (the diff harness picks its synthetic inputs by it) */
     uint32_t pool_lo, pool_hi;   /* constant pool the kernel was written for: LS [lo, hi), 8-byte aligned */
     uint64_t pool_hash;          /* FNV-1a 64 over its little-endian 8-byte words (tools/spu/post_kernels.py) */
+    uint32_t cont;         /* 0: a subroutine (the gate returns to r0); else a "continue at" gate: the
+                            * native code did the code from addr up to this LS address, and the gate line hops there
+                            * (native_gates.tsv column 7 names the same address; tools/spu/test_native_vjclear.sh
+                            * checks the lifted gate line) */
 } kz2_native_entry;
 
 extern const kz2_native_entry kz2_native_dof[];
@@ -60,6 +65,8 @@ extern const kz2_native_entry kz2_native_postjobs[];   /* native_postjobs.c */
 extern const unsigned kz2_native_postjobs_n;
 extern const kz2_native_entry kz2_native_edgeanim[];   /* native_edgeanim.c */
 extern const unsigned kz2_native_edgeanim_n;
+extern const kz2_native_entry kz2_native_particles[];  /* native_particles.c */
+extern const unsigned kz2_native_particles_n;
 
 /* native_common.c: the entry of a slot (NULL: none), and one gated call (count, debug gate, pool, kernel; counts a
  * fallback when it returns 0). */

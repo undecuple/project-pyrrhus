@@ -16,7 +16,9 @@ Command line (the wizard; results are `key=value` lines in --out, UTF-8 with BOM
   --detect [--rpcs3 DIR]                     root=, source= (first RPCS3 folder found; hint first)
   --resolve --rpcs3 DIR [--allow-outside]    status=ok|problems|approval|not_found, dump=, update=, eboot=,
                                              outside= (one per line), problem=code|text, help=text, saves=N
-  --eboot-kind PATH                          status=encrypted|ok, help= (the wizard's manual EBOOT page; no RPCS3 folder)
+  --eboot-kind PATH [--sha256]               status=encrypted|ok, help= (the wizard's manual EBOOT page; no RPCS3 folder);
+                                             --sha256 adds size= and sha256= for a file that is not encrypted
+  Any unexpected error writes status=error (the wizard polls for --out instead of waiting for the process, issue #22).
   --save-dryrun --rpcs3 DIR --data-dir D     line= text for the question, exists=0|1, status=
   --save-copy --rpcs3 DIR --data-dir D [--overwrite]   status=copied|exists|failed, line=
 """
@@ -266,17 +268,51 @@ def save_log_line(results):
 
 # ------------------------------------------------------------------------------------------------ command line
 def _write(path, pairs):
-    with open(path, "w", encoding="utf-8-sig", newline="\r\n") as f:
+    """The result file, whole or not at all: written beside it and renamed over it as the last act, because the
+    wizard no longer waits for this process to end (issue #22) but polls for the file and reads it once it is there."""
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8-sig", newline="\r\n") as f:
         for k, v in pairs:
             f.write(f"{k}={str(v).replace(chr(13), ' ').replace(chr(10), ' ')}\n")
+    os.replace(tmp, path)
+
+
+def _out_arg(argv):
+    """The --out value from a raw argument list ('' when absent), for the error result."""
+    for i, x in enumerate(argv):
+        if x == "--out" and i + 1 < len(argv):
+            return argv[i + 1]
+        if x.startswith("--out="):
+            return x[6:]
+    return ""
 
 
 def main(argv=None):
+    """_main, but an unexpected error still leaves a result (status=error) for the wizard, which waits for the file
+    with a time limit rather than for this process (issue #22): it says "did not run" at once instead of at the limit."""
+    try:
+        return _main(argv)
+    except Exception as e:  # noqa: BLE001  (the traceback still goes to stderr)
+        out = _out_arg(sys.argv[1:] if argv is None else list(argv))
+        if out:
+            try:
+                _write(out, [("status", "error"), ("error", type(e).__name__)])
+            except OSError:
+                pass
+        import traceback
+        traceback.print_exc()
+        return 3
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     g = ap.add_mutually_exclusive_group(required=True)
     for n in ("detect", "resolve", "save-dryrun", "save-copy"):
         g.add_argument("--" + n, action="store_true")
     g.add_argument("--eboot-kind", metavar="PATH")
+    ap.add_argument("--sha256", action="store_true",
+                    help="with --eboot-kind: also size= and sha256= of a decrypted EBOOT (the wizard asks only when "
+                         "the size is a known EBOOT's; one read, off the wizard's window thread)")
     ap.add_argument("--rpcs3", default="")
     ap.add_argument("--out", required=True)
     ap.add_argument("--allow-outside", action="store_true")
@@ -287,6 +323,10 @@ def main(argv=None):
     if a.eboot_kind is not None:   # the wizard's manual EBOOT page (same test as the text UI)
         enc = encrypted_eboot(a.eboot_kind)
         pairs = [("status", "encrypted" if enc else "ok")] + ([("help", HELP_ENCRYPTED)] if enc else [])
+        if a.sha256 and not enc:
+            h = loc.sha256(a.eboot_kind)
+            if h.get("ok"):
+                pairs += [("size", h["size"]), ("sha256", h["sha256"])]
         _write(a.out, pairs)
         return 1 if enc else 0
     if a.detect:

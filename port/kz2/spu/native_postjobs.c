@@ -487,19 +487,19 @@ static int ilr_4E20(spu_context* ctx)
  * image's little-endian 8-byte words of the range its lqr loads read). */
 const kz2_native_entry kz2_native_postjobs[] = {
     { 66, "KZ2_NATIVE_JOB_MODULATE", "Gfx.Post.Modulate", "job_00d56000", 0x4A20u, modulate_4A20, "modulate",
-      MOD_POOL_LO, MOD_POOL_HI, 0x25ec740d5bc650abull },
+      MOD_POOL_LO, MOD_POOL_HI, 0x25ec740d5bc650abull, 0 },
     { 67, "KZ2_NATIVE_JOB_BLOOMINT", "Gfx.Post.BloomIntegrate", "job_00d62e80", 0x4A20u, bloomint_4A20, "bloomint",
-      BINT_POOL_LO, BINT_POOL_HI, 0x830171fc48d67ddeull },
+      BINT_POOL_LO, BINT_POOL_HI, 0x830171fc48d67ddeull, 0 },
     { 69, "KZ2_NATIVE_JOB_VIGNETTE", "Gfx.Post.Vignette", "job_00d68f00", 0x4A20u, vignette_4A20, "vignette",
-      VIG_POOL_LO, VIG_POOL_HI, 0x8918a562784103d2ull },
+      VIG_POOL_LO, VIG_POOL_HI, 0x8918a562784103d2ull, 0 },
     { 70, "KZ2_NATIVE_JOB_DEPTHTOFUZZY", "Gfx.Post.DepthToFuzzy", "job_00d6fe00", 0x4A20u, depthfuzzy_4A20,
-      "depthfuzzy", 0, 0, 0 },
+      "depthfuzzy", 0, 0, 0, 0 },
     { 71, "KZ2_NATIVE_JOB_DOWNSAMPLE", "Gfx.Post.Downsample", "job_00d50280", 0x5620u, down4_5620, "down4",
-      DS4_POOL_LO, DS4_POOL_HI, 0x016b0478d0c8dc7dull },
+      DS4_POOL_LO, DS4_POOL_HI, 0x016b0478d0c8dc7dull, 0 },
     { 72, "KZ2_NATIVE_JOB_DOWNSAMPLE", "Gfx.Post.Downsample", "job_00d50280", 0x56D0u, down8_56D0, "down8",
-      DS8_POOL_LO, DS8_POOL_HI, 0x5f3e096af9447e1aull },
+      DS8_POOL_LO, DS8_POOL_HI, 0x5f3e096af9447e1aull, 0 },
     { 68, "KZ2_NATIVE_JOB_ILR", "Gfx.Post.ILR", "job_00d65780", 0x4E20u, ilr_4E20, "ilr", ILR_POOL_LO, ILR_POOL_HI,
-      0x29c7831a6b89a765ull },
-    { 73, "KZ2_NATIVE_JOB_ZERO", "Gfx.Post.Zero", "job_00d4c580", 0x5698u, zero_memset_5698, "zero", 0, 0, 0 },
+      0x29c7831a6b89a765ull, 0 },
+    { 73, "KZ2_NATIVE_JOB_ZERO", "Gfx.Post.Zero", "job_00d4c580", 0x5698u, zero_memset_5698, "zero", 0, 0, 0, 0 },
 };
 const unsigned kz2_native_postjobs_n = sizeof kz2_native_postjobs / sizeof kz2_native_postjobs[0];

@@ -63,3 +63,8 @@ nix develop .#win --command python3 tools/release/test_cmake_path_chars.py
 nix develop --command tools/sandbox.sh -- tools/release/test_log_redact.sh
 nix develop .#re --command tools/sandbox.sh -- tools/spu/test_native_edgeanim.sh
 nix develop --command python3 tools/release/test_relocate.py
+nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjclear.sh
+nix develop .#re --command python3 tools/release/test_install_ini.py
+nix develop .#re --command python3 tools/release/test_rpcs3_locate.py
+nix develop .#re --command python3 tools/release/test_version_ini.py
+nix develop .#re --command python3 tools/release/test_install_responsive.py

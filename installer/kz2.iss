@@ -44,9 +44,11 @@
   #error AppVersion {#AppVersion} is not the payload's VERSION.txt {#PayloadVersion}
 #endif
 #ifndef FontDir
-  ; Rajdhani Bold for the headings: fetched and hash-checked against installer/art/art.json
-  ; by tools/release/installer_art.py --fetch-fonts (SIL OFL 1.1); never committed
-  #define FontDir "..\work\release\fonts"
+  ; Rajdhani Bold for the headings: the payload's own copy (assemble_payload.py FONTS, from installer_art.py
+  ; --fetch-fonts, hash-checked against installer/art/art.json; SIL OFL 1.1; never committed). The same source path as
+  ; the payload line's file, so the compiler stores it once, where the first [Files] line puts it (issue #22:
+  ; a separate copy sat after the whole payload in the solid stream, and InitializeSetup unpacked everything before it)
+  #define FontDir Payload + "\fonts"
 #endif
 #if VER < EncodeVer(6,6,0)
   #error Inno Setup 6.6.0 or later is needed (WizardStyle dark; tested with 6.7.3)
@@ -189,8 +191,14 @@ Name: "displayfullscreen"; Description: "Fullscreen"; GroupDescription: "{cm:Grp
 Name: "checkupdates"; Description: "&Check for new versions: one anonymous request to GitHub, at most once a day"; GroupDescription: "{cm:GrpOnline}"; Flags: unchecked
 
 [Files]
+; Headings font: a temporary file for setup's own process only (AddFontResourceEx FR_PRIVATE in InitializeSetup),
+; never installed on the system. First in the list, so InitializeSetup unpacks only this file before the wizard shows
+; (with solid compression an extract unpacks every file before it in the stream; the font was last, after the whole
+; payload). The payload itself carries fonts\Rajdhani-Medium.ttf and -Bold.ttf (KZ3's error notice fonts; firstrun.py
+; and the launcher copy them next to build\kz2.exe) and licenses\Rajdhani-OFL.txt (assemble_payload.py FONTS).
+Source: "{#FontDir}\Rajdhani-Bold.ttf"; Flags: dontcopy
 ; For "Check now" on the welcome page, before anything is installed: the bundled Python and version_check.py,
-; extracted to {tmp} on the click only. Listed first so they sit at the start of the solid stream (ASSUMPTION: entry
+; extracted to {tmp} on the click only. Listed next so they sit at the start of the solid stream (ASSUMPTION: entry
 ; order = stream order, so the click does not unpack the whole payload); Inno stores the duplicate data once.
 Source: "{#Payload}\toolchain\python\*"; DestDir: "{tmp}\vcheck\python"; Flags: dontcopy recursesubdirs
 Source: "{#Payload}\kz2-setup\release\version_check.py"; DestDir: "{tmp}\vcheck"; Flags: dontcopy
@@ -206,13 +214,8 @@ Source: "{#Payload}\*"; DestDir: "{app}"; Excludes: "run.cmd"; Flags: ignorevers
 Source: "{#Payload}\ps3recomp\.kz2-patchset"; DestDir: "{app}\ps3recomp"; Flags: ignoreversion
 ; Apps & features icon (UninstallDisplayIcon) and the Start menu's Uninstall entry
 Source: "art\kz2-uninstall.ico"; DestDir: "{app}"; Flags: ignoreversion
-; Headings font: a temporary file for setup's own process only (AddFontResourceEx FR_PRIVATE in InitializeSetup),
-; never installed on the system. The payload itself carries fonts\Rajdhani-Medium.ttf and -Bold.ttf (KZ3's error
-; notice fonts; firstrun.py and the launcher copy them next to build\kz2.exe) and licenses\Rajdhani-OFL.txt
-; (assemble_payload.py FONTS, hash-checked against art\art.json like this one)
 ; The payload also carries runtime\SDL3.dll (zlib; licenses\SDL3-LICENSE.txt): installed by the payload line above with
 ; the rest of {app}, copied next to build\kz2.exe by firstrun.py and the launcher (place_sdl3); the game loads it for native pads.
-Source: "{#FontDir}\Rajdhani-Bold.ttf"; Flags: dontcopy
 
 [InstallDelete]
 ; Install over an earlier version: the payload's own folders are replaced whole, so a file a newer version
@@ -274,13 +277,23 @@ Type: filesandordirs; Name: "{app}\logs"
 ; The game's writable VFS root (launch.py ensure_vfs): vfs\PS3_GAME is a directory junction to the
 ; player's dump and is removed as a link by CurUninstallStepChanged(usUninstall) before this list runs; nothing
 ; here recurses into vfs itself, so the dump is never reached even when the junction could not be removed.
+; RemoveVfsFolders (CurUninstallStepChanged) deletes each VFS folder whole once its links are gone; these lines are
+; what is left to do when a link could not be removed.
 Type: filesandordirs; Name: "{app}\vfs\psarc-cache"
 Type: filesandordirs; Name: "{app}\vfs\cache"
 Type: files; Name: "{app}\vfs\link.json"
 Type: dirifempty; Name: "{app}\vfs"
+; The second VFS place (launch.py alt_vfs_root, issue #20), one per install: {localappdata}\{#AppDirName}\vfs-<key>
+; (InstallKey), used when the install folder's drive cannot hold the link; removed by RemoveVfsFolders like the one
+; above. Only the folder itself goes once the last install's place is gone.
+Type: dirifempty; Name: "{localappdata}\{#AppDirName}"
 ; Portable layout: the runtime's caches sit in the install folder (saves: AskDeleteSaves).
 Type: filesandordirs; Name: "{app}\cache"
 Type: files; Name: "{app}\kz2-install.ini"
+; version.ini (launch.py write_version_ini): what the game's menu shows, rewritten at each start; not
+; a setting, so it goes either way (in {app} when portable, else in the data folder below).
+Type: files; Name: "{app}\version.ini"
+Type: files; Name: "{app}\version.ini.tmp"
 Type: files; Name: "{app}\kz2-uninstall.ico"
 ; What the launcher and firstrun.py write into {app} that Inno did not install (adapted from Project Helghast, KZ3
 ; Project Helghast v0.1.1: an uninstall left the folder behind): the first-run log the launcher names (launch.FIRSTRUN_LOG) with its
@@ -309,6 +322,8 @@ Type: filesandordirs; Name: "{app}\scratch"
 ; vkd3d-proton's own cache when the launcher's VKD3D_SHADER_CACHE_PATH is not used (an older launcher, a direct start):
 ; vkd3d-proton.cache, or vkd3d-proton.kz2.exe.cache in newer Proton builds (seen with Proton GE in a Wine test)
 Type: files; Name: "{userappdata}\{#AppDirName}\vkd3d-proton*.cache*"
+Type: files; Name: "{userappdata}\{#AppDirName}\version.ini"
+Type: files; Name: "{userappdata}\{#AppDirName}\version.ini.tmp"
 Type: files; Name: "{app}\vkd3d-proton*.cache*"
 Type: dirifempty; Name: "{userappdata}\{#AppDirName}"
 
@@ -334,6 +349,12 @@ var
   BuildReason, BuildFailStep: String;
   { the EBOOT page's version test, once per picked file (hashing 16 MB on every page change would stall the wizard) }
   EbootTested, EbootTestResult, EbootTableText: String;
+  { RunHelper (issue #22): one marquee page for every helper wait, a counter for unique result files, the vcheck
+    Python extracted once, and the EBOOT hash the --eboot-kind run gave (so the version test does not hash again) }
+  HelperPage: TOutputMarqueeProgressWizardPage;
+  HelperSeq: Integer;
+  VcheckReady: Boolean;
+  EbootHashPath, EbootHashValue: String;
 
 function LogName: String;
 begin
@@ -388,24 +409,87 @@ begin
   if ReleaseURL <> '' then OpenURL(ReleaseURL);
 end;
 
+{ The bundled Python and the helper scripts in the temp folder's vcheck, for the pages before anything is installed: extracted
+  once per run (they sit at the start of the solid stream, [Files]) }
+function VcheckExtracted: Boolean;
+begin
+  if not VcheckReady then
+    try
+      ExtractTemporaryFiles('{tmp}\vcheck\*');
+      VcheckReady := True;
+    except
+      Log('vcheck: could not extract the bundled Python (' + GetExceptionMessage + ')');
+    end;
+  Result := VcheckReady;
+end;
+
+function TickCount: Cardinal;
+  external 'GetTickCount@kernel32.dll stdcall';
+
+{ A result file no earlier run writes to: a helper given up on at its time limit may still finish later, and must not
+  answer the next question }
+function HelperResFile(Base: String): String;
+begin
+  HelperSeq := HelperSeq + 1;
+  Result := ExpandConstant('{tmp}\') + Base + '-' + IntToStr(HelperSeq) + '.txt';
+end;
+
+{ Runs one bundled Python helper hidden without stopping the window (issue #22: Exec with ewWaitUntilTerminated
+  stops the wizard's message loop, so on a slow or sleeping drive Windows marks the window "Not responding" until the
+  helper ends). Started with ewNoWait like RunBuild; the wait polls for ResFile in 100 ms slices on a marquee page
+  whose Animate processes the window's messages. Every helper writes ResFile whole with one rename as its last act
+  (rpcs3_import._write, version_check --result-file), and writes status=error on an unexpected error, so the file's
+  presence is the end. Name and the time taken go to the install log, never the arguments (they hold the player's
+  paths). True = ResFile is there; False = it could not start or gave no result within TimeoutSec. }
+function RunHelper(Name, Exe, Params, WorkDir, ResFile, Caption: String; TimeoutSec: Integer): Boolean;
+var
+  RC: Integer;
+  T0, Ms: Cardinal;
+begin
+  Result := False;
+  DeleteFile(ResFile);
+  T0 := TickCount;
+  if not Exec(Exe, Params, WorkDir, SW_HIDE, ewNoWait, RC) then begin
+    Log('helper ' + Name + ': could not start (' + SysErrorMessage(RC) + ')');
+    Exit;
+  end;
+  if HelperPage = nil then
+    HelperPage := CreateOutputMarqueeProgressPage('Please wait', 'This takes a moment, longer on a slow drive.');
+  HelperPage.SetText(Caption, '');
+  HelperPage.Show;
+  try
+    repeat
+      HelperPage.Animate;
+      Sleep(100);
+      Ms := TickCount - T0;
+    until FileExists(ResFile) or (Ms >= TimeoutSec * 1000);
+    Result := FileExists(ResFile);
+  finally
+    HelperPage.Hide;
+  end;
+  if Result then
+    Log(Format('helper %s: done in %d.%d s', [Name, Ms div 1000, (Ms mod 1000) div 100]))
+  else
+    Log(Format('helper %s: no result after %d s (given up; the wizard goes on as if it had not run)', [Name, TimeoutSec]));
+end;
+
 procedure CheckNowClick(Sender: TObject);
 var
   Py, Script, Res, L, Status: String;
   Lines: TArrayOfString;
-  RC: Integer;
 begin
   { One click = consent for one check. Nothing is sent but the request (version_check.py docstring). }
   CheckBtn.Enabled := False;
   CheckLbl.Caption := 'Asking GitHub...';
   WizardForm.Refresh;
-  ExtractTemporaryFiles('{tmp}\vcheck\*');
   { ASSUMPTION: ExtractTemporaryFiles keeps the entries' relative folders under the temp folder (Inno 6 help); untested. }
   Py := ExpandConstant('{tmp}\vcheck\python\python.exe');
   Script := ExpandConstant('{tmp}\vcheck\version_check.py');
-  Res := ExpandConstant('{tmp}\vcheck.result');
+  Res := HelperResFile('vcheck');
   L := '';
-  if Exec(Py, '"' + Script + '" --current "{#AppVersion}" --timeout 8 --result-file "' + Res + '"', '',
-          SW_HIDE, ewWaitUntilTerminated, RC) then
+  { 8 s per network wait in the helper; 30 s in all covers a name lookup that hangs (urllib's timeout does not) }
+  if VcheckExtracted and RunHelper('version check', Py, '"' + Script + '" --current "{#AppVersion}" --timeout 8 ' +
+       '--result-file "' + Res + '"', '', Res, 'Asking GitHub for the latest version...', 30) then
     if LoadStringsFromFile(Res, Lines) and (GetArrayLength(Lines) >= 1) then L := Lines[0];
   { The one log line (merged into the install log next to setup.exe); offline is not an error dialog. }
   if L = '' then L := 'VERSION status=error (the check could not run)';
@@ -929,6 +1013,21 @@ end;
 
 { The known version of the EBOOT at Path by its size, the way firstrun_check E1 tells it (EBOOT_ELF_SIZES, the same
   sizes as the table); How says whether the SHA-256 matches the table's too (H1). '' = not a known EBOOT. }
+{ The EBOOT's SHA-256: the one the EBOOT page's helper run gave (rpcs3_import --eboot-kind --sha256, off the window
+  thread, issue #22); else hashed here (a silent /EBOOT=, or the helper did not run: 16 MB, about a second at most) }
+function EbootSha256(Path: String): String;
+begin
+  if (EbootHashPath <> '') and (CompareText(Path, EbootHashPath) = 0) and (EbootHashValue <> '') then begin
+    Result := EbootHashValue;
+    Exit;
+  end;
+  try
+    Result := GetSHA256OfFile(Path);
+  except
+    Result := '';
+  end;
+end;
+
 function EbootVersionOf(Path: String; var How: String): String;
 var
   T, R, K, S, V, Want, Got: String;
@@ -952,11 +1051,7 @@ begin
     if (JsonNumber(S, 'size') <> '') and (StrToInt64Def(JsonNumber(S, 'size'), -1) = Size) then begin
       Result := V;
       Want := Lowercase(JsonString(S, 'sha256'));
-      try
-        Got := Lowercase(GetSHA256OfFile(Path));
-      except
-        Got := '';
-      end;
+      Got := Lowercase(EbootSha256(Path));
       if (Want <> '') and (Got = Want) then How := 'size and SHA-256' else How := 'size only, SHA-256 ' + Got;
       Exit;
     end;
@@ -1227,25 +1322,30 @@ end;
 function EbootEncrypted(Path: String; var Msg: String): Boolean;
 var
   Lines: TArrayOfString;
-  ResFile: String;
-  RC, I: Integer;
+  ResFile, Params: String;
+  I: Integer;
+  Size: Int64;
 begin
   Result := False;
   Msg := '';
-  ResFile := ExpandConstant('{tmp}\eboot-kind.txt');
-  DeleteFile(ResFile);
-  try
-    ExtractTemporaryFiles('{tmp}\vcheck\*');
-  except
-    Exit;
-  end;
-  if not Exec(ExpandConstant('{tmp}\vcheck\python\python.exe'),
-      '"' + ExpandConstant('{tmp}\vcheck\rpcs3_import.py') + '" --eboot-kind "' + Path + '" --out "' + ResFile + '"',
-      '', SW_HIDE, ewWaitUntilTerminated, RC) then Exit;
+  if not VcheckExtracted then Exit;
+  ResFile := HelperResFile('eboot-kind');
+  Params := '"' + ExpandConstant('{tmp}\vcheck\rpcs3_import.py') + '" --eboot-kind "' + Path + '" --out "' + ResFile + '"';
+  { The version test (EbootVersionOf) needs the SHA-256 only for a known EBOOT size: the same run reads it }
+  if FileSize64(Path, Size) and (EbootTable <> '') and (Pos('"size": ' + IntToStr(Size), EbootTable) > 0) then
+    Params := Params + ' --sha256';
+  if not RunHelper('EBOOT check', ExpandConstant('{tmp}\vcheck\python\python.exe'), Params, '', ResFile,
+      'Checking your EBOOT.elf...', 120) then Exit;
   if not LoadStringsFromFile(ResFile, Lines) then Exit;
+  EbootHashPath := '';
+  EbootHashValue := '';
   for I := 0 to GetArrayLength(Lines) - 1 do begin
     if Pos('status=encrypted', Lines[I]) = 1 then Result := True;
     if Pos('help=', Lines[I]) = 1 then Msg := Copy(Lines[I], 6, MaxInt);
+    if Pos('sha256=', Lines[I]) = 1 then begin
+      EbootHashPath := Path;
+      EbootHashValue := Copy(Lines[I], 8, MaxInt);
+    end;
   end;
   if Result and (Msg = '') then Msg := 'This EBOOT is still encrypted.';
 end;
@@ -1387,16 +1487,35 @@ end;
 
 { ---- "Use my RPCS3 install": all logic is in tools/release/rpcs3_import.py (host-tested, test_rpcs3_import.py);
   this only asks the questions and passes the answers. It reads results from key=value files. }
-function Rpcs3Import(Args, OutFile: String): Boolean;
+function Rpcs3Import(Args: String; var OutFile: String): Boolean;
 var
-  RC: Integer;
+  Cmd, Caption: String;
+  Lines: TArrayOfString;
+  Limit: Integer;
 begin
-  DeleteFile(OutFile);
+  { A fresh result file per run (HelperResFile): a run given up on at its limit cannot answer a later one }
+  OutFile := HelperResFile('rpcs3');
   { The arguments hold the player's paths: the Inno log gets the command name only }
-  Log('rpcs3_import: ' + Copy(Args, 1, Pos(' ', Args + ' ') - 1));
-  Result := Exec(ExpandConstant('{app}\toolchain\python\python.exe'),
+  Cmd := Copy(Args, 1, Pos(' ', Args + ' ') - 1);
+  Log('rpcs3_import: ' + Cmd);
+  { --detect looks in the usual places and at the root of every fixed drive (a sleeping disk spins up first);
+    --save-copy copies a save. Generous limits: the window answers all along (RunHelper). }
+  Limit := 300;
+  Caption := 'Looking for Killzone 2 in your RPCS3...';
+  if Cmd = '--detect' then Caption := 'Looking for your RPCS3...'
+  else if Cmd = '--save-copy' then begin
+    Caption := 'Copying your RPCS3 save...';
+    Limit := 900;
+  end else if Cmd = '--save-dryrun' then Caption := 'Looking at your RPCS3 save...';
+  Result := RunHelper('rpcs3_import ' + Cmd, ExpandConstant('{app}\toolchain\python\python.exe'),
     '"' + ExpandConstant('{app}\kz2-setup\release\rpcs3_import.py') + '" ' + Args + ' --out "' + OutFile + '"',
-    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, RC) and FileExists(OutFile);
+    ExpandConstant('{app}'), OutFile, Caption, Limit);
+  { status=error: the helper stopped on an unexpected error (rpcs3_import.main); the callers' "did not run" path }
+  if Result and LoadStringsFromFile(OutFile, Lines) and (GetArrayLength(Lines) >= 1) and
+     (Pos('status=error', Lines[0]) > 0) then begin
+    Log('rpcs3_import ' + Cmd + ': stopped on an unexpected error');
+    Result := False;
+  end;
 end;
 
 { All values of Key in a key=value file, one per line joined by NewLine; '' when none }
@@ -1713,13 +1832,71 @@ begin
   end;
 end;
 
+{ launch.py install_key: six hex digits of SHA-256 over the install folder's path as UTF-16LE, after "/" -> "\",
+  A-Z lower-cased (Lowercase is ASCII only, as the Python side) and trailing "\" removed (not after a drive letter).
+  The launcher computes the same from its own folder, so the uninstaller finds this install's second VFS place
+  without reading anything the launcher wrote. }
+function InstallKey(App: String): String;
+var
+  S: String;
+begin
+  S := Lowercase(App);
+  StringChangeEx(S, '/', '\', True);
+  while (Length(S) > 3) and (S[Length(S)] = '\') do
+    S := Copy(S, 1, Length(S) - 1);
+  Result := Copy(Lowercase(GetSHA256OfUnicodeString(S)), 1, 6);
+end;
+
+{ Delete one VFS folder the launcher and the game made: first its links (PS3_GAME, the link check's link-test) with
+  RemoveDir, which on a junction removes the link only and never its target; then, only when no link is left, the
+  folder whole (the game's caches, /dev_hdd0 and /dev_hdd1 files, trophies, link.json). When a link is still there
+  (it could not be removed, or PS3_GAME is a real folder with the player's files), nothing is deleted by recursion:
+  the [UninstallDelete] lines remove only the named files beside it. }
+procedure RemoveVfsFolder(Dir: String);
+begin
+  if (Dir = '') or not DirExists(Dir) then Exit;
+  RemoveDir(Dir + '\PS3_GAME');
+  RemoveDir(Dir + '\link-test');
+  RemoveDir(Dir + '\link-test-target');
+  if DirExists(Dir + '\PS3_GAME') or DirExists(Dir + '\link-test') then begin
+    Log('VFS folder kept (a link or a folder with files is still in it): ' + Dir);
+    Exit;
+  end;
+  DelTree(Dir, True, True, True);
+end;
+
+{ True for a folder named vfs-<something> directly in our own LOCALAPPDATA folder: the only kind of path a [vfs] alt
+  record is acted on (a hand-edited record cannot point the uninstaller anywhere else). }
+function IsOwnAltVfs(Dir: String): Boolean;
+begin
+  Result := (Dir <> '') and
+            (CompareText(RemoveBackslashUnlessRoot(ExtractFileDir(Dir)), ExpandConstant('{localappdata}\{#AppDirName}')) = 0) and
+            (CompareText(Copy(ExtractFileName(Dir), 1, 4), 'vfs-') = 0) and (Length(ExtractFileName(Dir)) > 4);
+end;
+
+{ Every VFS folder this install made: vfs in the install folder, its own second place (computed, and as the launcher
+  recorded it in kz2-install.ini [vfs] alt, in case the two spell the folder differently), and the one shared second
+  place of an earlier unreleased launcher (vfs in our LOCALAPPDATA folder; no launcher uses it any more, the launcher
+  only moves it into its own place). }
+procedure RemoveVfsFolders;
+var
+  Rec: String;
+begin
+  RemoveVfsFolder(ExpandConstant('{app}\vfs'));
+  RemoveVfsFolder(ExpandConstant('{localappdata}\{#AppDirName}\vfs-') + InstallKey(ExpandConstant('{app}')));
+  Rec := GetIniString('vfs', 'alt', '', ExpandConstant('{app}\kz2-install.ini'));
+  if IsOwnAltVfs(Rec) then
+    RemoveVfsFolder(Rec);
+  RemoveVfsFolder(ExpandConstant('{localappdata}\{#AppDirName}\vfs'));
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   { Ask before removing saves, default keep (silent uninstall keeps them). A normal install keeps saves in
     APPDATA, a portable one in the install folder (launch.py data_dir: gamedata). }
   if CurUninstallStep = usUninstall then begin
-    { The junction to the dump: RemoveDirectory on a junction removes the link only, never the target. }
-    RemoveDir(ExpandConstant('{app}\vfs\PS3_GAME'));
+    { The links to the dump go first (RemoveDirectory on a junction removes the link only, never the target). }
+    RemoveVfsFolders;
     Exit;
   end;
   if CurUninstallStep <> usPostUninstall then Exit;

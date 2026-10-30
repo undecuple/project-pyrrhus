@@ -37,7 +37,7 @@ REQ = """# Requirements
 
 ## Hardware to play
 
-| | Minimum | Recommended | Basis |
+| | Minimum (estimate) | Recommended (estimate) | Basis |
 |---|---|---|---|
 | **CPU** | 6 cores | 8 cores | threads |
 

@@ -665,6 +665,27 @@ def main():
         except fr.StepFailed as e:
             check("Not enough free disk space" in str(e) and "GiB" in str(e)
                   and not os.path.exists(os.path.join(dest16, "PS3_GAME")), f"16 low disk space refused before writing: {e}")
+        # FAT32 install drive: a file of 4 GiB or more (the disc's data_ps3.psarc) is refused before any byte is
+        # copied (the limit is lowered so the small test ISO stands in for the 6.5 GiB archive)
+        real_limit = fr.FAT_LIMIT
+        fr.FAT_LIMIT = 1000
+        try:
+            for fsn, refused in (("FAT32", True), ("exFAT", False), ("NTFS", False), ("", False)):
+                shutil.rmtree(dest16, ignore_errors=True)
+                c16 = fr.Ctx(root=os.path.join(t16, "root"), build=os.path.join(t16, "b"), iso=iso16, dump=iso16)
+                try:
+                    fr.iso_extract(c16, say=said.append, fs_of=lambda p, fsn=fsn: ("E:\\", fsn))
+                    check(not refused, f"16 {fsn or 'unknown file system'}: the copy goes ahead")
+                except fr.StepFailed as e:
+                    check(refused and "E:\\ uses FAT32" in str(e) and "4 GiB" in str(e) and "data_ps3.psarc" in str(e)
+                          and "NTFS" in str(e) and not os.path.exists(os.path.join(dest16, "PS3_GAME")),
+                          f"16 {fsn}: refused before writing, in plain words: {e}")
+        finally:
+            fr.FAT_LIMIT = real_limit
+        E = collections.namedtuple("E", "size")
+        check(fr.fat_refusal("x", [("PS3_GAME/USRDIR/data_ps3.psarc", E(4 * fr.GIB - 1))], lambda p: ("E:\\", "FAT32")) == ""
+              and fr.fat_refusal("x", [("a", E(4 * fr.GIB))], lambda p: ("E:\\", "FAT32")) != "",
+              "16 FAT32's limit is 4 GiB minus one byte")
         enc = bytearray(2048 * 40)
         enc[0:4] = b"\0\0\0\2"
         enc[8:24] = b"\0\0\0\0\0\0\0\x0f\0\0\0\x10\0\0\0\x1e"

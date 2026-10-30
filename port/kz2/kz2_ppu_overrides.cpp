@@ -1085,7 +1085,7 @@ void func_000822F0(ppu_context* ctx) { kz2_pad_query(ctx, func_000822F0__lifted,
  *   image 35).
  * KZ2_NATIVE_ZLIB_STATS=1: one line every 1000 elements or 5 s of elements, and at exit: native / fallback (by reason) /
  *   lifted counts, mode-0 count, bytes in and out, host time.
- * KZ2_NATIVE_ZLIB_RECORD=N[:STRIDE[:SKIP]] (diagnostic, the round's diff test; an earlier change added STRIDE and SKIP: every
+ * KZ2_NATIVE_ZLIB_RECORD=N[:STRIDE[:SKIP]] (diagnostic, the native zlib job's diff test; STRIDE and SKIP came later: every
  *   STRIDE-th element after the first SKIP, so a capture can span a whole level load): with the lifted path, N elements are also
  *   inflated on the host before the push; after the task completes (the counter drops) the window the SPU wrote is
  *   compared byte for byte ([kz2-zlib] rec lines), and each record (element, input, SPU window) is written to

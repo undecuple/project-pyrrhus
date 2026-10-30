@@ -13,7 +13,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 |---|---|
 | ✅ | Boots to the front end and its menus (main menu, Mission Select, Exit to desktop); the intro movie plays |
 | ✅ | **First level** (Corinth River) loads, runs and is drawn lit and in proportion; the briefing cutscene plays with its subtitles |
-| 🔧 | **Performance:** 23.3 frames/s in one scripted run of the first level; the goal is the PS3's steady 30. Shaders compiled on first use pause the first minute of an area; a pipeline list cut those pauses in scripted runs and is to ship with the port |
+| 🔧 | **Performance:** in scripted runs, 23.3 frames/s over one 330 s run of the first level (2026-10-22) and a median of 32.6 frames/s in short turn-and-walk windows with the native post-processing (2026-10-29); the goal is the PS3's steady 30. Shaders compiled on first use pause the first minute of an area; a pipeline list cut those pauses in scripted runs, and the installer ships a starting list |
 | 🔧 | **In-level play by hand:** the first level was played with a DualShock 4 (2026-10-22, slow then); scripted runs reached the first fight, cover and checkpoint saves |
 | ✅ | **Update 1.29 as the base version:** the build targets it and reads its added archive and patch files; the patches' effect on the game data is not checked yet |
 | 🔧 | **Saves:** checkpoint saves are written in the first level; loading one back is not checked yet |
@@ -48,7 +48,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 - 📋 Trophies, shown by the port only
 - 📋 **More renderers:** once the game works end to end on Direct3D 12, review Vulkan and OpenGL beside it
-- 📋 **Going native, after the game is playable:** replace the run-time layers step by step with native code where it pays off
+- 📋 **Going native, after the game is playable:** replace the run-time layers step by step with native code where it pays off ([what is native today](HOW-IT-WORKS.md#what-kind-of-port-is-this))
 
 ## Not planned
 

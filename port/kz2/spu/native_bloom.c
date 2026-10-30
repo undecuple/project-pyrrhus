@@ -222,8 +222,8 @@ static int grain_4AD8(spu_context* ctx)   /* @0x4AD8 */
 
 const kz2_native_entry kz2_native_bloom[] = {
     { 64, "KZ2_NATIVE_JOB_BLOOM", "Gfx.Post.BloomCapture", "job_00d5fc00", 0x4AD8u, bloom_4AD8, "bloom",
-      BLOOM_POOL_LO, BLOOM_POOL_HI, 0x6d7488bfe30322eaull },
+      BLOOM_POOL_LO, BLOOM_POOL_HI, 0x6d7488bfe30322eaull, 0 },
     { 65, "KZ2_NATIVE_JOB_BLOOM", "Gfx.Post.GrainWeight", "job_00d4df80", 0x4AD8u, grain_4AD8, "grain",
-      GRAIN_POOL_LO, GRAIN_POOL_HI, 0xe1241d82e32ec75aull },
+      GRAIN_POOL_LO, GRAIN_POOL_HI, 0xe1241d82e32ec75aull, 0 },
 };
 const unsigned kz2_native_bloom_n = sizeof kz2_native_bloom / sizeof kz2_native_bloom[0];

@@ -93,7 +93,7 @@ message(STATUS "Lifted sources:  ${RECOMP_SOURCE_COUNT} file(s)")
 #     ffmpeg/include). Without the headers the decoders stay callback-only
 #     (black pictures, silent AC3), so configure stops unless
 #     KZ2_ALLOW_NO_FFMPEG=ON says that is meant (developer builds only).
-#     Release an earlier change, issue #16: v0.1.2's first-run build passed no
+#     Issue #16: v0.1.2's first-run build passed no
 #     headers, only warned, and every player's kz2.exe ignored the DLLs.
 set(PS3RECOMP_AT3_SHARED ON CACHE BOOL "at3_standalone as its own DLL" FORCE)
 # BEGIN ffmpeg-headers (tools/release/test_ffmpeg_cmake.py configures this block on its own)
@@ -229,8 +229,8 @@ add_executable(${PROJECT_NAME}
     kz2_prompts.cpp     # prompt glyph source for patches 2091-2093: keys, label fonts
     kz2_menu_pages.cpp  # EXIT TO DESKTOP and the Keyboard page in the game's menus
     kz2_session_log.c   # KZ2_CONSOLE, logs/kz2-<date>-<time>.log, the EBOOT beside the exe (kz2_session_log.h)
-    kz2_edge_zlib.c     # an earlier change (6039): the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)
-    kz2_edge_guest.c    # a guest write standing in for the task's DMA put
+    kz2_edge_zlib.c     # patch 6039: the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)
+    kz2_edge_guest.c    # patch 6039: a guest write standing in for the task's DMA put
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}
@@ -294,8 +294,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ps3recomp_runtime
 )
 
-# An earlier change (6039): the host decoder of the Edge zlib job. zlib (static, zlib licence) when the toolchain has it
-# (the .#win shell needs pkgsCross.mingwW64.zlib: requested from the maintainer, flake.nix is protected); until then
+# Patch 6039 (native zlib): the host decoder of the Edge zlib job. zlib (static, zlib licence) when the toolchain has it
+# (the .#win shell needs pkgsCross.mingwW64.zlib: not yet in that shell); until then
 # stb_image's decoder, already in the runtime (libs/codec/cellPngDec.c). Both are complete raw-deflate decoders.
 set(ZLIB_USE_STATIC_LIBS ON)
 find_package(ZLIB QUIET)

@@ -89,6 +89,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# the bundled embeddable Python (python3XX._pth) never puts the script's folder on sys.path; install_ini and the
+# other helpers sit beside this file
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 DEFAULT_LOG_NAME = "Project-Pyrrhus-setup.log"
 MARKER_DIR = ".firstrun"
 KEEP_LOG_COPIES = 5                      # the install's logs\ keeps the last five
@@ -434,7 +438,7 @@ FFMPEG_INCLUDE_DEV = (("work", "ffmpeg-win", "include"), ("work", "ffmpeg-header
 def ffmpeg_include(root):
     """FFmpeg's headers for the run-time FFmpeg loader (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): the payload's
     <root>/ffmpeg/include, else a source tree's work/ffmpeg-win/include or work/ffmpeg-headers; "" when none holds
-    libavcodec/avcodec.h. Release an earlier change (issue #16): v0.1.2 passed nothing, so every player's kz2.exe was built
+    libavcodec/avcodec.h. Issue #16: v0.1.2 passed nothing, so every player's kz2.exe was built
     without movie pictures and AC-3 sound although the DLLs were installed beside it."""
     for rel in (FFMPEG_INCLUDE,) + FFMPEG_INCLUDE_DEV:
         d = os.path.join(root, *rel)
@@ -595,7 +599,28 @@ def iso_dest(c):
     return os.path.join(c.root, "game", "disc")
 
 
-def iso_extract(c, say=print, progress=None, free=None):
+FAT_LIMIT = 4 * GIB - 1     # the largest file FAT32 (and FAT16/FAT12) can hold
+FAT_NAMES = ("FAT32", "FAT", "FAT16", "FAT12")
+
+
+def fat_refusal(dest, todo, fs_of=None):
+    """-> the player's message when a file to copy out of the ISO is too big for dest's file system (FAT32: 4 GiB),
+    else "". Checked before the first byte is copied, so a FAT32 install drive is named at once instead of after
+    gigabytes of copying (the disc's data_ps3.psarc alone is about 6.5 GiB). An unknown file system is not refused."""
+    big = [(r, e) for r, e in todo if e.size > FAT_LIMIT]
+    if not big:
+        return ""
+    vol, fs = (fs_of or volume_fs)(dest)
+    if (fs or "").upper() not in FAT_NAMES:
+        return ""
+    rel, e = max(big, key=lambda t: t[1].size)
+    return (f"The drive {vol or 'of ' + dest} uses {fs}, which cannot hold a file of 4 GiB or more, and the game file "
+            f"{ISO_NAMES.get(rel.lower(), rel).split('/')[-1]} in the ISO is {e.size / GIB:.1f} GiB, so the game files cannot be copied out of the "
+            "ISO into the install folder. Install Project Pyrrhus into a folder on an NTFS drive (such as C:) and "
+            "run the setup again. Your ISO can stay where it is")
+
+
+def iso_extract(c, say=print, progress=None, free=None, fs_of=None):
     """Copy PS3_DISC.SFB and every file under PS3_GAME out of the decrypted ISO c.iso into iso_dest(c), then point
     c.dump there. Files already there with the size the ISO says are kept (a half copy resumes; a copy is written as
     <name>.part and renamed). -> the SHA-256 of data_ps3.psarc when it was copied in this run (hashed on the way),
@@ -625,6 +650,9 @@ def iso_extract(c, say=print, progress=None, free=None):
             need = sum(e.size for _, e in todo)
             if need:
                 os.makedirs(dest, exist_ok=True)
+                fat = fat_refusal(dest, todo, fs_of)
+                if fat:
+                    raise StepFailed(fat)
                 avail = (free or shutil.disk_usage)(dest).free
                 if avail < need + ISO_MARGIN:
                     raise StepFailed(
@@ -764,8 +792,19 @@ def place_decoders(root, build, obj=None):
 
 def cmd_stamp(c):
     """Fail the last step, with a message in the log, when the build left no at3_standalone.dll (firstrun_check B1) or
-    kz2.exe lacks the FFmpeg loader (B2, an earlier change: issue #16)."""
+    kz2.exe lacks the FFmpeg loader (B2, since issue #16)."""
     return [[*c.py, c.tool("release", "firstrun_check.py"), "--build-dir", c.b("obj")]]
+
+
+def cache_root_supported(root):
+    """The payload's runtime reads KZ2_CACHE_ROOT (port/kz2/kz2_cache_root.h names it): the dump is the VFS root, read
+    in place, and every write goes to the cache root, so no folder link is needed. From Project Helghast (KZ3
+    tools/release/firstrun.py cache_root_supported, kz3_ini.h; same author, MIT)."""
+    try:
+        with open(os.path.join(root, "port", "kz2", "kz2_cache_root.h"), encoding="utf-8", errors="replace") as f:
+            return "KZ2_CACHE_ROOT" in f.read()
+    except OSError:
+        return False
 
 
 def after_stamp(c):
@@ -777,6 +816,7 @@ def after_stamp(c):
     place_sdl3(c.root, c.build)
     record_sources(c)
     stamp = {"inputs": c.fingerprint(("lift", "runtime")), "parts": c.parts(), "version": port_version(c.root),
+             "cache_root": cache_root_supported(c.root),
              "eboot_stat": eboot_stat(c.eboot), "facts": c.facts, "jobs": c.jobs,
              "toolchain": c.toolchain or "cross", "built": datetime.datetime.now().isoformat(timespec="seconds")}
     pf = os.path.join(c.ps3recomp, ".kz2-patchset")
@@ -801,6 +841,41 @@ STEPS = [   # weights (ASSUMPTION): from the developer build on Linux (-j4: lift
 
 
 # ----------------------------------------------------------------------------------------------------- helpers
+def volume_fs(path, k32=None):
+    """(volume root, file system name) of the drive holding path, e.g. ("D:\\", "NTFS"), from GetVolumePathNameW and
+    GetVolumeInformationW's file system name; ("", "") when unknown (not Windows, or the call failed); (root, "") when
+    only the name is missing. Never raises: Linux logs nothing, Proton logs what Wine reports. k32: a stand-in for
+    kernel32 (host test)."""
+    try:
+        import ctypes
+        if k32 is None:
+            if os.name != "nt":
+                return "", ""
+            k32 = ctypes.windll.kernel32
+        vol = ctypes.create_unicode_buffer(300)
+        if not k32.GetVolumePathNameW(os.path.abspath(path), vol, 300):
+            return "", ""
+        fs = ctypes.create_unicode_buffer(64)
+        if not k32.GetVolumeInformationW(vol.value, None, 0, None, None, None, fs, 64):
+            return vol.value, ""
+        return vol.value, fs.value
+    except Exception:   # noqa: BLE001 - a log line must never stop the build or the launcher
+        return "", ""
+
+
+def file_systems(paths, k32=None):
+    """"install, game files D:\\ NTFS; update E:\\ exFAT": the file system of each drive holding one of the labelled
+    paths, one entry per drive, or "" when nothing is known (issue #20: the next report answers the question itself)."""
+    drives = {}
+    for label, p in paths:
+        if not p:
+            continue
+        vol, fs = volume_fs(p, k32)
+        if vol:
+            drives.setdefault(vol.lower(), [vol, fs, []])[2].append(label)
+    return "; ".join(f"{', '.join(labels)} {vol} {fs or '(file system unknown)'}" for vol, fs, labels in drives.values())
+
+
 def available_ram():
     """Available RAM in bytes, or None. /proc/meminfo on Linux, GlobalMemoryStatusEx on Windows."""
     try:
@@ -839,25 +914,68 @@ def jobs_for(avail, clang=False, cores=None):
     return max(1, min(8, int((avail - 8 * GIB) / (1.5 * GIB))))
 
 
-def redactor(rpcs3_roots=()):
-    """Replace the user's home folder in log text with %USERPROFILE% (both slash styles, any case on Windows), and the
-    RPCS3 folder the player chose (rpcs3_import) with <RPCS3>; the longer prefix wins. The escaped form with doubled
-    backslashes (a path's repr(), a list of paths, json.dumps) is replaced too, so an exception or a child tool's JSON
-    cannot keep the user name (reported by @feanor-noldorin, issue #9)."""
+# Any Windows user folder, also in CMake's object-path form (C_/Users/name/...), the doubled-backslash form and the
+# URL-encoded form (%3A, %5C, %2F): the user name becomes <user>, so a game folder in another account's folder or a
+# mangled build path keeps no name. From Project Helghast's launcher (tools/release/firstrun.py _USERS_RX, same
+# author, MIT), reported by @feanor-noldorin (issue #9).
+_SEP = r"(?:\\{1,2}|/|%5C|%2F)"
+_USERS_RX = re.compile(r"(\b[A-Za-z](?::|_|%3A)" + _SEP + r"Users" + _SEP + r")(?!%USERPROFILE%)"
+                       r"((?:(?!%5C|%2F)[^\\/\r\n\"'])+)", re.IGNORECASE)
+_SHELL_LABELS = {"windows-documents": "<Documents>", "windows-desktop": "<Desktop>", "windows-downloads": "<Downloads>"}
+
+
+def moved_shell_folders(homes=(), winreg=None):
+    """[(folder, label)] for Documents, Desktop and Downloads when Windows keeps them outside the home folder (moved to
+    another drive, e.g. D:\\Jane Doe\\Documents): the home folder's redaction does not cover them, and such a path
+    can carry the user's name. [] off Windows or on any registry error (rpcs3_locate._shell_folders)."""
+    try:
+        import rpcs3_locate
+        found = rpcs3_locate._shell_folders(winreg)
+    except Exception:   # noqa: BLE001 - redaction must never stop a log line
+        return []
+    def inside(p, h):    # noqa: E306
+        p, h = p.replace("/", "\\").rstrip("\\").lower(), h.replace("/", "\\").rstrip("\\").lower()
+        return p == h or p.startswith(h + "\\")
+    return [(p, _SHELL_LABELS[src]) for p, src in found
+            if src in _SHELL_LABELS and len(p) > 3 and not any(inside(p, h) for h in homes if h)]
+
+
+def redactor(rpcs3_roots=(), shell=None):
+    """Replace the user's home folder in log text with %USERPROFILE% (both slash styles, any case on Windows), the
+    RPCS3 folder the player chose (rpcs3_import) with <RPCS3>, and a Documents, Desktop or Downloads folder Windows
+    keeps outside the home folder with <Documents>, <Desktop>, <Downloads> (moved_shell_folders; shell: a stand-in
+    list for the host test); the longer prefix wins. Each is also replaced in its escaped form with doubled
+    backslashes (a path's repr(), a list of paths, json.dumps; reported by @feanor-noldorin, issue #9), its
+    URL-encoded forms and CMake's mangled object-path form (C_/Users/name: ':' and ' ' become '_'); then any other
+    Windows user folder's name becomes <user> (_USERS_RX). The extra forms and _USERS_RX follow Project Helghast's
+    launcher (tools/release/firstrun.py redactor, same author, MIT)."""
+    import urllib.parse
     homes = {h for h in (os.environ.get("USERPROFILE"), os.path.expanduser("~")) if h and len(h) > 3}
-    subs = [(h, "%USERPROFILE%") for h in homes] + [(r, "<RPCS3>") for r in rpcs3_roots if r and len(r) > 3]
+    if shell is None:
+        shell = moved_shell_folders(tuple(homes))
+    subs = ([(h, "%USERPROFILE%") for h in homes] + [(r, "<RPCS3>") for r in rpcs3_roots if r and len(r) > 3]
+            + [(p, lab) for p, lab in shell if p and len(p) > 3])
     pats = {}
     for h, label in sorted(subs, key=lambda t: -len(t[0])):
         h = h.rstrip("\\/")
         back = h.replace("/", "\\")
-        for v in {h, h.replace("\\", "/"), back, back.replace("\\", "\\\\")}:
+        fwd = h.replace("\\", "/")
+        mangled = h.replace(":", "_").replace(" ", "_").replace("\\", "/")
+        for v in (h, fwd, back, back.replace("\\", "\\\\"), mangled,
+                  urllib.parse.quote(fwd, safe="/:"), urllib.parse.quote(fwd, safe=""),
+                  urllib.parse.quote(back, safe=":"), urllib.parse.quote(back, safe="")):
             pats.setdefault(v.lower() if os.name == "nt" else v, (re.escape(v), label))
-    if not pats:
-        return lambda s: s
-    rx = re.compile("|".join(f"(?P<g{i}>{p})" for i, (p, _) in enumerate(pats.values())),
-                    re.IGNORECASE if os.name == "nt" else 0)
+    rx = None
+    if pats:
+        rx = re.compile("|".join(f"(?P<g{i}>{p})" for i, (p, _) in enumerate(pats.values())),
+                        re.IGNORECASE if os.name == "nt" else 0)
     labels = [lab for _, lab in pats.values()]
-    return lambda s: rx.sub(lambda m: labels[int(m.lastgroup[1:])], s)
+
+    def red(s):
+        if rx is not None:
+            s = rx.sub(lambda m: labels[int(m.lastgroup[1:])], s)
+        return _USERS_RX.sub(lambda m: m.group(1) + "<user>", s)
+    return red
 
 
 def writable(d):
@@ -1018,7 +1136,6 @@ def relocate_saved(root, build=None):
     that pointed inside the old folder (the extracted ISO's game/disc, a dump or update kept beside the game) are
     rebased onto this one in build/paths.json and kz2-install.ini [paths]; the record is rewritten. Paths elsewhere
     stay. Never creates the old folder. -> notes for the log (empty when nothing moved)."""
-    import configparser
     build = build or os.path.join(root, "build")
     notes, old = [], _old_root_of(root, build)
     if old and not _same(old, root):
@@ -1037,21 +1154,15 @@ def relocate_saved(root, build=None):
         except (OSError, ValueError, AttributeError):
             pass
         ini = os.path.join(root, "kz2-install.ini")
-        cp = configparser.ConfigParser()
-        cp.read(ini, encoding="utf-8")
-        if cp.has_section("paths"):
-            ch = False
-            for k in ("dump", "update", "eboot"):
-                v = cp.get("paths", k, fallback="")
-                if v and rebase(v) != v:
-                    cp.set("paths", k, rebase(v))
-                    ch = True
+        try:
+            import install_ini
+            cp = install_ini.read(ini)
+            ch = {("paths", k): rebase(cp.get("paths", k)) for k in ("dump", "update", "eboot")
+                  if cp.get("paths", k) and rebase(cp.get("paths", k)) != cp.get("paths", k)}
             if ch:
-                try:
-                    with open(ini, "w", encoding="utf-8") as f:
-                        cp.write(f)
-                except OSError:
-                    pass
+                install_ini.set_values(ini, ch)
+        except install_ini.IniError:
+            pass
         notes.append("# the install folder moved: saved paths inside it follow; the compiler's build files are made again")
     if not old or old != root:
         try:
@@ -1334,7 +1445,9 @@ def header(ctx, log_path, fallback):
             f"# firstrun.py, Python {platform.python_version()}, {platform.platform()}",
             f"# cores {os.cpu_count()}, available RAM {ram / GIB:.1f} GiB" if ram else f"# cores {os.cpu_count()}",
             f"# free disk {du.free / GIB:.1f} GiB on the build drive, jobs {ctx.jobs}",
-            f"# root {ctx.root}", f"# build {ctx.build}",
+            f"# root {ctx.root}", f"# build {ctx.build}"] + \
+        ([f"# file systems: {fsl}"] if (fsl := file_systems([("install", ctx.root), ("game files", ctx.dump),
+                                                              ("update", ctx.update)])) else []) + [
             f"# toolchain {ctx.toolchain or 'port/cmake/mingw-w64.cmake (cross)'}, cmake {ctx.cmake}, "
             f"ninja {ctx.ninja or '(PATH)'}, python {ctx.python}",
             f"# dump {ctx.dump}" + (f" (decrypted ISO; its files are copied to {iso_dest(ctx)})"
@@ -1527,35 +1640,36 @@ def display_mode(value):
 
 def write_install_ini(root, portable, check_updates, layout="original", prompts=None, display=None):
     """kz2-install.ini, the same keys the Inno script writes ([install] portable, [online] check_updates,
-    [controls] layout = original | modern; the game's own pad controls are the default)."""
-    import configparser
-    cp = configparser.ConfigParser()
-    p = os.path.join(root, "kz2-install.ini")
-    cp.read(p, encoding="utf-8")
-    for sec in ("install", "online", "controls"):
-        if not cp.has_section(sec):
-            cp.add_section(sec)
-    cp.set("install", "portable", "1" if portable else "0")
-    cp.set("online", "check_updates", "1" if check_updates else "0")
-    cp.set("controls", "layout", pad_layout(layout)[0])
-    if prompts is not None or not cp.has_option("controls", "prompts"):
-        cp.set("controls", "prompts", prompt_set(prompts)[0])
-    if display is not None or not cp.has_option("display", "mode"):
-        if not cp.has_section("display"):
-            cp.add_section("display")
-        cp.set("display", "mode", display_mode(display)[0])
-    with open(p, "w", encoding="utf-8") as f:
-        cp.write(f)
+    [controls] layout = original | modern; the game's own pad controls are the default). Every other line (the
+    player's comments and keys) stays (install_ini). Raises install_ini.IniError."""
+    import install_ini
+    p = os.path.join(root, install_ini.NAME)
+    cp = install_ini.read(p)
+    up = {("install", "portable"): "1" if portable else "0", ("online", "check_updates"): "1" if check_updates else "0",
+          ("controls", "layout"): pad_layout(layout)[0]}
+    if prompts is not None or not cp.has("controls", "prompts"):
+        up[("controls", "prompts")] = prompt_set(prompts)[0]
+    if display is not None or not cp.has("display", "mode"):
+        up[("display", "mode")] = display_mode(display)[0]
+    install_ini.set_values(p, up)
     return p
+
+
+def _ini(root):
+    """kz2-install.ini as an install_ini.Ini; an unreadable file is empty (the console run asks instead)."""
+    import install_ini
+    try:
+        return install_ini.read(os.path.join(root, install_ini.NAME))
+    except install_ini.IniError as e:
+        print(f"# {e}; the saved answers are not used")
+        return install_ini.Ini()
 
 
 def ini_paths(root):
     """kz2-install.ini [paths] (dump, update, eboot, wrong), written by the wizard (kz2.iss WritePaths) or by
     record_paths after a failed check; {} without a dump and an update."""
-    import configparser
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(root, "kz2-install.ini"), encoding="utf-8")
-    g = {k: cp.get("paths", k, fallback="").strip() for k in ("dump", "update", "eboot", "wrong")}
+    cp = _ini(root)
+    g = {k: cp.get("paths", k).strip() for k in ("dump", "update", "eboot", "wrong")}
     return g if g["dump"] and g["update"] else {}
 
 
@@ -1563,27 +1677,18 @@ def record_paths(root, dump, update, eboot, wrong=()):
     """After a failed check the player quit: the answers go to kz2-install.ini [paths] (the folders-once keys the
     wizard writes) with `wrong` = the inputs the FAIL lines were about, so the next start (the launcher's
     --check-first, or the zip's run.cmd) checks them first and asks again only for those."""
-    import configparser
-    cp = configparser.ConfigParser()
-    p = os.path.join(root, "kz2-install.ini")
-    cp.read(p, encoding="utf-8")
-    if not cp.has_section("paths"):
-        cp.add_section("paths")
-    for k, v in (("dump", dump), ("update", update), ("eboot", eboot), ("wrong", ",".join(sorted(wrong)))):
-        cp.set("paths", k, v or "")
+    import install_ini
     try:
-        with open(p, "w", encoding="utf-8") as f:
-            cp.write(f)
-    except OSError:
-        pass
+        install_ini.set_values(os.path.join(root, install_ini.NAME),
+                               {("paths", k): v or "" for k, v in (("dump", dump), ("update", update), ("eboot", eboot),
+                                                                   ("wrong", ",".join(sorted(wrong))))})
+    except install_ini.IniError as e:
+        print(f"# {e}; the answers are not saved for the next start")
 
 
 def answered(root):
     """True when kz2-install.ini already holds the wizard's (or an earlier console run's) answers to the later questions."""
-    import configparser
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(root, "kz2-install.ini"), encoding="utf-8")
-    return cp.has_option("controls", "layout")
+    return _ini(root).has("controls", "layout")
 
 
 def _check_files(dump, update, eboot, target="1.29"):
@@ -1810,7 +1915,12 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
     dsel, dok = display_mode(dm)
     if not dok:
         say(f"  unknown {dm!r}; using borderless (the launcher can change it later)")
-    write_install_ini(root, a.portable, online, "modern" if modern else "original", sel, dsel)
+    import install_ini
+    try:
+        write_install_ini(root, a.portable, online, "modern" if modern else "original", sel, dsel)
+    except install_ini.IniError as e:
+        say(f"  The answers could not be saved: {e}. Close any program that has the file open, make sure it is "
+            "not read-only, and start again.")
     say("Saves and settings stay in this folder (portable)." if a.portable else "")
     return yes("Start the build now? (20-90 minutes)", True)
 

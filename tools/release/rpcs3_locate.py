@@ -145,40 +145,79 @@ def _wine_home():
 
 
 # The official Windows build is a portable zip, unpacked wherever the player likes. Beside the two installer places,
-# an "RPCS3" folder is looked for in Documents, Desktop and Downloads and at the root of each fixed drive. Only those
-# exact folders are checked (no listing or walking), and only one with rpcs3.exe, vfs.yml or games.yml is kept.
+# a set of usual places is looked at (_portable_bases): Documents, Desktop and Downloads (where Windows has them, from
+# the registry: moved to another drive, OneDrive-redirected or localised, and the defaults under USERPROFILE), Games
+# and Emulators in the home folder and the home folder itself, Program Files and Public, and each fixed drive's root
+# with its Games, Emulators, Emulator and PS3 folders. In each: the folder itself, its "RPCS3" child, and its direct
+# children whose name contains "rpcs3" (an unzipped "rpcs3-v0.0.34-...-win64"). Never recursive, at most
+# _PORTABLE_MAX children per place, and only a folder that looks like RPCS3 (is_rpcs3; the place itself only with a
+# portable layout) is kept. The wider list is from Project Helghast's launcher (tools/release/rpcs3_locate.py
+# _portable_bases, same author, MIT), after a portable RPCS3 was found only through a hint (pyrrhus issue #9).
 _USER_FOLDERS = (("Personal", "Documents", "windows-documents"),
                  ("Desktop", "Desktop", "windows-desktop"),
                  ("{374DE290-123F-4565-9164-39C4925E467B}", "Downloads", "windows-downloads"))
-_MUST_LOOK_LIKE_RPCS3 = {"windows-documents", "windows-desktop", "windows-downloads", "windows-drive-root"}
+_MUST_LOOK_LIKE_RPCS3 = {"windows-documents", "windows-desktop", "windows-downloads", "windows-drive-root",
+                         "windows-home", "windows-programs"}
+_PORTABLE_MAX = 40          # children examined per place, so a huge Downloads folder cannot stall the wizard
 
 
-def _user_folders() -> list[tuple[str, str]]:
-    """(folder, source) for Documents, Desktop and Downloads where Windows has them (moved to OneDrive or another
-    drive, or a localised name), else under USERPROFILE."""
-    key = None
+def _expand_percent(v):
+    """%NAME% expanded case-insensitively (REG_EXPAND_SZ values), on any OS; None when a name is unknown."""
+    env = {k.upper(): x for k, x in os.environ.items()}
+    out = re.sub(r"%([^%]+)%", lambda m: env.get(m.group(1).upper(), m.group(0)), v)
+    return None if "%" in out else out
+
+
+def _shell_folders(winreg=None) -> list[tuple[str, str]]:
+    """(folder, source) for Documents, Desktop and Downloads as the registry names them (HKCU Explorer "User Shell
+    Folders": moved, OneDrive-redirected or localised). [] off Windows or on any registry error; winreg can be a
+    stand-in (host test)."""
+    if winreg is None:
+        try:
+            import winreg
+        except ImportError:
+            return []
+    out = []
     try:
-        import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
-    except (ImportError, OSError):
-        pass
-    out, prof = [], os.environ.get("USERPROFILE")
+    except OSError:
+        return []
     try:
-        for value, default, src in _USER_FOLDERS:
-            p = None
-            if key is not None:
-                try:
-                    p = os.path.expandvars(winreg.QueryValueEx(key, value)[0])
-                except OSError:
-                    p = None
-            if not p and prof:
-                p = os.path.join(prof, default)
-            if p:
-                out.append((p, src))
+        for value, _default, src in _USER_FOLDERS:
+            try:
+                v = winreg.QueryValueEx(key, value)[0]
+            except OSError:
+                continue
+            v = _expand_percent(v.strip()) if isinstance(v, str) and v.strip() else None
+            if v:
+                out.append((v, src))
     finally:
-        if key is not None:
-            key.Close()
+        try:
+            winreg.CloseKey(key)
+        except Exception:   # noqa: BLE001
+            pass
+    return out
+
+
+def _user_folders(winreg=None) -> list[tuple[str, str]]:
+    """(folder, source) for Documents, Desktop and Downloads: where the registry says (a moved folder), then the
+    default under USERPROFILE too (a player may have left RPCS3 in the old place after moving the folder); one entry
+    per folder."""
+    prof = os.environ.get("USERPROFILE")
+    out = list(_shell_folders(winreg))
+    if prof:
+        out += [(os.path.join(prof, default), src) for _v, default, src in _USER_FOLDERS]
+    return _dedup(out)
+
+
+def _dedup(pairs):
+    seen, out = set(), []
+    for p, src in pairs:
+        k = os.path.normcase(os.path.normpath(str(p)))
+        if k not in seen:
+            seen.add(k)
+            out.append((p, src))
     return out
 
 
@@ -195,12 +234,57 @@ def _fixed_drives() -> list[str]:
     return [r for r in roots if k32.GetDriveTypeW(r) == 3]  # DRIVE_FIXED
 
 
+def _portable_bases() -> list[tuple[str, str]]:
+    """(place, source) where a portable RPCS3 is usually unzipped (see the comment above _USER_FOLDERS)."""
+    out = list(_user_folders())
+    prof = os.environ.get("USERPROFILE")
+    if prof:
+        out += [(os.path.join(prof, n), "windows-home") for n in ("Games", "Emulators")] + [(prof, "windows-home")]
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "PUBLIC"):
+        v = os.environ.get(var)
+        if v:
+            out.append((v, "windows-programs"))
+    for d in _fixed_drives():
+        out += [(d, "windows-drive-root")] + [(os.path.join(d, n), "windows-drive-root")
+                                              for n in ("Games", "Emulators", "Emulator", "PS3")]
+    return _dedup(out)
+
+
+def _portable_layout(d: Path) -> bool:
+    """rpcs3.exe beside its own config/ or dev_hdd0/ or a vfs.yml/games.yml: an unzipped RPCS3 in that very folder."""
+    try:
+        return (d / "rpcs3.exe").is_file() and any((d / n).exists() for n in ("config", "dev_hdd0", "vfs.yml", "games.yml"))
+    except OSError:
+        return False
+
+
+def _portable_in(base, src) -> list[tuple[Path, str]]:
+    """The RPCS3 candidates in one place: its "RPCS3" child, its children named like rpcs3, the place itself."""
+    b = Path(base)
+    out = [(b / "RPCS3", src)]
+    try:
+        kids = []
+        for i, d in enumerate(b.iterdir()):
+            if i >= _PORTABLE_MAX * 20:
+                break
+            if "rpcs3" in d.name.lower() and d.name.lower() != "rpcs3" and d.is_dir():
+                kids.append(d)
+        out += [(d, src) for d in sorted(kids)[:_PORTABLE_MAX]]
+    except OSError:
+        pass
+    if _portable_layout(b):
+        out.append((b, src))
+    return out
+
+
 def _candidate_paths(hint):
     c = []
     if hint:
         h = Path(hint)
         if h.is_file():
             h = h.parent
+        if h.name.lower() in ("config", "dev_hdd0", "dev_flash") and (h.parent / "rpcs3.exe").is_file():
+            h = h.parent   # the player picked the portable folder's config/ or dev_hdd0/ child
         c.append((h, "hint"))
     if _is_windows():
         for var, sub, src in (("LOCALAPPDATA", ("Programs", "rpcs3"), "windows-localappdata"),
@@ -208,8 +292,8 @@ def _candidate_paths(hint):
             base = os.environ.get(var)
             if base:
                 c.append((Path(base).joinpath(*sub), src))
-        for base, src in _user_folders() + [(d, "windows-drive-root") for d in _fixed_drives()]:
-            c.append((Path(base) / "RPCS3", src))
+        for base, src in _portable_bases():
+            c += _portable_in(base, src)
     home = Path.home()
     if not _is_windows():
         xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -501,15 +585,24 @@ def _fs(s):
     return str(s).replace("\\", "/")
 
 
-def redact(path, roots=None) -> str:
-    """Forward-slash string with the RPCS3 root as <RPCS3>, home as <home>, other
-    users' home folders as <user>."""
+_SHELL_TAGS = {"windows-documents": "<Documents>", "windows-desktop": "<Desktop>", "windows-downloads": "<Downloads>"}
+
+
+def redact(path, roots=None, shell=None) -> str:
+    """Forward-slash string with the RPCS3 root as <RPCS3>, home as <home>, a Documents, Desktop or Downloads folder
+    Windows keeps elsewhere (moved to another drive, where its path can carry the user's name) as <Documents>,
+    <Desktop>, <Downloads>, other users' home folders as <user>. shell: [(folder, source)] instead of the registry's
+    (host test)."""
     s = _fs(path)
     reps = []
     for r in (roots or []):
         r = r["root"] if isinstance(r, dict) else r
         reps.append((_fs(r).rstrip("/"), "<RPCS3>"))
     home = _fs(Path.home()).rstrip("/")
+    for p, src in (_shell_folders() if shell is None else shell):
+        q = _fs(p).rstrip("/")
+        if src in _SHELL_TAGS and len(q) > 3 and not (q.lower() + "/").startswith(home.lower() + "/"):
+            reps.append((q, _SHELL_TAGS[src]))      # one inside home stays <home>/...
     reps.append((home, "<home>"))
     reps.append(("Z:" + home, "<home>"))
     wh = _wine_home()

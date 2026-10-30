@@ -155,7 +155,7 @@
 <li><span class="sec">Changed</span>The release notes on GitHub list each change as its own bullet, with the fixes in a list of their own, instead of one long paragraph.</li>
 <li><span class="sec">Fixed</span>Moving or renaming the unpacked portable folder after (or during) the first run no longer breaks it: CMake&#x27;s build files kept the old folder&#x27;s paths, so the build stopped with &quot;CMakeCache.txt directory ... is different&quot; or wrote into a folder with the old name. The first run and the launcher now notice the move, follow saved paths that were inside the folder (an extracted ISO), start the compiler&#x27;s configure in an empty build folder and keep the lifted code, so only the compile runs again, and only when the game is updated or the build was not finished. A finished game keeps starting as it is. Checked with tests that move a temporary install between runs, not yet with a real portable install on Windows.</li>
 <li><span class="sec">Fixed</span>The intro movie and the cutscenes were black and silent in every v0.1.2 install: the first run built the game without its movie decoder, because the release did not ship FFmpeg&#x27;s headers and the build did not ask for them, so the game never loaded the FFmpeg DLLs installed beside it. The release now ships the headers (<code>ffmpeg/include</code>, from the same LGPL FFmpeg build as the DLLs), the first run passes them to the build, the build stops if they are missing, and the first run&#x27;s last check fails if the game was built without movie decoding. Installing this version over v0.1.2 rebuilds the game once. Reported by @kolomeets80 (#16).</li>
-<li><span class="sec">Fixed</span>The setup and the first run refuse an install or build folder whose path contains <code>[</code>, <code>]</code> or <code>;</code>, with a message, instead of failing later in the build: the bundled CMake cannot work from such a folder. The same failure was reported on Project Helghast (#20).</li>
+<li><span class="sec">Fixed</span>The setup and the first run refuse an install or build folder whose path contains <code>[</code>, <code>]</code> or <code>;</code>, with a message, instead of failing later in the build: the bundled CMake cannot work from such a folder. The same failure was reported on Project Helghast (its issue #20, not this repository&#x27;s).</li>
 <li><span class="sec">Fixed</span>On a laptop with two graphics chips (for example an Intel iGPU and an NVIDIA or AMD GPU) the game could draw on the weaker chip. It now picks the high-performance adapter first, falls back to the default adapter and then to the software renderer, and writes every adapter it found and which one it chose to the log. Not yet confirmed on a hybrid laptop. Reported by @feanor-noldorin (#13).</li>
 <li><span class="sec">Fixed</span>Switching to exclusive fullscreen no longer leaves the picture frozen if the next present fails: the swap chain is resized after every switch, a failed present is recovered from (the game leaves fullscreen and keeps drawing in a borderless window; only a lost graphics device, or eight failures in a row, stops the picture). Only tried under Proton, not yet on real Windows.</li>
 <li><span class="sec">Fixed</span>The first-run log no longer keeps the Windows user name when a path is written in its escaped form, with doubled backslashes (an error message, or a list or JSON of paths). Reported by @feanor-noldorin (#9).</li>
@@ -259,7 +259,7 @@
 <div class="tw"><table>
 <thead><tr><th>Item</th><th>Required</th><th>Details</th></tr></thead>
 <tbody>
-<tr><td><strong>Operating system</strong></td><td>yes</td><td>Windows 10 or 11, 64-bit. Tested so far only under Proton on Linux.</td></tr>
+<tr><td><strong>Operating system</strong></td><td>yes</td><td>Windows 10 or 11, 64-bit. Tested by us under Proton on Linux; players report playing on native Windows 11 (issue #13).</td></tr>
 <tr><td><strong>Graphics card</strong></td><td>yes</td><td>A GPU with Direct3D 12 support.</td></tr>
 <tr><td><strong>Killzone 2 disc dump</strong></td><td>yes</td><td>Your own copy of the US disc (BCUS98116), dumped to a folder or a decrypted ISO file (an encrypted ISO is refused); a FAT32 dump with the disc archive in parts is accepted as it is. Other title ids are refused, naming the id found; the Killzone Trilogy disc (its Killzone 2 is BCUS98116, disc version 02.00) is accepted as untested (<a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">what each input must contain</a>).</td></tr>
 <tr><td><strong>Update 1.29</strong></td><td>yes</td><td>The game&#x27;s last update, from your own console or copy.</td></tr>
@@ -267,14 +267,16 @@
 </tbody></table></div>
 <h3>Hardware to play</h3>
 <div class="tw"><table>
-<thead><tr><th></th><th>Minimum</th><th>Recommended</th></tr></thead>
+<thead><tr><th></th><th>Minimum (estimate)</th><th>Recommended (estimate)</th></tr></thead>
 <tbody>
-<tr><td><strong>CPU</strong></td><td>x86-64 with AVX and FMA3 (about 2013 or later; checked at start-up); speed not measured yet</td><td>not measured yet</td></tr>
-<tr><td><strong>Memory</strong></td><td>not measured yet</td><td>not measured yet</td></tr>
-<tr><td><strong>Graphics card</strong></td><td>Direct3D 12</td><td>not measured yet</td></tr>
-<tr><td><strong>Disk space</strong></td><td>not measured yet</td><td>not measured yet</td></tr>
+<tr><td><strong>CPU</strong></td><td>x86-64 with AVX and FMA3 (Intel Haswell or AMD Piledriver, about 2013, and newer; checked at start-up), 6 cores, about 3.5 GHz sustained</td><td>8 or more cores, 4 GHz or more sustained, a recent desktop or laptop part</td></tr>
+<tr><td><strong>Memory</strong></td><td>8 GB (estimate)</td><td>16 GB (estimate)</td></tr>
+<tr><td><strong>Graphics card</strong></td><td>Direct3D 12 (an integrated GPU runs, slowly)</td><td>a discrete Direct3D 12 GPU of the RTX 4060 / RTX 4070 Laptop class (8 GB), driver current</td></tr>
+<tr><td><strong>Disk space</strong></td><td>about 12 GB free beyond the disc dump (estimate)</td><td>the same, on an SSD</td></tr>
+<tr><td><strong>Operating system</strong></td><td>Windows 10 64-bit, or Linux with a current Proton</td><td>Windows 11</td></tr>
+<tr><td><strong>Controller</strong></td><td>a keyboard (the default key layout; no mouse look yet)</td><td>a gamepad</td></tr>
 </tbody></table></div>
-<p class="small">Details: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/requirements.md">requirements.md</a>. Hardware figures come once the game runs at full speed; none are claimed before that.</p>
+<p class="small">Details: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/requirements.md">requirements.md</a>. Hardware figures are estimates, provisional until the game runs at full speed; hand play is not measured.</p>
 </section>
 <section id="channels" class="promo">
 <h2>Official channels</h2>

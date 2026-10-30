@@ -154,17 +154,17 @@ static int h8c_6A30(spu_context* c) { return hblur(c, 8, VAR_C); }
 #define V "Gfx.Post.VBlur", "job_00d5ce80"
 #define H "Gfx.Post.HBlur", "job_00d59d00"
 const kz2_native_entry kz2_native_blur[] = {
-    { 52, BL_ENV, V, 0x57A0u, v4a_57A0, "vblur4", 0x6B10u, 0x6BA0u, 0x7ebb5d25c354924full },
-    { 53, BL_ENV, V, 0x59E0u, v4b_59E0, "vblur4", 0x6B10u, 0x6BA0u, 0x7ebb5d25c354924full },
-    { 54, BL_ENV, V, 0x5EB0u, v4c_5EB0, "vblur4", 0x6B10u, 0x6BC0u, 0x5c4b75d3c3255097ull },
-    { 55, BL_ENV, V, 0x6170u, v8a_6170, "vblur8", 0x6B70u, 0x6BB0u, 0x5f3e096af9447e1aull },
-    { 56, BL_ENV, V, 0x63B0u, v8b_63B0, "vblur8", 0x6B70u, 0x6BB0u, 0x5f3e096af9447e1aull },
-    { 57, BL_ENV, V, 0x6640u, v8c_6640, "vblur8", 0x6B70u, 0x6BC0u, 0x34fbd5773d38a12aull },
-    { 58, BL_ENV, H, 0x5800u, h4a_5800, "hblur4", 0x6F30u, 0x6FC0u, 0x7ebb5d25c354924full },
-    { 59, BL_ENV, H, 0x5BC8u, h4b_5BC8, "hblur4", 0x6F30u, 0x6FC0u, 0x7ebb5d25c354924full },
-    { 60, BL_ENV, H, 0x6028u, h4c_6028, "hblur4", 0x6F30u, 0x6FE0u, 0x5c4b75d3c3255097ull },
-    { 61, BL_ENV, H, 0x64F0u, h8a_64F0, "hblur8", 0x6F90u, 0x6FD0u, 0x5f3e096af9447e1aull },
-    { 62, BL_ENV, H, 0x6778u, h8b_6778, "hblur8", 0x6F90u, 0x6FD0u, 0x5f3e096af9447e1aull },
-    { 63, BL_ENV, H, 0x6A30u, h8c_6A30, "hblur8", 0x6F90u, 0x6FE0u, 0x34fbd5773d38a12aull },
+    { 52, BL_ENV, V, 0x57A0u, v4a_57A0, "vblur4", 0x6B10u, 0x6BA0u, 0x7ebb5d25c354924full, 0 },
+    { 53, BL_ENV, V, 0x59E0u, v4b_59E0, "vblur4", 0x6B10u, 0x6BA0u, 0x7ebb5d25c354924full, 0 },
+    { 54, BL_ENV, V, 0x5EB0u, v4c_5EB0, "vblur4", 0x6B10u, 0x6BC0u, 0x5c4b75d3c3255097ull, 0 },
+    { 55, BL_ENV, V, 0x6170u, v8a_6170, "vblur8", 0x6B70u, 0x6BB0u, 0x5f3e096af9447e1aull, 0 },
+    { 56, BL_ENV, V, 0x63B0u, v8b_63B0, "vblur8", 0x6B70u, 0x6BB0u, 0x5f3e096af9447e1aull, 0 },
+    { 57, BL_ENV, V, 0x6640u, v8c_6640, "vblur8", 0x6B70u, 0x6BC0u, 0x34fbd5773d38a12aull, 0 },
+    { 58, BL_ENV, H, 0x5800u, h4a_5800, "hblur4", 0x6F30u, 0x6FC0u, 0x7ebb5d25c354924full, 0 },
+    { 59, BL_ENV, H, 0x5BC8u, h4b_5BC8, "hblur4", 0x6F30u, 0x6FC0u, 0x7ebb5d25c354924full, 0 },
+    { 60, BL_ENV, H, 0x6028u, h4c_6028, "hblur4", 0x6F30u, 0x6FE0u, 0x5c4b75d3c3255097ull, 0 },
+    { 61, BL_ENV, H, 0x64F0u, h8a_64F0, "hblur8", 0x6F90u, 0x6FD0u, 0x5f3e096af9447e1aull, 0 },
+    { 62, BL_ENV, H, 0x6778u, h8b_6778, "hblur8", 0x6F90u, 0x6FD0u, 0x5f3e096af9447e1aull, 0 },
+    { 63, BL_ENV, H, 0x6A30u, h8c_6A30, "hblur8", 0x6F90u, 0x6FE0u, 0x34fbd5773d38a12aull, 0 },
 };
 const unsigned kz2_native_blur_n = sizeof kz2_native_blur / sizeof kz2_native_blur[0];

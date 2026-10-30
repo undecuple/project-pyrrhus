@@ -134,4 +134,5 @@ __attribute__((constructor)) static void kz2_native_jobs_init(void)
     add(kz2_native_bloom, kz2_native_bloom_n);
     add(kz2_native_postjobs, kz2_native_postjobs_n);
     add(kz2_native_edgeanim, kz2_native_edgeanim_n);
+    add(kz2_native_particles, kz2_native_particles_n);
 }

@@ -114,7 +114,7 @@ def player_reads():
 
 def fake_repo(root):
     for rel in ("tools/release/firstrun.py", "tools/release/firstrun_check.py", "tools/release/version_check.py",
-                "tools/release/launch.py", "tools/release/lift_fixups.py",
+                "tools/release/launch.py", "tools/release/install_ini.py", "tools/release/lift_fixups.py",
                 "tools/release/eboot_sha256.json", "tools/release/psarc_sha256.json", "tools/release/test_firstrun.py", "tools/release/spu_step.py",
                 "tools/release/iso9660.py",
                 "tools/release/rpcs3_locate.py", "tools/release/rpcs3_import.py",
@@ -222,7 +222,7 @@ def main():
         want = {"kz2-setup/release/firstrun.py", "kz2-setup/release/firstrun_check.py",
                 "kz2-setup/release/version_check.py", "kz2-setup/release/eboot_sha256.json",
                 "kz2-setup/release/psarc_sha256.json", "kz2-setup/release/iso9660.py",
-                "kz2-setup/release/launch.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/eboot_ver.txt",
+                "kz2-setup/release/launch.py", "kz2-setup/release/install_ini.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/eboot_ver.txt",
                 "kz2-setup/release/spu_step.py", "kz2-setup/release/rpcs3_locate.py",
                 "kz2-setup/release/rpcs3_import.py", "kz2-setup/spu/lift_spu.py", "kz2-setup/spu/gen_spu_register.py",
                 "kz2-setup/spu/kz2ver.py", "re/wws_jobs_v129.tsv", "re/wws_jobs_v101.tsv",

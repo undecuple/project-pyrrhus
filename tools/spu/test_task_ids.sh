@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KZ2 SPU lane an earlier change: host test for patch 7004 (tools/spu/test_task_ids.c): tasks started by the taskset exit scan
+# KZ2 host test for patch 7004 (tools/spu/test_task_ids.c): tasks started by the taskset exit scan
 # run as their own task id while another thread writes the CreateTask bridge globals. Needs work/ps3recomp-patched
 # (SPU_TREE=DIR); SKIP without it. The second run (SPU_TASK_IDS_GLOBAL=1, the pre-7004 hand-over) is printed as
 # evidence of the race and does not decide PASS (it is a race: it may or may not hit in one run).

@@ -13,6 +13,8 @@
  * reported (`scratch_regs_differ=N`), not compared: the gated kernels are leaves whose caller writes every scratch
  * register before reading it (the RE notes an earlier change). With HARNESS_INTERP=1 the interpreter also runs and must
  * equal the lifted run in everything (registers included).
+ * An earlier change, "continue at" gates (the entry's cont != 0: code that is no subroutine): the lifted run ends when it hops
+ * to the lifted function at cont, the interpreter at a stop planted there, and all 128 registers are compared.
  */
 #include "spu_context.h"
 #include "spu_helpers.h"
@@ -137,6 +139,9 @@ spu_hop_fn spu_ib_direct(spu_context* ctx, uint32_t t)
 }
 static void on_alarm(int s) { (void)s; why = R_TIMEOUT; siglongjmp(jb, 1); }
 
+static fn_t g_stop_fn;             /* a "continue at" gate's lifted run ends at this function */
+static uint32_t g_end = SENTINEL;   /* where the interpreter's planted stop sits */
+
 static int run_lifted(spu_context* c, fn_t f)
 {
     spu_context* ctx = c; /* g_spu_trampoline_fn is per context (patch 1017) */
@@ -146,11 +151,13 @@ static int run_lifted(spu_context* c, fn_t f)
         f(c);
         while (g_spu_trampoline_fn) {
             if (g_spu_trampoline_fn == spu_indirect_branch && (c->pc & SPU_LS_MASK) == SENTINEL) { why = R_RET; break; }
+            if (g_stop_fn && g_spu_trampoline_fn == g_stop_fn) { why = R_RET; break; }
             fn_t t = g_spu_trampoline_fn;
             g_spu_trampoline_fn = 0;
             t(c);
         }
         if (!why) why = (c->pc & SPU_LS_MASK) == SENTINEL ? R_RET : R_RESTART;
+        if (why == R_RET && g_stop_fn && (c->pc & SPU_LS_MASK) != g_end) why = R_RESTART;
     }
     arm(0);
     g_spu_trampoline_fn = 0;
@@ -164,7 +171,7 @@ static int run_interp(spu_context* c, uint32_t entry)
     if (sigsetjmp(jb, 1) == 0) {
         arm(1);
         spu_interp_run(c, entry);
-        why = (((c->pc & SPU_LS_MASK) == SENTINEL || (c->pc & SPU_LS_MASK) == SENTINEL + 4) && c->stop_code == 0x3FFF)
+        why = (((c->pc & SPU_LS_MASK) == g_end || (c->pc & SPU_LS_MASK) == g_end + 4) && c->stop_code == 0x3FFF)
                   ? R_RET : R_STOP;
     }
     arm(0);
@@ -561,6 +568,46 @@ static void synth_zero(spu_context* c, uint64_t seed)
     setreg(c, 5, rnd() % 8 ? rnd() % 4096 : rnd() % 40);
 }
 
+/* Particles.VertexJob's crt0 .bss clear @0x411C (slot 77, an earlier change): r3 = start, r4 = end, r126 = the load offset.
+ * Half the cases the game's own (0x1B980-0x288B0, offset 0); the rest random lengths (1 byte to 128 KB), starts off
+ * the quadword now and then, offsets that wrap the local store, other lanes of r3/r4 not splatted, and 1 in 32 with
+ * start >= end (the native code declines). The cleared range never covers the job's code (0x4000-0x8800): the
+ * interpreter's stop is planted at 0x407C. */
+static void synth_bss(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    for (int tries = 0; tries < 64; tries++) {
+        uint32_t s0 = 0x1B980, e0 = 0x288B0, off = 0;
+        if (rnd() % 2) {
+            s0 = 0x8800 + 16 * (rnd() % 0x3000) + (rnd() % 8 ? 0 : rnd() % 16);
+            e0 = s0 + (rnd() % 4 ? 1 + rnd() % 0x20000 : 1 + rnd() % 64);
+            off = rnd() % 4 ? 0 : (rnd() % 2 ? 16 * (rnd() % 0x4000) : rnd());
+            if (rnd() % 32 == 0) e0 = s0 - rnd() % 64;
+        }
+        const uint32_t a0 = (s0 + off) & (SPU_LS_MASK & ~0xFu);
+        const uint32_t len = e0 > s0 ? ((e0 - s0 + 15) & ~15u) : 16;
+        int hits = 0;
+        for (uint32_t k = 0; k < len && !hits; k += 16) {
+            const uint32_t a = (a0 + k) & SPU_LS_MASK;
+            hits = a >= 0x4000 && a < 0x8800;
+        }
+        if (hits) continue;
+        setreg(c, 3, s0);
+        setreg(c, 4, e0);
+        setreg(c, 126, off);
+        if (rnd() % 4 == 0)
+            for (int k = 1; k < 4; k++) {
+                c->gpr[3]._u32[k] = rnd();
+                c->gpr[4]._u32[k] = rnd();
+                c->gpr[126]._u32[k] = rnd();
+            }
+        return;
+    }
+    setreg(c, 3, 0x1B980);
+    setreg(c, 4, 0x288B0);
+    setreg(c, 126, 0);
+}
+
 /* Spu an earlier change: a gate that sits after a lifted prologue (Gfx.Post.ILR's row loop @0x4E20): the state there is made by
  * running the lifted pass from its entry with a gate that copies the state the first time it is reached (and lets the
  * lifted code go on). Synthetic cases build the pass's entry state; recorded states taken at the pass's entry (round
@@ -643,6 +690,82 @@ static void synth_ea13100(spu_context* c, uint64_t seed)
     setreg(c, 8, rnd() & 1);
 }
 
+/* Anim.EdgeAnim 0x12438 (slot 76): the keyframe sampler. Per element a spec (as 0x13100's: fixed point,
+ * small floats, wide mantissas, zero widths; or the game's e = 0, m = 14-15 rotations) in a stream at 0x30000 + any
+ * byte; four bitmask bit addresses 4 r20 apart a group (stride 1-128 bits, the game's 99) into random bytes or sparse
+ * key masks; frame masks r4-r7 (the first F frames, or random words) and r8-r11 (the frames before r12, or random),
+ * per lane or splatted; three streams of random keys (0x8000, 0x28000, 0x2C000 + any byte); r13 a fraction in
+ * [0.5, 1), 0, 1 or any bits; rotations or not; the index table as 0x13100's; outputs at 0x24000 + 0/16/32 (+ 48 idx). */
+static uint32_t pfx_word(uint32_t nbits, int j)   /* word j of a 128-bit mask of the first nbits bits (bit 31 of word 0 first) */
+{
+    const int lo = 32 * j;
+    if ((int)nbits <= lo) return 0;
+    if ((int)nbits >= lo + 32) return 0xFFFFFFFFu;
+    return ~(0xFFFFFFFFu >> (nbits - lo));
+}
+static void synth_ea12438(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    const uint32_t n = 1 + rnd() % 40, iters = (n + 3) / 4;
+    const int game = rnd() % 3 == 0;
+    const uint32_t sa = 0x30000 + rnd() % 64;
+    for (uint32_t i = 0; i < 4 * iters; i++) {
+        uint32_t spec = rnd() & 3;
+        for (int k = 0; k < 3; k++) {
+            uint32_t s = rnd() & 1, e, m;
+            if (game) { s = 1; e = 0; m = 14 + rnd() % 2; }
+            else switch (rnd() % 4) {
+                case 0: e = 0; m = rnd() % 32; break;
+                case 1: e = 1 + rnd() % 15; m = rnd() % 24; break;
+                case 2: e = rnd() % 16; m = rnd() % 32; break;
+                default: e = 0; m = 8 + rnd() % 8; break;
+            }
+            spec |= (s << 9 | e << 5 | m) << (22 - 10 * k);
+        }
+        be32w(c->ls + sa + 4 * i, spec);
+    }
+    const uint32_t ta = 0x31100 + (rnd() % 4 ? 8 * (rnd() % 8) : 2 * (rnd() % 32));
+    /* small indices around the table too: a table at an offset that is not a multiple of 8 reads its neighbours
+     * (quadword-wrapped), and a wild index would store into the job image, which the interpreter then executes */
+    for (uint32_t a = 0x31100; a < 0x31100 + 2 * 4 * iters + 128; a += 2) { c->ls[a] = 0; c->ls[a + 1] = rnd() % 64; }
+    for (uint32_t i = 0; i < 4 * iters; i++) {
+        const uint32_t idx = (rnd() % 8 == 0) ? 0 : rnd() % 64;
+        c->ls[ta + 2 * i] = (uint8_t)(idx >> 8);
+        c->ls[ta + 2 * i + 1] = (uint8_t)idx;
+    }
+    const uint32_t stride = rnd() % 4 ? 99 : 1 + rnd() % 128;
+    const uint32_t mb = 0x20000 + rnd() % 64;
+    if (rnd() % 2)   /* sparse key masks (a few keys per element) instead of random bytes */
+        for (uint32_t a = mb; a < mb + (4 * iters * stride + 7) / 8 + 64 && a < 0x24000; a++)
+            c->ls[a] = rnd() % 6 == 0 ? (uint8_t)(1u << (rnd() % 8)) : 0;
+    const int lanes = rnd() % 4 == 0;   /* per-lane masks and frame indices (the game splats them) */
+    const uint32_t F = 1 + rnd() % 128;
+    for (int k = 0; k < 4; k++) {
+        const uint32_t Fk = lanes ? 1 + rnd() % 128 : F, fr = rnd() % (Fk + 1);
+        const int rnd4 = rnd() % 8 == 0, rnd8 = rnd() % 8 == 0;
+        for (int j = 0; j < 4; j++) {
+            c->gpr[4 + j]._u32[k] = rnd4 ? rnd() : pfx_word(Fk, j);
+            c->gpr[8 + j]._u32[k] = rnd8 ? rnd() : pfx_word(fr, j);
+        }
+        c->gpr[12]._u32[k] = rnd() % 16 == 0 ? rnd() : fr;
+        c->gpr[3]._u32[k] = 8 * mb + (rnd() % 8) + (uint32_t)k * stride;
+        c->gpr[13]._u32[k] = rnd() % 8 == 0 ? rnd() : 0x3F000000u | (rnd() & 0x7FFFFFu);
+    }
+    if (!lanes)
+        for (int r = 4; r <= 13; r++)
+            if (r != 3 && (r != 12 || rnd() % 2)) c->gpr[r] = spu_splat_u32(c->gpr[r]._u32[0]);
+    if (rnd() % 4 == 0) c->gpr[13] = spu_splat_u32(rnd() % 2 ? 0x3F800000u : 0);
+    setreg(c, 14, 0x8000 + rnd() % 4096);
+    setreg(c, 15, 0x28000 + rnd() % 256);
+    setreg(c, 16, 0x2C000 + rnd() % 256);
+    setreg(c, 17, n);
+    setreg(c, 18, 0x24000 + 16 * (rnd() % 3));
+    setreg(c, 19, ta);
+    c->gpr[20]._u32[0] = stride;
+    setreg(c, 21, sa);
+    c->gpr[22]._u32[0] = rnd() % 3 ? 1 : (rnd() & 0xE);
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -655,7 +778,8 @@ static const struct {
     {"vignette", synth_vignette},     {"depthfuzzy", synth_depthfuzzy}, {"down4", synth_down4},
     {"down8", synth_down8},           {"dofpass", synth_dofpass},
     {"zero", synth_zero},             {"ilr", synth_ilr},
-    {"ea_13100", synth_ea13100},
+    {"ea_13100", synth_ea13100},      {"ea_12438", synth_ea12438},
+    {"bss_clear", synth_bss},
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
@@ -683,6 +807,9 @@ static void one(const char* name, int slot, uint32_t entry)
     }
     S.gpr[0] = spu_splat_u32(SENTINEL);
     S.pc = entry;
+    g_stop_fn = e->cont ? spu_lookup(e->cont, 0) : NULL;
+    g_end = e->cont ? e->cont : SENTINEL;
+    if (e->cont && !g_stop_fn) { printf("C %s no lifted function at the continue address 0x%05X\n", name, e->cont); n_bad++; return; }
     if (S.ls != S.ls_store) { printf("C %s state LS not in its context\n", name); n_bad++; return; }
     ctx_copy(&A, &S);
     ctx_copy(&B, &S);
@@ -701,6 +828,7 @@ static void one(const char* name, int slot, uint32_t entry)
         n_fb++;
         return;
     }
+    if (e->cont) B.pc = e->cont;   /* the gate line's SPU_HOP */
     t_lift += t1 - t0;
     t_nat += t2 - t1;
     char diff[200] = "";
@@ -725,19 +853,22 @@ static void one(const char* name, int slot, uint32_t entry)
             bad = 1;
             snprintf(diff, sizeof diff, "r%d", keep[i]);
         }
-    for (int r = 80; r < 128 && !bad; r++)
+    for (int r = e->cont ? 2 : 80; r < 128 && !bad; r++)   /* a "continue at" gate: every register */
         if (memcmp(&A.gpr[r], &B.gpr[r], 16)) {
             bad = 1;
             snprintf(diff, sizeof diff, "r%d", r);
         }
     int scratch = 0;
     for (int r = 2; r < 80; r++) scratch += memcmp(&A.gpr[r], &B.gpr[r], 16) != 0;
-    if ((A.pc & SPU_LS_MASK) != SENTINEL) { bad = 1; snprintf(diff, sizeof diff, "pc 0x%05X", A.pc); }
+    if ((A.pc & SPU_LS_MASK) != g_end || (e->cont && (B.pc & SPU_LS_MASK) != g_end)) {
+        bad = 1;
+        snprintf(diff, sizeof diff, "pc lifted 0x%05X native 0x%05X", A.pc, B.pc);
+    }
     int ib = 0;
     if (do_interp) {
         ctx_copy(&C, &S);
-        C.ls[SENTINEL] = 0; C.ls[SENTINEL + 1] = 0; C.ls[SENTINEL + 2] = 0x3F; C.ls[SENTINEL + 3] = 0xFF;
-        memcpy(A.ls + SENTINEL, C.ls + SENTINEL, 4);   /* the stop the interpreter needs (not in the lifted run) */
+        C.ls[g_end] = 0; C.ls[g_end + 1] = 0; C.ls[g_end + 2] = 0x3F; C.ls[g_end + 3] = 0xFF;
+        memcpy(A.ls + g_end, C.ls + g_end, 4);   /* the stop the interpreter needs (not in the lifted run) */
         int rc = run_interp(&C, entry);
         if (rc != R_RET) {
             ib = 1;

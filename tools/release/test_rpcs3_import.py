@@ -198,6 +198,22 @@ def main():
         w(root4 / "plain.elf", ELF + b"x")
         rc = ri.main(["--eboot-kind", str(root4 / "plain.elf"), "--out", outf])
         check(rc == 0 and open(outf, encoding="utf-8-sig").read().startswith("status=ok"), "--eboot-kind: real ELF is ok")
+        # issue #22: the wizard no longer hashes the EBOOT on its window thread; --sha256 gives size and hash in the
+        # same run, only for a file that is not encrypted, and the result file is renamed into place (no .part left)
+        import hashlib
+        rc = ri.main(["--eboot-kind", str(root4 / "plain.elf"), "--sha256", "--out", outf])
+        kv = dict(x.split("=", 1) for x in open(outf, encoding="utf-8-sig").read().splitlines() if "=" in x)
+        check(rc == 0 and kv.get("size") == str(len(ELF + b"x"))
+              and kv.get("sha256") == hashlib.sha256(ELF + b"x").hexdigest() and not os.path.exists(outf + ".part"),
+              "--eboot-kind --sha256: size and SHA-256 of the file, result renamed into place")
+        rc = ri.main(["--eboot-kind", str(root4 / "dev_hdd0/game" / T / "USRDIR/EBOOT.elf"), "--sha256", "--out", outf])
+        check(rc == 1 and "sha256=" not in open(outf, encoding="utf-8-sig").read(), "--sha256: an encrypted file is not hashed")
+        # an unexpected error still leaves status=error for the wizard's poll (it does not wait for the limit)
+        with mock.patch.object(ri, "encrypted_eboot", side_effect=RuntimeError("boom")), \
+                mock.patch("sys.stderr", io.StringIO()):
+            rc = ri.main(["--eboot-kind", str(root4 / "plain.elf"), "--out", outf])
+        check(rc == 3 and open(outf, encoding="utf-8-sig").read().startswith("status=error"),
+              "unexpected error: status=error in --out")
         os.remove(root4 / "plain.elf")
         os.remove(root4 / "dev_hdd0/game" / T / "USRDIR/EBOOT.elf")
         # the disc's own (1.01) EBOOT.elf is not offered for the 1.29 build

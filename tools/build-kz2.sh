@@ -41,7 +41,7 @@ fi
 # FFmpeg headers for the run-time loaded decoders (port/kz2/CMakeLists.txt KZ2_FFMPEG_INCLUDE_DIR): KZ2_FFMPEG_INCLUDE,
 # else the include/ of KZ2_FFMPEG_WIN (default <main>/work/ffmpeg-win, the tools/runtime/ffmpeg-lgpl-win.nix output).
 # None: the developer build goes on without (black movie pictures, silent AC3) with -DKZ2_ALLOW_NO_FFMPEG=ON and says
-# so; CMake itself stops without the headers since an earlier change (issue #16), so a release build cannot miss them.
+# so; CMake itself stops without the headers since the fix for issue #16, so a release build cannot miss them.
 FFW="${KZ2_FFMPEG_WIN:-$MAINC/work/ffmpeg-win}"
 want_ff="${KZ2_FFMPEG_INCLUDE:-$FFW/include}"; no_ff=OFF
 [[ -f "$want_ff/libavcodec/avcodec.h" ]] || { echo "build-kz2: WARNING no FFmpeg headers at $want_ff: this developer build has black movies and silent AC3 (see tools/runtime/ffmpeg-lgpl-win.nix)" >&2; want_ff=""; no_ff=ON; }

@@ -24,6 +24,7 @@ saved answer); the tests never touch the network.
 import argparse
 import datetime
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -143,8 +144,11 @@ def main(argv=None, out=sys.stdout):
     text = line(r)
     print(json.dumps(r, indent=1) if a.json else text, file=out)
     if a.result_file:
-        with open(a.result_file, "w", encoding="utf-8") as f:
+        # whole or not at all (renamed into place): the wizard polls for this file instead of waiting for the
+        # process (issue #22)
+        with open(a.result_file + ".part", "w", encoding="utf-8") as f:
             f.write(text + "\n")
+        os.replace(a.result_file + ".part", a.result_file)
     if a.log:
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         detail = f" ({r['detail']})" if r["detail"] else ""

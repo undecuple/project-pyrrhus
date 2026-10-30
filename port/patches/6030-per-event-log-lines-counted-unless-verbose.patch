@@ -1,13 +1,13 @@
 KZ2 patch 6030: per-event log lines (SPURS tasks, GCM user handler) print the first 8, then counts, unless PS3_VERBOSE.
 
-An earlier change counted a level's log: of about 2,250 lines a second, the per-event ones were [cellSpurs] CreateTask,
+A count of a level's log: of about 2,250 lines a second, the per-event ones were [cellSpurs] CreateTask,
 _TaskAttributeInitialize and TaskAttr R8-form (one each per task created, ~110/s each), [spu_workload] dispatch HIT
 (async) and async RETURNED (one per task run), [taskset] built SpursTasksetContext (with an fflush each) and start
 task, and [cellGcmSys] SetUserHandler (~60/s). ps3_log.h gets ps3_log_event(ctr, what): every line when
 ps3_log_verbose() (PS3_VERBOSE=1, or upstream's default of a redirected stderr when PS3_VERBOSE is unset), else the
 first 8 and then one "[log] <what>: N so far" line at each power of two. PS3_VERBOSE=0 makes a run quiet (PS3_LOG_EVENTS=0|1 sets these lines alone); KZ2 does
 not set it by default yet: with it, The New Sun's load stopped at an SPU assert (heqi in Gfx.PB.ShadowMap) in both
-runs, a timing race that the slower logging hid (the RE notes "An earlier change"). The existing ps3_log_verbose() sites
+runs, a timing race that the slower logging hid (the RE notes, 2026-10-22: in-level speed). The existing ps3_log_verbose() sites
 ([RSX null] set_viewport / set_render_target, [WAIT] event_queue_receive, ...) follow the same switch. Nothing but logging changes.
 
 Rebased on ps3recomp v0.18.0: context and offsets only.

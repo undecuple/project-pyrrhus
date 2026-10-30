@@ -1,0 +1,323 @@
+KZ2 patch 6044: the HLE libraries' condition variables on ps3_evcv (patch 6041) instead of the Win32
+CONDITION_VARIABLE: the lwcond wait (ppu_sysprx.cpp, patch 6005: lv2 timeout), sysPrxForUser's lwcond, cellSync2's
+cond and queue waits, cellSpurs' event-flag wait (ef_wait_timed) and cellGcmSys' label-release wait (patch 6019,
+timed). Under Wine all of them waited in ntdll's RtlWaitOnAddress, whose futex queue corrupts itself when a timeout
+meets a wake (patch 6041's header). Same API and behaviour; the pthread branches are unchanged.
+
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -21,6 +21,7 @@
+ /* win32_compat.h is <windows.h> on Windows (CRITICAL_SECTION for the real
+  * lwmutex exclusion) and the POSIX shims elsewhere -- Sleep, DWORD, QPC. */
+ #include "../platform/win32_compat.h"
++#include "../platform/ps3_evcv.h"   /* patch 6044: the lwcond wait on ps3_evcv, no ntdll futex queue */
+ #include "../memory/vm.h"   /* VM_HLE_INJECT_BASE -- not platform-specific */
+ #ifndef _WIN32
+ /* sys_timer.h: not included, its lv2 headers redefine ppu_context. */
+@@ -420,7 +421,7 @@
+  * woke twice and the other slept on with its request. lv2 wakes the threads that were
+  * queued at the time of the signal, never one that queued after it. `sem` is kept only as the "created" marker. */
+ struct LwcWaiter { struct LwcWaiter* next; uint32_t tid; volatile int woken; };
+-static struct LwcSlot { HANDLE sem; volatile long waiters; SRWLOCK lock; CONDITION_VARIABLE cv;
++static struct LwcSlot { HANDLE sem; volatile long waiters; SRWLOCK lock; ps3_evcv cv;   /* patch 6044 */
+                         struct LwcWaiter* head; struct LwcWaiter* tail; } g_lwc[LWC_SLOTS];
+ static void lwc_unlink(struct LwcSlot* sl, struct LwcWaiter* w)   /* slot lock held */
+ {
+@@ -539,7 +540,7 @@
+         w = nx;
+     }
+     ReleaseSRWLockExclusive(&sl->lock);
+-    WakeAllConditionVariable(&sl->cv);
++    ps3_evcv_wake_all(&sl->cv);
+ #else
+     (void)lwcond; (void)all; (void)to_tid;
+ #endif
+@@ -584,7 +585,7 @@
+             DWORD tmo = INFINITE;
+             if (deadline) { ULONGLONG now = GetTickCount64(); if (now >= deadline) break;
+                             tmo = (DWORD)((deadline - now) > 0xFFFFFFFEull ? 0xFFFFFFFEu : (deadline - now)); }
+-            SleepConditionVariableSRW(&sl->cv, &sl->lock, tmo, 0);
++            ps3_evcv_sleep_srw(&sl->cv, &sl->lock, tmo);
+         }
+         if (!me.woken) { lwc_unlink(sl, &me); result = 0x8001000Bu; }   /* timed out, not signalled */
+         ReleaseSRWLockExclusive(&sl->lock);
+--- a/libs/system/sysPrxForUser.c
++++ b/libs/system/sysPrxForUser.c
+@@ -20,6 +20,7 @@
+ #ifdef _WIN32
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
++#include "../../runtime/platform/ps3_evcv.h"   /* patch 6044: ps3_evcv, no ntdll futex queue */
+ #else
+ #include <pthread.h>
+ #include <unistd.h>
+@@ -84,7 +85,7 @@
+     int in_use;
+     u32 lwmutex_id; /* index into s_lwmutex */
+ #ifdef _WIN32
+-    CONDITION_VARIABLE cv;
++    ps3_evcv cv;
+ #else
+     pthread_cond_t cv;
+ #endif
+@@ -683,7 +684,7 @@
+             c->lwmutex_id = lwmutex->sleep_queue - 1;
+ 
+ #ifdef _WIN32
+-            InitializeConditionVariable(&c->cv);
++            ps3_evcv_init(&c->cv);
+ #else
+             pthread_cond_init(&c->cv, NULL);
+ #endif
+@@ -708,7 +709,7 @@
+         return CELL_ESRCH;
+ 
+ #ifdef _WIN32
+-    WakeConditionVariable(&s_lwcond[slot].cv);
++    ps3_evcv_wake_one(&s_lwcond[slot].cv);
+ #else
+     pthread_cond_signal(&s_lwcond[slot].cv);
+ #endif
+@@ -725,7 +726,7 @@
+         return CELL_ESRCH;
+ 
+ #ifdef _WIN32
+-    WakeAllConditionVariable(&s_lwcond[slot].cv);
++    ps3_evcv_wake_all(&s_lwcond[slot].cv);
+ #else
+     pthread_cond_broadcast(&s_lwcond[slot].cv);
+ #endif
+@@ -748,8 +749,8 @@
+ 
+ #ifdef _WIN32
+     DWORD ms = (timeout == 0) ? INFINITE : (DWORD)(timeout / 1000);
+-    if (!SleepConditionVariableCS(&s_lwcond[cslot].cv,
+-                                   &s_lwmutex[mslot].cs, ms))
++    if (!ps3_evcv_sleep_cs(&s_lwcond[cslot].cv,
++                         &s_lwmutex[mslot].cs, ms))
+     {
+         if (GetLastError() == ERROR_TIMEOUT)
+             return CELL_ETIMEDOUT;
+--- a/libs/sync/cellSync2.c
++++ b/libs/sync/cellSync2.c
+@@ -15,6 +15,7 @@
+ #ifdef _WIN32
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
++#include "../../runtime/platform/ps3_evcv.h"   /* patch 6044: ps3_evcv, no ntdll futex queue */
+ #else
+ #include <pthread.h>
+ #include "../../runtime/platform/posix_sem.h"   /* sem_init is ENOSYS on Darwin */
+@@ -42,7 +43,7 @@
+     u32 initialized;
+     Sync2MutexInternal* mutex;
+ #ifdef _WIN32
+-    CONDITION_VARIABLE cv;
++    ps3_evcv cv;
+ #else
+     pthread_cond_t cv;
+ #endif
+@@ -69,8 +70,8 @@
+     u8* buffer;
+ #ifdef _WIN32
+     CRITICAL_SECTION cs;
+-    CONDITION_VARIABLE notFull;
+-    CONDITION_VARIABLE notEmpty;
++    ps3_evcv notFull;
++    ps3_evcv notEmpty;
+ #else
+     pthread_mutex_t mtx;
+     pthread_cond_t notFull;
+@@ -231,7 +232,7 @@
+     c->initialized = 1;
+ 
+ #ifdef _WIN32
+-    InitializeConditionVariable(&c->cv);
++    ps3_evcv_init(&c->cv);
+ #else
+     pthread_cond_init(&c->cv, NULL);
+ #endif
+@@ -247,7 +248,7 @@
+ 
+ #ifdef _WIN32
+     DWORD ms = (timeoutUsec == 0) ? INFINITE : (DWORD)(timeoutUsec / 1000);
+-    if (!SleepConditionVariableCS(&c->cv, &c->mutex->cs, ms))
++    if (!ps3_evcv_sleep_cs(&c->cv, &c->mutex->cs, ms))
+         return (GetLastError() == ERROR_TIMEOUT)
+                ? CELL_SYNC2_ERROR_TIMEDOUT
+                : CELL_SYNC2_ERROR_STAT;
+@@ -279,7 +280,7 @@
+     if (!c->initialized) return CELL_SYNC2_ERROR_NOT_INITIALIZED;
+ 
+ #ifdef _WIN32
+-    WakeConditionVariable(&c->cv);
++    ps3_evcv_wake_one(&c->cv);
+ #else
+     pthread_cond_signal(&c->cv);
+ #endif
+@@ -294,7 +295,7 @@
+     if (!c->initialized) return CELL_SYNC2_ERROR_NOT_INITIALIZED;
+ 
+ #ifdef _WIN32
+-    WakeAllConditionVariable(&c->cv);
++    ps3_evcv_wake_all(&c->cv);
+ #else
+     pthread_cond_broadcast(&c->cv);
+ #endif
+@@ -472,8 +473,8 @@
+ 
+ #ifdef _WIN32
+     InitializeCriticalSection(&q->cs);
+-    InitializeConditionVariable(&q->notFull);
+-    InitializeConditionVariable(&q->notEmpty);
++    ps3_evcv_init(&q->notFull);
++    ps3_evcv_init(&q->notEmpty);
+ #else
+     pthread_mutex_init(&q->mtx, NULL);
+     pthread_cond_init(&q->notFull, NULL);
+@@ -495,7 +496,7 @@
+     EnterCriticalSection(&q->cs);
+     DWORD ms = (timeoutUsec == 0) ? INFINITE : (DWORD)(timeoutUsec / 1000);
+     while (q->count >= q->depth) {
+-        if (!SleepConditionVariableCS(&q->notFull, &q->cs, ms)) {
++        if (!ps3_evcv_sleep_cs(&q->notFull, &q->cs, ms)) {
+             LeaveCriticalSection(&q->cs);
+             return CELL_SYNC2_ERROR_TIMEDOUT;
+         }
+@@ -505,7 +506,7 @@
+     q->tail = (q->tail + 1) % q->depth;
+     q->count++;
+ 
+-    WakeConditionVariable(&q->notEmpty);
++    ps3_evcv_wake_one(&q->notEmpty);
+     LeaveCriticalSection(&q->cs);
+ #else
+     pthread_mutex_lock(&q->mtx);
+@@ -556,7 +557,7 @@
+     q->tail = (q->tail + 1) % q->depth;
+     q->count++;
+ 
+-    WakeConditionVariable(&q->notEmpty);
++    ps3_evcv_wake_one(&q->notEmpty);
+     LeaveCriticalSection(&q->cs);
+ #else
+     if (pthread_mutex_trylock(&q->mtx) != 0)
+@@ -590,7 +591,7 @@
+     EnterCriticalSection(&q->cs);
+     DWORD ms = (timeoutUsec == 0) ? INFINITE : (DWORD)(timeoutUsec / 1000);
+     while (q->count == 0) {
+-        if (!SleepConditionVariableCS(&q->notEmpty, &q->cs, ms)) {
++        if (!ps3_evcv_sleep_cs(&q->notEmpty, &q->cs, ms)) {
+             LeaveCriticalSection(&q->cs);
+             return CELL_SYNC2_ERROR_TIMEDOUT;
+         }
+@@ -600,7 +601,7 @@
+     q->head = (q->head + 1) % q->depth;
+     q->count--;
+ 
+-    WakeConditionVariable(&q->notFull);
++    ps3_evcv_wake_one(&q->notFull);
+     LeaveCriticalSection(&q->cs);
+ #else
+     pthread_mutex_lock(&q->mtx);
+@@ -651,7 +652,7 @@
+     q->head = (q->head + 1) % q->depth;
+     q->count--;
+ 
+-    WakeConditionVariable(&q->notFull);
++    ps3_evcv_wake_one(&q->notFull);
+     LeaveCriticalSection(&q->cs);
+ #else
+     if (pthread_mutex_trylock(&q->mtx) != 0)
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -39,6 +39,7 @@
+ 
+ #ifdef _WIN32
+ #include <windows.h>
++#include "../../runtime/platform/ps3_evcv.h"   /* patch 6044 */
+ #else
+ #include <pthread.h>
+ #include <time.h>
+@@ -93,7 +94,7 @@
+     uint32_t            ea;      /* guest EA of the 128-byte flag */
+ #ifdef _WIN32
+     CRITICAL_SECTION    cs;
+-    CONDITION_VARIABLE  cv;
++    ps3_evcv              cv;   /* patch 6044: ps3_evcv, no ntdll futex queue */
+ #else
+     pthread_mutex_t     mtx;
+     pthread_cond_t      cond;
+@@ -120,7 +121,7 @@
+         /* Take the waiter's lock so the wake cannot fall between its check of
+          * the flag and its sleep. Caller holds no lock-line lock. */
+ #ifdef _WIN32
+-        EnterCriticalSection(&s->cs); WakeAllConditionVariable(&s->cv); LeaveCriticalSection(&s->cs);
++        EnterCriticalSection(&s->cs); ps3_evcv_wake_all(&s->cv); LeaveCriticalSection(&s->cs);
+ #else
+         pthread_mutex_lock(&s->mtx); pthread_cond_broadcast(&s->cond); pthread_mutex_unlock(&s->mtx);
+ #endif
+@@ -146,7 +147,7 @@
+               g_spu_line_commit_hook = spurs_commit_hook; }
+ #ifdef _WIN32
+             InitializeCriticalSection(&s_ef_sync[i].cs);
+-            InitializeConditionVariable(&s_ef_sync[i].cv);
++            ps3_evcv_init(&s_ef_sync[i].cv);
+ #else
+             pthread_mutex_init(&s_ef_sync[i].mtx, NULL);
+             pthread_cond_init(&s_ef_sync[i].cond, NULL);
+@@ -208,7 +209,7 @@
+ static inline int ef_wait_timed(EventFlagSync* s, unsigned ms)
+ {
+ #ifdef _WIN32
+-    return SleepConditionVariableCS(&s->cv, &s->cs, ms) ? 1 : 0;
++    return ps3_evcv_sleep_cs(&s->cv, &s->cs, ms) ? 1 : 0;
+ #else
+     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+     ts.tv_sec += ms / 1000; ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+@@ -220,7 +221,7 @@
+ static inline void ef_broadcast(EventFlagSync* s)
+ {
+ #ifdef _WIN32
+-    WakeAllConditionVariable(&s->cv);
++    ps3_evcv_wake_all(&s->cv);
+ #else
+     pthread_cond_broadcast(&s->cond);
+ #endif
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -45,6 +45,7 @@
+ 
+ #ifdef _WIN32
+ #include <windows.h>
++#include "../../runtime/platform/ps3_evcv.h"   /* patch 6044 */
+ #else
+ #include <time.h>
+ #endif
+@@ -973,7 +974,7 @@
+ #ifdef _WIN32
+ static volatile LONG s_label_seq = 0, s_label_waiters = 0;
+ static SRWLOCK s_label_lock = SRWLOCK_INIT;
+-static CONDITION_VARIABLE s_label_cv = CONDITION_VARIABLE_INIT;
++static ps3_evcv s_label_cv = PS3_EVCV_INIT;   /* patch 6044: ps3_evcv, no ntdll futex queue */
+ u32 cellGcm_label_seq(void) { return (u32)InterlockedCompareExchange(&s_label_seq, 0, 0); }
+ void cellGcm_label_notify(void)
+ {
+@@ -981,7 +982,7 @@
+     if (InterlockedCompareExchange(&s_label_waiters, 0, 0) != 0) {
+         AcquireSRWLockExclusive(&s_label_lock);
+         ReleaseSRWLockExclusive(&s_label_lock);
+-        WakeAllConditionVariable(&s_label_cv);
++        ps3_evcv_wake_all(&s_label_cv);
+     }
+ }
+ void cellGcm_label_wait_seq(u32 seq, u32 timeout_ms)
+@@ -989,7 +990,7 @@
+     AcquireSRWLockExclusive(&s_label_lock);
+     InterlockedIncrement(&s_label_waiters);
+     if ((u32)InterlockedCompareExchange(&s_label_seq, 0, 0) == seq)
+-        SleepConditionVariableSRW(&s_label_cv, &s_label_lock, timeout_ms, 0);
++        ps3_evcv_sleep_srw(&s_label_cv, &s_label_lock, timeout_ms);
+     InterlockedDecrement(&s_label_waiters);
+     ReleaseSRWLockExclusive(&s_label_lock);
+ }

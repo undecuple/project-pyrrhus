@@ -11,7 +11,7 @@ The DLL is linked with the toolchain's -static-libgcc/-static-libstdc++ (port/cm
 needs no MinGW runtime DLL beside it.
 
 Verification: Windows build of kz2.exe; objdump -p lists at3_standalone.dll among kz2.exe's imports and only Windows
-system DLLs among at3_standalone.dll's (the RE notes "An earlier change").
+system DLLs among at3_standalone.dll's (the RE notes, 2026-10-22: the LGPL decoders as DLLs).
 Upstream candidate (general: any port that ships its executable). Written for this port.
 
 diff -ru a/CMakeLists.txt b/CMakeLists.txt

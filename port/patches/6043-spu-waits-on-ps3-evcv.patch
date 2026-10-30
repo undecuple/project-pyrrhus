@@ -1,0 +1,108 @@
+KZ2 patch 6043: the SPU runtime's condition variables on ps3_evcv (patch 6041) instead of the Win32
+CONDITION_VARIABLE: the blocking channel read (spu_ch_wait, 10 ms slices while an SPU waits on its mailbox, signal
+notification or event channel; woken by spu_ch_wake on every producer write), the SPURS task WAIT_SIGNAL park
+(spu_workload.c, 1 s slices) and the async SPU task pool's idle wait (spu_async_pool.h, patch 6031, timed). Under Wine
+these waited in ntdll's RtlWaitOnAddress, whose futex queue corrupts itself when a timeout meets a wake (patch 6041's
+header); the channel wait is the busiest timed wait left after patch 7007. Same API and behaviour; the pthread
+branches are unchanged.
+
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -44,6 +44,7 @@
+ #endif
+ #include <time.h>
+ #include "../platform/win32_compat.h"
++#include "../platform/ps3_evcv.h"   /* patch 6043: the channel-stall wait on ps3_evcv, no ntdll futex queue */
+ #include "ps3emu/log_first.h"
+ 
+ #ifdef __cplusplus
+@@ -1270,7 +1271,7 @@
+ void spu_ch_wake(spu_context* ctx)
+ {
+     if (!ctx) return;
+-    WakeAllConditionVariable((CONDITION_VARIABLE*)&ctx->ch_wait_cv);
++    ps3_evcv_wake_all((ps3_evcv*)&ctx->ch_wait_cv);   /* patch 6043 */
+ }
+ 
+ /* PS3_FTRACE: when this SPU thread last left a blocking wait. The time between
+@@ -1316,8 +1317,7 @@
+             }
+             AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
+             if (!spu_ch_ready(ctx, channel))
+-                SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
+-                                          (SRWLOCK*)&ctx->ch_wait_lock, 10, 0);
++                ps3_evcv_sleep_srw((ps3_evcv*)&ctx->ch_wait_cv, (SRWLOCK*)&ctx->ch_wait_lock, 10);
+             ReleaseSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
+             unsigned long long waited = GetTickCount64() - start;
+             if (waited >= next_hb) {
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -17,6 +17,7 @@
+ #include "spu_async_pool.h"   /* KZ2 patch 6031 */
+ #ifdef _WIN32
+ #include <windows.h>
++#include "../platform/ps3_evcv.h"   /* patch 6043 */
+ #else
+ #include <pthread.h>
+ #include <errno.h>
+@@ -1299,7 +1300,7 @@
+ 
+ #ifdef _WIN32
+ static SRWLOCK            s_sig_lock = SRWLOCK_INIT;
+-static CONDITION_VARIABLE s_sig_cv;   /* zero-init == CONDITION_VARIABLE_INIT */
++static ps3_evcv             s_sig_cv;   /* zero-init == PS3_EVCV_INIT (patch 6043: no ntdll futex queue) */
+ #else
+ static pthread_mutex_t s_sig_lock = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_cond_t  s_sig_cv   = PTHREAD_COND_INITIALIZER;
+@@ -1481,7 +1482,7 @@
+     (void)opaque;
+ #ifdef _WIN32
+     AcquireSRWLockExclusive(&s_sig_lock);
+-    WakeAllConditionVariable(&s_sig_cv);
++    ps3_evcv_wake_all(&s_sig_cv);
+     ReleaseSRWLockExclusive(&s_sig_lock);
+ #else
+     pthread_mutex_lock(&s_sig_lock);
+@@ -1549,7 +1550,7 @@
+         if (!k || (((uint32_t)(k >> 32) + CSTS_SIGNALLED) & ~127u) != line) continue;
+ #ifdef _WIN32
+         AcquireSRWLockExclusive(&s_sig_lock);
+-        WakeAllConditionVariable(&s_sig_cv);
++        ps3_evcv_wake_all(&s_sig_cv);
+         ReleaseSRWLockExclusive(&s_sig_lock);
+ #else
+         pthread_mutex_lock(&s_sig_lock);
+@@ -1626,7 +1627,7 @@
+ #ifdef _WIN32
+     AcquireSRWLockExclusive(&s_sig_lock);
+     while (!spurs_bitset_test(taskset_ea + CSTS_SIGNALLED, taskId)) {
+-        if (!SleepConditionVariableSRW(&s_sig_cv, &s_sig_lock, 1000, 0)) {
++        if (!ps3_evcv_sleep_srw(&s_sig_cv, &s_sig_lock, 1000)) {
+             static int _n = 0;
+             if (++secs && _n < 16) { _n++;
+                 fprintf(stderr, "[spu_workload] task %u (taskset 0x%08X) sleeping "
+--- a/runtime/spu/spu_async_pool.h
++++ b/runtime/spu/spu_async_pool.h
+@@ -32,17 +32,18 @@
+ 
+ #ifdef _WIN32
+ #include <windows.h>
++#include "../platform/ps3_evcv.h"
+ typedef SRWLOCK            pool_lock_t;
+-typedef CONDITION_VARIABLE pool_cv_t;
++typedef ps3_evcv             pool_cv_t;   /* patch 6043: ps3_evcv, no ntdll futex queue */
+ #define POOL_LOCK_INIT     SRWLOCK_INIT
+ static void pool_lock(pool_lock_t* l)   { AcquireSRWLockExclusive(l); }
+ static void pool_unlock(pool_lock_t* l) { ReleaseSRWLockExclusive(l); }
+-static void pool_cv_init(pool_cv_t* c)  { InitializeConditionVariable(c); }
++static void pool_cv_init(pool_cv_t* c)  { ps3_evcv_init(c); }
+ static void pool_cv_destroy(pool_cv_t* c) { (void)c; }
+-static void pool_cv_signal(pool_cv_t* c) { WakeConditionVariable(c); }
++static void pool_cv_signal(pool_cv_t* c) { ps3_evcv_wake_one(c); }
+ /* -> 0 = woken (or spurious), 1 = timed out */
+ static int  pool_cv_wait(pool_cv_t* c, pool_lock_t* l, unsigned ms)
+-{ return SleepConditionVariableSRW(c, l, ms, 0) ? 0 : (GetLastError() == ERROR_TIMEOUT); }
++{ return ps3_evcv_sleep_srw(c, l, ms) ? 0 : (GetLastError() == ERROR_TIMEOUT); }
+ #else
+ #include <errno.h>
+ #include <pthread.h>

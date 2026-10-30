@@ -1,9 +1,12 @@
 # Known issues
 
 What is wrong or unfinished today, stated plainly. It is checked against [FEATURES.md](FEATURES.md) and the README's
-[status table](../README.md#status); where those change, this page changes with them. Last checked 2026-10-27.
-Everything below was observed on Windows x64 builds run under Proton on Linux. On real Windows only the installer and
-the first-run build have been tried (in a virtual machine without a GPU); the game has not been played there.
+[status table](../README.md#status); where those change, this page changes with them. Last checked 2026-10-29.
+Unless an entry says otherwise, everything below was observed by us on Windows x64 builds run under Proton on Linux;
+numbers come from scripted runs unless an entry says hand play. On native Windows our own tests covered the installer
+and the first-run build (in a virtual machine without a GPU). Players have since installed and played the game on
+native Windows 11 (issue #13: a laptop with an RTX 4070 Laptop GPU and Intel Arc integrated graphics); those are their
+reports, not our measurements.
 
 If you hit something that is not listed, please open an issue with the bug report template (it asks for your system
 and the newest log file).
@@ -14,22 +17,24 @@ and the newest log file).
   has not been played from start to finish, and the other missions have not been tried. Checkpoint saves are written
   in the first level; loading a checkpoint back is not checked yet, nor is loading a save copied over from RPCS3 (those
   are copied unchanged, with no promise that they load).
-- **Pre-release, playing on Windows untested.** The installer and portable zip are published as pre-releases on the
-  [releases page](https://github.com/undecuple/project-pyrrhus/releases). On 2026-10-28 the installer ran in a Windows
-  virtual machine with no GPU: the silent install, the check of every installed file, the game-file checks (including
+- **Pre-release; native Windows play so far from player reports only.** The installer and portable zip are published as pre-releases on the
+  [releases page](https://github.com/undecuple/project-pyrrhus/releases). On 2026-10-27 and again on 2026-10-28 (the last
+  run) the installer ran in a Windows 10 virtual machine with no GPU: the silent install, the check of every installed file, the game-file checks (including
   a OneDrive folder, wrong and swapped inputs, a drive root, a disc ISO and the disc's own EBOOT), the first-run build
   (18.6 minutes with 2 jobs), start-up and uninstall all worked. The game started there and stopped when it tried to
-  open its graphics device, because that machine has no GPU. Playing on Windows is still untested. See
+  open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players
+  (issue #13), not tested by us. See
   [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
-- **Not yet in the port:** the settings and controls menus, a keyboard-and-mouse scheme, skirmish with bots, online play,
+- **Not yet in the port:** the settings and controls menus, mouse look, skirmish with bots, online play,
   trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop"
   entry and a Keyboard page that saves key choices to `keybinds.ini`; both were checked in scripted runs only.
 
 ## Frame rate
 
-- **Not yet at 30.** One 330 s scripted run of the first level measured 23.3 frames per second after a logging
-  fix (earlier runs gave 13-17); the PS3 runs it at 30. It has not been measured by hand. Speed varies with what else
-  the computer is doing. The
+- **Not steadily at 30.** One 330 s scripted run of the first level on 2026-10-22 measured 23.3 frames per second
+  after a logging fix (earlier runs gave 13-17). Short scripted turn-and-walk windows on 2026-10-29 gave a median of
+  30.8 with the older defaults and 32.6 with the native post-processing that is now the default (single runs 22-44).
+  The PS3 runs it at 30. It has not been measured by hand. Speed varies with what else the computer is doing. The
   translated SPU code is built for AVX and FMA3, so the port needs a CPU from about 2013 or later; it checks at start-up
   and says so if they are missing.
 - **Heavy scenes are slowest:** large firefights and the post-processing stages (the game runs these on its SPUs) cost
@@ -61,8 +66,10 @@ and the newest log file).
   screen is white, please report it with your compositor and GPU.
 - **Mouse cursor:** the cursor used to stay visible over the game. Patch 2098 hides it while the window has focus; this
   was checked on a virtual display only, not on a Wayland compositor. If it is still visible in game, please report it.
-- **Compared with RPCS3:** the first level matches RPCS3's frames in the checks made so far, but only one level has
-  been compared. Other levels may show missing or wrong effects.
+- **Green sky in the first level:** the sky over Corinth River draws green instead of hazy grey and yellow. It shows in
+  our own scripted runs and in a player report (an RTX 5070 Ti); the cause is not yet known.
+- **Compared with RPCS3:** apart from the sky above, the first level matched RPCS3's frames in the checks made so far,
+  but only one level has been compared. Other levels may show missing or wrong effects.
 - **Seen in hand-play recordings (2026-10-22):** with PlayStation 4 or 5 symbols, the START and SELECT labels (OPTIONS, TOUCHPAD,
   CREATE) were drawn as white boxes; fixed since (the wrong font face was picked), checked in scripted runs; "LOADING..." can be drawn twice, one line over the other
   (seen after Mission Select or Continue, not yet reproduced); the load into the first level shows a black, frozen
@@ -104,10 +111,12 @@ and the newest log file).
 - **Motion sections:** the real motion sensor reaches the game (the loading screen tilts). The campaign's valve and
   charge sections have not been done by hand yet. As a stand-in, holding L1 and R1 and moving the right stick turns the
   valve; that it completes the valve is not proven.
-- **Keyboard and mouse:** there is no keyboard-and-mouse play yet.
+- **Keyboard and mouse:** the game can be played with a keyboard (the default key layout; a player did so in issue #13), but there is no mouse look yet, so a gamepad is recommended.
 
 ## Game data and version
 
+- **Downloadable content:** the downloadable content (the multiplayer map packs) is not used yet, even when it is
+  installed for RPCS3. The campaign does not need it.
 - **US disc only:** the port targets the US disc (BCUS98116) with update 1.29. Other regions are untested.
 - **Update 1.29:** its added archives and patch files are read; the effect of the patches on the game's data is not
   fully checked yet.
@@ -117,5 +126,12 @@ and the newest log file).
 ## Building
 
 - The build is heavy: each lifted source chunk can need over 1 GB of memory to compile, the build takes roughly 18
-  minutes with four jobs, and `kz2.exe` is about 1 GB. 16 GB of RAM or more is advised.
+  minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. 16 GB of RAM or more
+  is advised (8 GB works with 2 jobs; see [requirements.md](requirements.md)).
 - macOS and native Windows builds are untested ([BUILDING.md](BUILDING.md)).
+- **Install folder on an NTFS drive.** The launcher links your game folder into the install folder's `vfs` folder,
+  and the game writes its caches there. A drive that cannot hold such a link (FAT32 or exFAT, common on USB drives
+  and SD cards) gets a folder of its own under `%LOCALAPPDATA%\Project Pyrrhus` (`vfs-` and six letters and digits,
+  one per install folder) instead, and the game keeps using that folder from then on; uninstalling removes it. With a
+  disc ISO, a FAT32 install drive is refused before the copy, because FAT32 cannot hold the game's 6.5 GiB archive.
+  Tested with host tests; not yet confirmed on Windows.

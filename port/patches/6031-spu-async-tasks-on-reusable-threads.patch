@@ -1,7 +1,7 @@
 KZ2 patch 6031: async SPU tasks run on reusable host threads (spu_async_pool) instead of a new thread per task.
 
 spu_workload_dispatch_async started every SPURS task on a new detached host thread with a 256 MB stack reservation.
-Killzone 2 starts about 150 tasks a second in a level (Physics.KdTree, Gfx.Scene.Portals, Gfx.PB.*): an earlier change measured
+Killzone 2 starts about 150 tasks a second in a level (Physics.KdTree, Gfx.Scene.Portals, Gfx.PB.*): a profile of a level measured
 cellSpursCreateTaskWithAttribute at 0.23 ms per call on the main thread (mostly CreateThread under Wine, which also runs
 every DLL's thread attach and detach) and about 2 cores spent in threads that lived under 0.25 s.
 runtime/spu/spu_async_pool.h (header-only, static functions, so whatever compiles spu_workload.c needs no new source): submit hands the job to a parked thread if there is one, else starts a new thread

@@ -1,6 +1,6 @@
 /* Killzone 2 port: text edits of the front end's SVML pages (ENHANCEMENT).
  *
- * C++ port of two Python reference transforms in the maintainer's data tools, not in the public tree: jsp_overlay.py
+ * C++ port of two Python reference transforms in the project's private data tools (not in the public tree): jsp_overlay.py
  * (exit_page, check, renumber, popup_strings) and kbpage.py (patch_options, keyboard_page, extract_descriptions). They
  * are the specification: a host test outside the public tree runs both on the same pages and requires byte-identical
  * output. Pure std::string, no regex (libstdc++'s std::regex recurses per character and the <_s> script blocks are
@@ -533,7 +533,7 @@ inline std::string kb_body(const std::vector<std::string>& descs)
     a("<_t name=\"kbHint\" c=\"_Small\" p=\"14," + I(KB_LIST_Y + KB_LIST_H + 4) + ",928,29\" ah=\"left\" av=\"middle\" l=\"#FFFFFFC0\" />");
     a("<_p: name=\"!\" g=\"0\" />");
     /* CDATA as in the game's own script blocks: the captions hold "<br>", which a plain <_s> body would end at
-     * (kbpage.py wrote the body plain; kz2-r47-m3: black page, no script ran; re-data request in the runtime report) */
+     * (kbpage.py wrote the body plain; a test run showed a black page because no script ran) */
     a("<_s name=\"keyboardscript\" ><![CDATA[\r\n" + kb_script(descs) + "]]></_s>");
     a("<_q a=\"static://script.keyboardscript.ClosePage\" b=\"CIRCLE_BUTTON\" name=\"quicklink.back\" />");
     a("<_q a=\"static://script.keyboardscript.CaptureSecond\" b=\"SQUARE_BUTTON\" name=\"quicklink.second\" />");
@@ -641,7 +641,7 @@ inline std::string patch_options(const std::string& text)
      * does (`ShowOptionsSubMenu(2)` + `SetFocusSubMenu(gList)`), on the CONTROLS row's list (the anchor above pins it
      * as ShowOptionsSubMenu(3)); BACK then closes it onto the options list (GoBack -> HideListCurrentOptions).
      * kbpage.py's hook (gList:SetSelectedIndex, RenderSubMenu, SetSelectedIndex(3)) left no focus: the list's
-     * on-change handler cleared it, and the next BACK left the main menu for the start screen (kz2-r47-m4, -m5). */
+     * on-change handler cleared it, and the next BACK left the main menu for the start screen. */
     (void)n;
     const std::string hook = std::string("if gBrowserContext:GetApplicationValue(\"") + KB_FLAG + "\") == \"true\" then" + nl +
         "gBrowserContext:SetApplicationValue(\"" + KB_FLAG + "\", \"false\")" + nl +
