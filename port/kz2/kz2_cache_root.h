@@ -1,5 +1,5 @@
 /*
- * Killzone 2 port: the game folder read in place, every write under KZ2_CACHE_ROOT (an earlier changeb, the link-free
+ * Killzone 2 port: the game folder read in place, every write under KZ2_CACHE_ROOT (the link-free
  * install). The shape is Project Helghast's (the Killzone 3 PC port, port/kz3/main.cpp kz3_split_roots and
  * KZ3_CACHE_ROOT, same author, MIT); KZ3 adds KZ3_CACHE_ROOT with the same names.
  *

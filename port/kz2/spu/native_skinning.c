@@ -24,16 +24,16 @@
  *            [r3 + 32 k + 16] = hi16(D.z) << 16 | hi16(Nu.x), hi16(Nu.y) << 16 | hi16(Nu.z), pack(B), pack(C)
  * Every float through the runtime's own helpers or native_simd.h's wrappers of them on full quadwords in the SPU
  * code's operand order (lane-wise, so every lane has the lifted code's bits); cuflt/csflt of a byte are exact in any
- * conversion; the constants are those of the pool [0x5ED0, 0x5FA0) (the gate checks its hash). An earlier changeb (speed, same
+ * conversion; the constants are those of the pool [0x5ED0, 0x5FA0) (the gate checks its hash). An earlier change (speed, same
  * bits): the three unit steps share one fi(frsqest) (sk_rlen3, lanes transposed) done in float by sk_rsq, cflts(142)
  * by sk_cflts142 (both equal to the helpers on all 2^32 inputs: tools/spu/test_native_skin_ops.c), the record bytes in
  * one 16-byte copy, the bulk's loops unrolled, and lane 3 (dead) left out of the fast form's range and fma checks.
  *
  * Registers: the loop leaves r3 + 32 n, r4 and r5 + 16 (n + 1), r6 + 26 + 20 n, r9 - n (every lane, as the `ai`s do);
  * the native code sets those; the other registers it writes (r2, r7, r8, r10-r79: the ABI's volatile ones) are not
- * read before written again after the return (tools/spu/live_proof.py from 0x4E7C, an earlier changeb: RESULT clean with the
+ * read before written again after the return (tools/spu/live_proof.py from 0x4E7C, an earlier change: RESULT clean with the
  * walker following the jobs' brsl/ai/bi interrupt idiom, the frames above seeded, the four callbacks through
- * [0x6080] + 0x40 walked into the job manager at 0x1820 and --stop at its job-call continuation; re-notes "An earlier changeb").
+ * [0x6080] + 0x40 walked into the job manager at 0x1820 and --stop at its job-call continuation; re-notes "An earlier change").
  * Declines (the lifted loop runs) unless 1 <= n <= 4096, r3 is 16-byte aligned, and the output [r3, r3 + 32 n) lies
  * inside the local store apart from everything the loop reads: the records, the two vertex streams and both palettes
  * (256 matrices from each base). The pipelined loop also reads vertex n's data (one prefetch past the end): reads
@@ -88,7 +88,7 @@ static inline __attribute__((always_inline)) __m128 sk_blend(sk_ctx* x, __m128 x
 {
     return sk_fma(x, x2, w2, sk_fma(x, x1, w1, sk_fm(x, x0, w0)));
 }
-/* lanes 0-2 below 2^20 in magnitude (no NaN, no infinity). Lane 3 is not looked at (an earlier changeb): no output takes
+/* lanes 0-2 below 2^20 in magnitude (no NaN, no infinity). Lane 3 is not looked at: no output takes
  * anything from lane 3 of the bulk (the stores and the unit steps use lanes 0-2, the matrices' lane 3 only reaches
  * lane 3 of a result, p and n are read through splats of lanes 0-2, every op is lane-wise), so lane 3 may hold
  * anything in the fast form; the recorded positions and palettes carry large lane-3 words often enough to have
@@ -121,9 +121,9 @@ static inline const __m128* sk_mat(sk_pal* pal, const uint8_t* ls, uint32_t base
 }
 /* sk_rsq = rsq_ (native_simd.h since an earlier change, shared with VertexJob's relight) */
 static inline __m128 sk_rsq(__m128 l) { return rsq_(l); }
-/* An earlier changeb: the unit steps of N and the two byte vectors in one go: their squares transposed so lane j holds
+/* the unit steps of N and the two byte vectors in one go: their squares transposed so lane j holds
  * vector j's (x^2 + y^2) + z^2, then one frsqest and one fi for all three (lane-wise ops: every lane has the bits of
- * the separate sk_rlen calls of an earlier changea, which splatted lane 0 of each). r[j] = fi(l_j, frsqest(l_j)), splatted. */
+ * the separate sk_rlen calls of an earlier change, which splatted lane 0 of each). r[j] = fi(l_j, frsqest(l_j)), splatted. */
 static inline __attribute__((always_inline)) void sk_rlen3(__m128 v0, __m128 v1, __m128 v2, __m128 r[3])
 {
     __m128 s0 = fm_(v0, v0), s1 = fm_(v1, v1), s2 = fm_(v2, v2), s3 = _mm_set1_ps(1.0f);

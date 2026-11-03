@@ -55,7 +55,7 @@
 #include "kz2_log.h"   /* stdio stand-in for KZ3's file logger */
 #include "ps3emu/split_file.h"   /* patch 6034: ps3_sf_has_parts for the update miss hook */
 #include "kz2_fios_stamp.h"       /* FIOS disk cache stamp (patch 6035 pre-open hook) */
-#include "kz2_cache_root.h"       /* KZ2_CACHE_ROOT: the dump read in place, writes apart (an earlier changeb) */
+#include "kz2_cache_root.h"       /* KZ2_CACHE_ROOT: the dump read in place, writes apart */
 #include "ps3emu/input_latency.h" /* patch 6037: input-to-present probe (KZ2_LATENCY=1) */
 
 #ifdef _WIN32
@@ -1056,7 +1056,7 @@ int main(int argc, char** argv)
     derive_vfs_root(eboot);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
     setup_update_dir();
-    kz2_split_roots();       /* KZ2_CACHE_ROOT (an earlier changeb): unset = today's layout */
+    kz2_split_roots();       /* KZ2_CACHE_ROOT: unset = today's layout */
 
     ppu_recomp_register();   /* lifted function table -> address map */
     ps3_load_prx_modules();  /* this game's lifted system PRX, if it has any */

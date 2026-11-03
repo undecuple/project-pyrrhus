@@ -25,9 +25,9 @@
  * KZ2_NATIVE_TOGGLE, tools/spu/toggle_ab.py: the RE notes "An earlier change"); VertexJob's memcpy since an earlier change
  * (its scratch registers proven unread by tools/spu/live_proof.py, and its A/B: the RE notes "An earlier change"); VertexJob's
  * vertex emitter since an earlier change (decided after an earlier change's gate and A/B: the RE notes "An earlier change"); Anim.Skinning's
- * skinning loop since an earlier change (decided after an earlier changeb's gate and A/B: the RE notes "An earlier changeb"); VertexJob's
- * emitter with its relight and packing in SSE (slot 81) since an earlier changea (after an earlier changeb's gate and A/B:
- * the RE notes "An earlier changeb"; its gate on 0x50F8 comes before slot 79's, so slot 79 runs only with
+ * skinning loop since an earlier change (decided after an earlier change's gate and A/B: the RE notes "An earlier change"); VertexJob's
+ * emitter with its relight and packing in SSE (slot 81) since an earlier change (after an earlier change's gate and A/B:
+ * the RE notes "An earlier change"; its gate on 0x50F8 comes before slot 79's, so slot 79 runs only with
  * KZ2_NATIVE_JOB_VJLIGHT=0, and KZ2_NATIVE_JOB_VJVERT=0 turns both forms off: slot 81's flags are VJLIGHT|VJVERT). */
 static const char* const kz2_native_default_on[] = {
     "KZ2_NATIVE_JOB_DOF",      "KZ2_NATIVE_JOB_UPSAMPLE",     "KZ2_NATIVE_JOB_POSTMIX",   "KZ2_NATIVE_JOB_BLUR",
@@ -42,7 +42,7 @@ static const char* const kz2_native_default_on[] = {
  * again on The New Sun's recording (800/800). The other 34 post slots were never called in a recorded run: off unless
  * their flag is 1 or KZ2_NATIVE_JOB_POST=1. EdgeAnim's kernels (75, 76) and VertexJob's .bss clear (77) and memcpy
  * (78) on the A/B route's recording (464/464 over 29 slots, twice); the vertex emitter (79) on an earlier change's (63/63);
- * Anim.Skinning's loop (80) on an earlier changeb's (64/64); the SSE emitter (81) on an earlier changeb's (64/64). */
+ * Anim.Skinning's loop (80) on an earlier change's (64/64); the SSE emitter (81) on an earlier change's (64/64). */
 static const int kz2_native_play_recorded[] = { 0, 1, 2, 3, 4, 8, 23, 39, 52, 53, 55, 58, 59, 61, 64, 65,
                                                 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81 };
 

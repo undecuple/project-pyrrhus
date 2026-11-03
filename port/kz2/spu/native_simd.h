@@ -160,7 +160,7 @@ static inline __m128i cfltu_(__m128 x, int i8)
     return _mm_cvttps_epi32(_mm_max_ps(p, _mm_setzero_ps()));
 }
 
-/* fi(l, frsqest(l)) (an earlier changeb, native_skinning.c's sk_rsq until an earlier change): the helpers' steps for lanes with a normal exponent (1-254), in float. frsqest:
+/* fi(l, frsqest(l)) (native_skinning.c's sk_rsq until an earlier change): the helpers' steps for lanes with a normal exponent (1-254), in float. frsqest:
  * exponent 190 - ((e + 1) >> 1), fraction spu_frsqest_fraction_lut[(l >> 18) & 63]; fi: base = the estimate with its
  * low 10 bits cleared, step = those 10 bits times 2^(exponent - 140) (exact in float: the exponent is 63-189, so a
  * normal power of two times a 10-bit integer; the helper's double gives the same value), y = (l & 0x7FFFF) 2^-19

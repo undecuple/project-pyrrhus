@@ -69,7 +69,7 @@ LEAF=0x4100-0x4104 run clean "r6 outside the one range given"
 LEAF=0x4100-0x4104,0x4104-0x4108 run read "r6 written in the second range" "job:0x4008"
 KEEP=6 run clean "r6 kept (the native code leaves it as the SPU code does)"
 KEEP=2-5,7 run read "a kept list without r6" "job:0x4008"
-# an earlier changeb: the interrupt enable idiom, then a read of r6 past it (job:0x4014); --stop at the job manager's entry
+# the interrupt enable idiom, then a read of r6 past it (job:0x4014); --stop at the job manager's entry
 idiom() {
   mk "$O/job.dis" \
     "0x4000 il \$r9, 0" \

@@ -918,7 +918,7 @@ static void synth_skin(spu_context* c, uint64_t seed)
                 for (int r = 0; r < 4; r++) be32w(c->ls + b + 64 * j + 16 * r + 12, r == 3 ? 0x3F800000u : 0);
         }
     }
-    if (rnd() % 4 == 0) {   /* an earlier changeb: random lane-3 words (NaN, infinity, huge; the fast form ignores lane 3) */
+    if (rnd() % 4 == 0) {   /* random lane-3 words (NaN, infinity, huge; the fast form ignores lane 3) */
         for (uint32_t k = 0; k <= n; k++) {
             be32w(c->ls + r4 + 16 * k + 12, rnd());
             be32w(c->ls + r5 + 16 * k + 12, rnd() % 2 ? rnd() : 0x7F800000u | rnd());
@@ -1115,7 +1115,7 @@ static void one(const char* name, int slot, uint32_t entry)
         n_imis += ib;
     }
     if (bad) n_mis++; else n_match++;
-    /* HARNESS_BENCH=R: the best of R runs of each side from the case's registers and local store. An earlier changeb: the
+    /* HARNESS_BENCH=R: the best of R runs of each side from the case's registers and local store. An earlier change: the
      * local store is restored before every run (outside the timing): not every gate is idempotent on it. ILR (slot
      * 68) keeps its row counter in its stack frame ([r1 + 0x30], incremented per row until it equals [r1 + 0x50]):
      * a second run from the same registers started past the end, so the lifted loop ran ~2^32 rows (the "hang"

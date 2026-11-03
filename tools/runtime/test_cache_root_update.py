@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test (an earlier changeb): updating a junction install to a payload whose runtime reads KZ2_CACHE_ROOT keeps the
+"""Host test: updating a junction install to a payload whose runtime reads KZ2_CACHE_ROOT keeps the
 player's saves, settings and caches. Drives tools/release/launch.py's own functions (link_free, drop_link, game_env)
 on a fake install (a symlink stands in for the junction) and resolves the runtime's paths with the rules of
 port/kz2/kz2_cache_root.h (kz2_cache_root_plan; compiled and tested in C by test_cache_root.sh) and ppu_fs.cpp host_path.

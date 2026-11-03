@@ -465,7 +465,7 @@ def main():
     lj = os.path.join(out, "spu_lift.json")
     n_now = len(results)
     if a.only and os.path.exists(lj):
-        # an earlier changeb: --only re-lifts some images; the others' rows stay (gen_spu_register.py registers every
+        # an earlier change: --only re-lifts some images; the others' rows stay (gen_spu_register.py registers every
         # image in spu_lift.json: replacing the file with the selected rows unregistered the rest)
         mine = {r["name"] for r in results}
         results += [r for r in json.load(open(lj)) if r["name"] not in mine]

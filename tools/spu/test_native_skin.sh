@@ -5,7 +5,7 @@
 # (tools/spu/native_diff.py synth --interp: the game's stream layout or others, random or few bones, odd floats a
 # quarter of the trials, zero vectors for the unit steps; 1 in 16 declined: an output over what the loop reads or
 # unaligned; at least 9/10 must run native). Then tools/spu/loop_dataflow.py on a small hand-written loop (no game
-# code): a two-stage software pipeline whose stores must come out with the right iteration's inputs. An earlier changeb:
+# code): a two-stage software pipeline whose stores must come out with the right iteration's inputs. An earlier change:
 # tools/spu/test_native_skin_ops.c, the kernel's own fi(frsqest) and cflts(142) against the helpers on all 2^32 inputs.
 # Needs the SPU lift ($KZ2_OUT/spu/lift) with gate 80 and the patched toolkit; no game data in git.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_native_skin.sh
@@ -34,7 +34,7 @@ echo "$df" | grep -A1 "STORE @00001014 \[r3+0+0\]" | grep -q "w0 = fm(\[r4+0\], 
   echo "$df" | grep -q "final pointers: r3=r3+96 r4=r4+64" ||
   { echo "FAIL test_native_skin: loop_dataflow.py on the pipeline sample"; echo "$df" | head -20; exit 1; }
 echo "loop_dataflow: the pipeline sample's three stores and pointers as expected"
-# an earlier changeb: sk_rsq and sk_cflts142 (the kernel's own fi(frsqest) and cflts(142)) against the helpers, every input
+# sk_rsq and sk_cflts142 (the kernel's own fi(frsqest) and cflts(142)) against the helpers, every input
 P="${KZ2_PATCHED_DIR:-$OUT/ps3recomp-patched}"
 if grep -qw fma /proc/cpuinfo && [[ -f "$P/runtime/spu/spu_helpers.h" ]]; then
   gcc -std=gnu17 -O2 -msse4.1 -mfma -w -ffp-contract=off -fno-strict-aliasing -I "$P/runtime/spu" -I "$P/include" \

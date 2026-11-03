@@ -1,4 +1,4 @@
-/* Host test (an earlier changeb): the two float steps native_skinning.c does itself instead of calling the runtime's helpers,
+/* Host test: the two float steps native_skinning.c does itself instead of calling the runtime's helpers,
  * against the helpers, on every 32-bit input:
  *   sk_rsq(l)        == spu_fi(l, spu_frsqest(l))   (the unit steps' reciprocal square root estimate)
  *   sk_cflts142(x)   == spu_cflts(x, 142)            (x 2^31 truncated, saturating)

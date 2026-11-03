@@ -15,7 +15,7 @@ Project Pyrrhus is a native Windows x64 port of **Killzone 2** (PS3, 2009), made
 code. You build it on your PC from your own US disc (BCUS98116) with the 1.29 update; it is **not an emulator** and
 **not a rewrite**, and it ships none of the game.
 
-**Status:** <!-- version -->[v0.1.7](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs (below). MIT licence. Direct3D 12 only.
+**Status:** <!-- version -->[v0.1.8](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs (below). MIT licence. Direct3D 12 only.
 
 **[Download](#download-and-install)** · **[Compatibility](#compatibility)** · **[Building](docs/BUILDING.md)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Reporting bugs](https://github.com/undecuple/project-pyrrhus/issues/new/choose)** · **[More](#more)**
 
@@ -56,7 +56,7 @@ No emulator runs while you play. If you play the game in the PS3 emulator RPCS3,
 your RPCS3 install ("Use my RPCS3 install"). What each must contain:
 [docs/GETTING-FILES.md](docs/GETTING-FILES.md). This project ships none of them and gives no decryption steps.
 
-1. Download the Windows installer (recommended) or the portable zip from <!-- version -->[v0.1.7](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) (every release is a pre-release for now).
+1. Download the Windows installer (recommended) or the portable zip from <!-- version -->[v0.1.8](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) (every release is a pre-release for now).
 2. Run it and point it at your disc dump, the 1.29 update and the decrypted EBOOT.
 3. It translates and builds the game's code on your machine; no game code, assets or keys are shipped or downloaded.
 4. Start the game from the launcher.

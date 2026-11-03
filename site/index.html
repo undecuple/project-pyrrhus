@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.7<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.8<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -141,6 +141,19 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.8</h2>
+<p class="meta">3 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Fixed</span>The game&#x27;s internal clock reads the real date on Windows (it read January 1970); save dates were already correct.</li>
+<li><span class="sec">Fixed</span>If the window&#x27;s back buffer cannot be fetched, the present skips its copy and resizes the window at the next present instead of using an empty buffer (this case was not reached in our runs).</li>
+<li><span class="sec">Changed</span>Options &gt; Display has a VSync row (on by default; off allows tearing), and a frame that the screen is not ready for is skipped instead of holding up the game.</li>
+<li><span class="sec">Changed</span>The texture cache size is a setting; the default stays at 8,192 entries.</li>
+<li><span class="sec">Changed</span>FSR 1 now runs before the HUD: the HUD, crosshair and subtitles are drawn at the window&#x27;s resolution, not upscaled.</li>
+<li><span class="sec">Changed</span>The game folder can be read in place: with a new install the launcher makes no folder link (writes go to the install&#x27;s vfs folder; saves and settings stay where they are).</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.7</h2>
 <p class="meta">2 Nov 2026 · pre-release</p>
 <ul class="rlist">
@@ -168,23 +181,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.5</h2>
-<p class="meta">30 Oct 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Fixed</span>The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks GitHub for a newer version: these checks now run beside the window, with a short line saying what is happening, instead of holding it until they end (on a slow drive Windows could mark the window &quot;Not responding&quot;). The setup log gives each check&#x27;s time. Refs #22.</li>
-<li><span class="sec">Fixed</span>A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads no longer use a Wine/Proton wait primitive that can corrupt its own wait list under load. No crash in 9 scripted runs since; not yet confirmed on native Windows.</li>
-<li><span class="sec">Fixed</span>The runtime&#x27;s other timed waits (the game&#x27;s system calls, the SPU runtime and the system libraries) no longer use that Wine/Proton wait primitive either; a stress test that makes the primitive fail within a second passes on the replacement. Not yet confirmed on native Windows.</li>
-<li><span class="sec">Fixed</span>SPU interrupts that arrive back to back now resume the interrupted job with its own registers.</li>
-<li><span class="sec">Fixed</span>Your own lines in <code>kz2-install.ini</code> stay: the launcher and the first run used to rewrite the whole file on every change, dropping comments, lower-casing keys and failing on a <code>%</code> in a path, a repeated key or a file saved in the Windows code page. They now change only the value they set; comments, the spelling of keys and keys they do not know stay as you wrote them. Tested with host tests.</li>
-<li><span class="sec">Fixed</span>A disc ISO with the install folder on a FAT32 drive: the first-run build now stops before copying anything and says why (FAT32 cannot hold a file of 4 GiB or more, and the game&#x27;s main archive is about 6.5 GiB), instead of failing part-way through the copy. Tested with host tests.</li>
-<li><span class="sec">Fixed</span>The setup and launcher logs also hide the user name in a Documents, Desktop or Downloads folder that Windows keeps outside your user folder (shown as <code>&lt;Documents&gt;</code>, <code>&lt;Desktop&gt;</code>, <code>&lt;Downloads&gt;</code>), in other accounts&#x27; folders (<code>&lt;user&gt;</code>), and in CMake&#x27;s and URL-encoded forms of your user folder.</li>
-<li><span class="sec">Added</span>Estimated hardware requirements to play and to build (README and <code>docs/requirements.md</code>): estimates, provisional until the game runs at full speed; hand play is not measured.</li>
-<li><span class="sec">Added</span>&quot;Use my RPCS3 install&quot; also finds an unzipped RPCS3 with its version in the folder name (such as <code>rpcs3-v0.0.34-...-win64</code>) in Documents, the Desktop and Downloads (also where Windows has moved them), Games or Emulators in your user folder, Program Files, and each local drive&#x27;s root and its Games, Emulators, Emulator or PS3 folder, and accepts a picked <code>config</code> or <code>dev_hdd0</code> folder inside it. One level deep only. Adapted from Project Helghast. Tested with host tests.</li>
-<li><span class="sec">Changed</span>Correction to 0.1.3&#x27;s notes: zlib is linked into the game only when the build&#x27;s compiler setup has it (our own Linux build). The first-run build of the installer and the portable zip has no zlib and uses the deflate decoder already in the runtime (from stb_image) for the same job; both decoders gave the same output in all 60 checks of our host test.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -198,14 +194,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The game&#x27;s internal clock reads the real date on Windows (it read January 1970); save dates were already correct.</span></li>
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> If the window&#x27;s back buffer cannot be fetched, the present skips its copy and resizes the window at the next present...</span></li>
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> Options &gt; Display has a VSync row (on by default; off allows tearing), and a frame that the screen is not ready for is...</span></li>
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The texture cache size is a setting; the default stays at 8,192 entries.</span></li>
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> FSR 1 now runs before the HUD: the HUD, crosshair and subtitles are drawn at the window&#x27;s resolution, not upscaled.</span></li>
+<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The game folder can be read in place: with a new install the launcher makes no folder link (writes go to the install&#x27;s...</span></li>
 <li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> gameplay.ini motion = auto|on|off: auto uses the controller&#x27;s own tilt when it has a working accelerometer and the...</span></li>
 <li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> Demolition charges could not be armed, and valves turned only part way, with a controller that has no motion sensor or...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> With a controller scheme other than Standard 1 (or the Modern layout), the keyboard followed the buttons instead of...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The sky in the first level is no longer green. Textures that came after a full upload buffer were skipped and stayed...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> Known issues and roadmap: offline Skirmish with bots works (checked in a scripted run on one map); the docs had said...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The game&#x27;s fast path for system library calls keeps the caller&#x27;s TOC slot, as the full path does (adapted from a...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The README and NOTICE list the project&#x27;s official channels, and say that builds come only from this repository&#x27;s...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> CI runs in a smaller Nix shell without RPCS3 and the GPU tools, which were built from source on every run; the checks...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -238,9 +234,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">v0.1.7</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">2 Nov 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">Download v0.1.7</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">v0.1.8</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">3 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">Download v0.1.8</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>

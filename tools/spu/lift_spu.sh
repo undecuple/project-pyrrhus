@@ -11,7 +11,7 @@
 #   $KZ2_OUT/spu/lift/spu_workloads.c                        kz2_spu_register_all() (tools/spu/gen_spu_register.py)
 #   $KZ2_OUT/spu/spu_lift.json, kz2_spu_manifest.json, elf_in/ (wrapped inputs), eboot_ver
 # Image ids: PM 2 (the runtime's WWS hooks key on it), ELFs 30+, job modules 200+.
-# --only NAME,... re-lifts those images and keeps the others (an earlier changeb; it used to delete all of lift/ and elf_in/).
+# --only NAME,... re-lifts those images and keeps the others (it used to delete all of lift/ and elf_in/).
 # Then build: tools/build-kz2.sh passes -DSPU_DIR=$KZ2_OUT/spu/lift when that directory has a spu_workloads.c.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,7 +20,7 @@ OUT="${KZ2_OUT:-work}"
 PT="$OUT/ps3recomp-patched"
 [[ -f "$PT/tools/spu_lifter.py" ]] || { echo "no $PT: run tools/ps3recomp-patched.sh first" >&2; exit 3; }
 S="$OUT/spu"
-# --only NAME,...: re-lift those images only (an earlier changeb): remove just their lift directories and keep the rest of
+# --only NAME,...: re-lift those images only: remove just their lift directories and keep the rest of
 # lift/ and elf_in/ (rewritten in place); lift_spu.py merges their rows into spu_lift.json. Without it: a full re-lift.
 only=""
 args=("$@")

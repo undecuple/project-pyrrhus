@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host test: port/kz2/kz2_cache_root.h (KZ2_CACHE_ROOT: the game folder read in place, every write under the cache
-# root; an earlier changeb), its wiring in main.cpp and the name tools/release/firstrun.py cache_root_supported looks for.
+# root; an earlier change), its wiring in main.cpp and the name tools/release/firstrun.py cache_root_supported looks for.
 # No game data, no GPU.
 #   nix develop --command tools/sandbox.sh -- tools/runtime/test_cache_root.sh
 set -euo pipefail

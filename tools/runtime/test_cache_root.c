@@ -1,4 +1,4 @@
-/* Host test: port/kz2/kz2_cache_root.h (KZ2_CACHE_ROOT, an earlier changeb). No game data, no GPU. */
+/* Host test: port/kz2/kz2_cache_root.h (KZ2_CACHE_ROOT, an earlier change). No game data, no GPU. */
 #include <stdio.h>
 #include <string.h>
 #include "../../port/kz2/kz2_cache_root.h"

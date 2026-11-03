@@ -1,7 +1,7 @@
 /* native_particles.c -- Particles.VertexJob (job_00cd7180, image 201) native code: the .bss clear (on by default,
  * KZ2_NATIVE_JOB_VJCLEAR=0 turns it off) and the memcpy (on by default since an earlier change, KZ2_NATIVE_JOB_VJCOPY=0 turns it off)
  * and the vertex emitter (on by default since an earlier change, KZ2_NATIVE_JOB_VJVERT=0 turns it off), and the same emitter
- * with its relight and packing in SSE (slot 81, an earlier change; on by default since an earlier changea, KZ2_NATIVE_JOB_VJLIGHT=0
+ * with its relight and packing in SSE (slot 81, an earlier change; on by default since an earlier change, KZ2_NATIVE_JOB_VJLIGHT=0
  * turns it off and slot 79 runs, KZ2_NATIVE_JOB_VJVERT=0 turns both forms off and the lifted emitter runs).
  *
  * The job's crt0 .bss clear, the first "continue at" gate (re/spu/native_gates.tsv column 7): the WWS job crt0 that
@@ -115,7 +115,7 @@ static int vj_memcpy_7F00(spu_context* ctx)   // @0x00007F00 (job_00cd7180)
  * colour and texture-coordinate floats through native_simd.h's wrappers, which return the helpers' bits for every
  * input (tools/spu/test_vjlight.c); its gate on 0x50F8 comes before slot 79's, so with both on slot 81 runs and with
  * slot 81 toggled off slot 79 does (the same-run A/B compares the two forms). Slot 81's flags are VJLIGHT|VJVERT
- * (an earlier changea): with slot 81 on by default, VJVERT=0 alone still means "the lifted emitter" (both gates off), VJLIGHT=0
+ *: with slot 81 on by default, VJVERT=0 alone still means "the lifted emitter" (both gates off), VJLIGHT=0
  * means slot 79, and an explicit 1 of either turns slot 81 on (native_flags.h rule 2).
  * ASSUMPTION (bounded): an SPU interrupt that the lifted code could take at the hops after the two bie
  * (0x58F4, 0x5960) is taken at the gate's return instead: the SPU itself delivers interrupts asynchronously, so a
@@ -340,10 +340,10 @@ static u128 vj_light_52C0(const spu_context* c, u128 r4, u128 a6, u128 a7, u128 
     return spu_selb(zero, spu_fm(r73e, r74e), r88ce);
 }
 
-/* the relight in SSE (slot 81, KZ2_NATIVE_JOB_VJLIGHT, on by default since an earlier changea). The same steps as vj_lerp_48E0 and
+/* the relight in SSE (slot 81, KZ2_NATIVE_JOB_VJLIGHT, on by default since an earlier change). The same steps as vj_lerp_48E0 and
  * vj_light_52C0 above, in the same order, each helper call replaced by native_simd.h's wrapper of it (fm_, fa_, fs_,
  * fma_, fms_, fnms_, fcgt_: the helper's own SSE fast path inline, the helper itself for any vector it treats
- * specially, so every lane has the helper's bits) and fi(frsqest) by rsq_ (an earlier changeb's sk_rsq, equal to the helpers
+ * specially, so every lane has the helper's bits) and fi(frsqest) by rsq_ (an earlier change's sk_rsq, equal to the helpers
  * on all 2^32 inputs). selb with a full-lane mask (fcgt, fsmbi 0xF / 0xFFF0, fsm of a word mask) is blendv/and; the
  * splats and word rotates are shuffles. frest + fi (the falloff mode) and the grid's cflts / csflt stay the helpers.
  * Host (the recorded relit calls, one core): about 61 -> 44 ns per relight (tools/spu/test_vjlight.c rec):

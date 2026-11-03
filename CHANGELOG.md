@@ -4,9 +4,10 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.8] - 2026-11-03 (pre-release)
 
 ### Fixed
+- The game's internal clock reads the real date on Windows (it read January 1970); save dates were already correct.
 - If the window's back buffer cannot be fetched, the present skips its copy and resizes the window at the next present instead of using an empty buffer (this case was not reached in our runs).
 
 ### Changed

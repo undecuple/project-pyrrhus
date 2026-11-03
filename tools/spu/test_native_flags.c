@@ -144,7 +144,7 @@ int main(void)
     expect("SKIN=0 leaves VJVERT on", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT default");
     setenv_(0, "KZ2_NATIVE_JOB_SKIN", "1");
     expect("SKIN=1 on", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, "KZ2_NATIVE_JOB_SKIN=1");
-    /* an earlier changea: slot 81 (the emitter with its relight in SSE, a gate on 0x50F8 checked before slot 79's) on by default;
+    /* slot 81 (the emitter with its relight in SSE, a gate on 0x50F8 checked before slot 79's) on by default;
      * its flags are VJLIGHT|VJVERT, so VJLIGHT=0 leaves slot 79 to run, VJVERT=0 turns both forms off (the lifted
      * emitter), and an explicit 1 of either turns it on */
     const char* VL = "KZ2_NATIVE_JOB_VJLIGHT|KZ2_NATIVE_JOB_VJVERT";
