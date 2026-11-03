@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.6<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.7<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -43,7 +43,7 @@
 <main class="main">
 <article id="status" class="news">
 <h2>Status: Partly playable</h2>
-<p class="meta">generated from the project's records · 18 game features · 20 port rows</p>
+<p class="meta">generated from the project's records · 18 game features · 21 port rows</p>
 <p>The same data as <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">FEATURES.md</a>, where every row has its evidence. <em>Works</em> is claimed only with a recorded result.</p>
 <ul class="portal">
 <li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>PPU lift of the EBOOT</b><span class="blurb">static recompilation of all PPU code</span></div><span class="st st-ok">Works</span></li>
@@ -109,7 +109,7 @@
 </tbody></table></div>
 </details>
 <h3>Port work and additions</h3>
-<p>5 works, 11 partial, 4 in progress, 0 not yet. Changes to how the game plays stay optional.</p>
+<p>5 works, 12 partial, 4 in progress, 0 not yet. Changes to how the game plays stay optional.</p>
 <details><summary>All port rows</summary>
 <div class="tw"><table>
 <thead><tr><th>Feature</th><th>What</th><th>State</th></tr></thead>
@@ -128,6 +128,7 @@
 <tr><td>Gyro stand-in for SIXAXIS</td><td>ENHANCEMENT: stick or mouse</td><td><span class="st st-prog">In progress</span></td></tr>
 <tr><td>Display modes</td><td>ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini</td><td><span class="st st-prog">In progress</span></td></tr>
 <tr><td>Keyboard and mouse</td><td>ENHANCEMENT: mouse look (raw input) and the keyboard</td><td><span class="st st-part">Partial</span></td></tr>
+<tr><td>Display options in the game</td><td>ENHANCEMENT: field of view (45-75), FSR 1 upscaling and sharpness as rows on the game&#x27;s own Display page</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gamepads: PlayStation and Xbox</td><td>ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Button prompt choice and pad layouts</td><td>ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gameplay options: aim assist switch, crouch and cover toggles</td><td>ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE)</td><td><span class="st st-part">Partial</span></td></tr>
@@ -140,6 +141,21 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.7</h2>
+<p class="meta">2 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Added</span><code>gameplay.ini</code> <code>motion = auto|on|off</code>: <code>auto</code> uses the controller&#x27;s own tilt when it has a working accelerometer and the right stick otherwise; <code>off</code> always uses the right stick; <code>on</code> only the controller&#x27;s tilt. The log says when a pad is reached over XInput (no motion sensors) and what that means for valves and charges (#36).</li>
+<li><span class="sec">Fixed</span>Demolition charges could not be armed, and valves turned only part way, with a controller that has no motion sensor or a pad mapper that stops the stick a little short of its end (a soft-lock in Blood Meridian). The game&#x27;s valve and charge code follows the tilt with a one-degree dead band, and a charge arms only between about 33 and 37 degrees, so the old stand-in armed only in the last 4 % of the stick&#x27;s travel. The right stick now drives that code directly: hold L1 and R1 as the game asks and push the stick more than half way. A virtual pad that reports a gyro or an empty motion sensor no longer counts as a motion controller. Tested with host tests; not yet played through a valve or charge in the game (#36).</li>
+<li><span class="sec">Fixed</span>With a controller scheme other than Standard 1 (or the Modern layout), the keyboard followed the buttons instead of the actions: F aimed and the right mouse button meleed. On foot, every key now does the action its <code>keybinds.ini</code> line names (right mouse zooms, F melees) whatever the layout; menus are unchanged. Checked under Proton with the Original and Modern layouts.</li>
+<li><span class="sec">Fixed</span>The sky in the first level is no longer green. Textures that came after a full upload buffer were skipped and stayed empty; the buffer is now submitted and the texture uploaded. Shown in scripted runs, not yet confirmed on Windows.</li>
+<li><span class="sec">Changed</span>Known issues and roadmap: offline Skirmish with bots works (checked in a scripted run on one map); the docs had said it was not in the port.</li>
+<li><span class="sec">Changed</span>The game&#x27;s fast path for system library calls keeps the caller&#x27;s TOC slot, as the full path does (adapted from a J-Stars Victory VS+ PC port by Tsamiuy, MIT). The translated Killzone 2 code does not read that slot today; it guards against a later toolkit change.</li>
+<li><span class="sec">Changed</span>The README and NOTICE list the project&#x27;s official channels, and say that builds come only from this repository&#x27;s GitHub Releases.</li>
+<li><span class="sec">Changed</span>CI runs in a smaller Nix shell without RPCS3 and the GPU tools, which were built from source on every run; the checks and host tests are the same.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.6</h2>
 <p class="meta">30 Oct 2026 · pre-release</p>
 <ul class="rlist">
@@ -147,7 +163,7 @@
 <li><span class="sec">Added</span>The first lines of the game&#x27;s log name the port version, when it was built, its patch set and whether it is an installed or portable copy.</li>
 <li><span class="sec">Changed</span>The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.</li>
 <li><span class="sec">Changed</span>With <code>aim_assist = auto</code> (the default), aim assist turns off while you aim with the mouse and comes back when you use a controller&#x27;s stick.</li>
-<li><span class="sec">Fixed</span>After updating over an older version, the game could keep using graphics pipelines saved by the older version, which lost the holographic sight&#x27;s reticle and glow, some post effects and some models, and could run slower (#25, #27). The saved pipeline list is now tied to the build that made it and is discarded after an update, with one line in the log; the first start after updating builds them again and can stutter briefly. Shown in scripted runs under Proton with a deliberately different build&#x27;s cache; not yet confirmed on Windows.</li>
+<li><span class="sec">Fixed</span>After updating over an older version, the game could keep using graphics pipelines saved by the older version, which lost the holographic sight&#x27;s reticle and glow (#25); a second report of missing effects and models (#27) fits this, not confirmed. The saved pipeline list is now tied to the build that made it and is discarded after an update, with one line in the log; the first start after updating builds them again and can stutter briefly. Shown in scripted runs under Proton with a deliberately different build&#x27;s cache; not yet confirmed on Windows.</li>
 <li><span class="sec">Fixed</span>A missing downloadable-content licence is logged in one short line.</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Release page<span aria-hidden="true"> &gt;</span></a></p>
@@ -169,14 +185,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.5">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.4</h2>
-<p class="meta">29 Oct 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Fixed</span>The release build now carries FFmpeg&#x27;s headers into the installer and the portable zip, which the first run needs since 0.1.3; 0.1.3&#x27;s own release build stopped there, so 0.1.3 was tagged but not released, and this version holds everything listed under it.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.4">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -190,14 +198,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> Mouse look: the mouse turns the view directly through raw input, with no acceleration or smoothing. Sensitivity...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> The first lines of the game&#x27;s log name the port version, when it was built, its patch set and whether it is an...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> With aim_assist = auto (the default), aim assist turns off while you aim with the mouse and comes back when you use a...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> After updating over an older version, the game could keep using graphics pipelines saved by the older version, which...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.6</b> A missing downloadable-content licence is logged in one short line.</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> The setup window keeps responding while it checks your game files, looks for your RPCS3, copies an RPCS3 save or asks...</span></li>
-<li><time datetime="2026-10-30">10-30</time><span><b>0.1.5</b> A rare crash in the main menu (about one start in twenty in our scripted runs under Proton): the SPU scheduler threads...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> gameplay.ini motion = auto|on|off: auto uses the controller&#x27;s own tilt when it has a working accelerometer and the...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> Demolition charges could not be armed, and valves turned only part way, with a controller that has no motion sensor or...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> With a controller scheme other than Standard 1 (or the Modern layout), the keyboard followed the buttons instead of...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The sky in the first level is no longer green. Textures that came after a full upload buffer were skipped and stayed...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> Known issues and roadmap: offline Skirmish with bots works (checked in a scripted run on one map); the docs had said...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The game&#x27;s fast path for system library calls keeps the caller&#x27;s TOC slot, as the full path does (adapted from a...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> The README and NOTICE list the project&#x27;s official channels, and say that builds come only from this repository&#x27;s...</span></li>
+<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> CI runs in a smaller Nix shell without RPCS3 and the GPU tools, which were built from source on every run; the checks...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -230,9 +238,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">v0.1.6</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">30 Oct 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Download v0.1.6</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">v0.1.7</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">2 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">Download v0.1.7</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>

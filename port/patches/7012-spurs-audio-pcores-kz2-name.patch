@@ -1,0 +1,78 @@
+KZ2 patch 7012: Killzone 2's defaults for the P-core restriction (KZ3 patches 1136/1140): off unless
+asked for, and the audio SPURS named by KZ2's instance name.
+
+1. Off by default. In KZ2 the restriction showed no gain: the in-level
+   A/B kz2-spu25-pcores had 0 audio holes on both sides, and window fps was lower with it in 2 of 2 pairs on a loaded
+   machine (inconclusive). kz2_spu_pcores_env() picks the switch: KZ3_SPU_PCORES when set (KZ3's name and values),
+   else KZ2_SPU_PCORES (1 = on with KZ3's default scope: the spu_async job threads plus the audio SPURS kernel thread;
+   all; sets; 0 = off), else KZ2_SPU_PCORES_DEFAULT ("0"). Both readers (kz3_spu_thread_sched, kz3_spurs_pcore_thread)
+   use it. A quiet-host A/B is queued; default-on only if it shows no fps loss (and an audio gain if #27-like underruns
+   appear).
+2. KZ3 1140 restricts the kernel threads of the SPURS instances named in KZ3_SPU_PCORES_SPURS (unset = "LoPrio", KZ3's
+   audio SPU). Killzone 2's audio SPURS is "LowPriority" (1 SPU; nSpus 1 at the game's second
+   _cellSpursAttributeInitialize, major-fixes 2026-10-13): its one kernel thread runs only wid 8, the Snd jobs
+   (Snd.NextSynth image 225, Snd.Reverb 226; the RE notes rounds 2-5; KZ3_WAIT_ACCT in kz2-spu23-stk: thread
+   spurs-kern0:LowPriority pmrun:wid8 128-218 ms/s, job:ovl225/ovl226 only). Unset now means "LoPrio,LowPriority"
+   (KZ3_SPU_PCORES_SPURS_DEFAULT; neither game has an instance with the other's name). KZ3_SPU_PCORES_SPURS= (empty)
+   = none, as in 1140.
+Host test: tools/spu/test_r112_sched.sh (the picker, the default list).
+
+--- a/runtime/spu/kz3_spu_sched.h
++++ b/runtime/spu/kz3_spu_sched.h
+@@ -44,6 +44,24 @@
+     return 2;
+ }
+ 
++/* KZ2 patch 7012: the switch that applies. KZ3_SPU_PCORES (KZ3's name) wins when set; else KZ2_SPU_PCORES (KZ2's
++ * name, same values: 1 = KZ3's default scope, all, sets, 0); else the build's default, KZ2_SPU_PCORES_DEFAULT ("0" in
++ * KZ2 = off: no audio hole to fix in KZ2 and an inconclusive frame-rate A/B; NULL = KZ3's behaviour).
++ * The result is read like KZ3_SPU_PCORES. */
++#ifndef KZ2_SPU_PCORES_DEFAULT
++#define KZ2_SPU_PCORES_DEFAULT "0"
++#endif
++static inline const char* kz2_spu_pcores_pick(const char* kz3, const char* kz2, const char* dflt)
++{
++    if (kz3) return kz3;
++    if (kz2) return kz2[0] == '1' && !kz2[1] ? "" : kz2;   /* "1" = on, default scope ("" is not 0, all or sets) */
++    return dflt;
++}
++static inline const char* kz2_spu_pcores_env(void)
++{
++    return kz2_spu_pcores_pick(getenv("KZ3_SPU_PCORES"), getenv("KZ2_SPU_PCORES"), KZ2_SPU_PCORES_DEFAULT);
++}
++
+ #ifdef _WIN32
+ #include <windows.h>
+ #include <stdio.h>
+@@ -52,7 +70,7 @@
+     static volatile long s_state;          /* 0 = not computed, 1 = computing, 2 = done */
+     static uint64_t s_mask;
+     static ULONG s_ids[128]; static ULONG s_nids;
+-    const char* e = getenv("KZ3_SPU_PCORES");
++    const char* e = kz2_spu_pcores_env();   /* KZ2 patch 7012 */
+     int scope = kz3_sched_scope(e, async);
+     if (!scope) return 0;
+     if (s_state != 2) {
+@@ -127,13 +145,20 @@
+     return 0;
+ }
+ 
++/* KZ2 patch 7012: the default instance list names both games' audio SPURS. Killzone 2 calls its audio instance
++ * "LowPriority" (1 SPU; its kernel thread runs only wid 8, the Snd jobs Snd.NextSynth 225 and Snd.Reverb 226:
++ * the RE notes rounds 2-5, KZ3_WAIT_ACCT in kz2-spu23-stk), Killzone 3 "LoPrio". Neither game has an instance with
++ * the other's name. */
++#ifndef KZ3_SPU_PCORES_SPURS_DEFAULT
++#define KZ3_SPU_PCORES_SPURS_DEFAULT "LoPrio,LowPriority"
++#endif
+ /* Called by a SPURS kernel thread once its instance is known. Returns 1 when the thread was restricted. */
+ static inline int kz3_spurs_pcore_thread(const char* prefix)
+ {
+-    const char* e = getenv("KZ3_SPU_PCORES");
++    const char* e = kz2_spu_pcores_env();   /* KZ2 patch 7012 */
+     if (e && e[0] == '0') return 0;
+     const char* l = getenv("KZ3_SPU_PCORES_SPURS");
+-    if (!kz3_spurs_pcore_match(l ? l : "LoPrio", prefix)) return 0;
++    if (!kz3_spurs_pcore_match(l ? l : KZ3_SPU_PCORES_SPURS_DEFAULT, prefix)) return 0;   /* KZ2 patch 7012 */
+     return kz3_spu_thread_sched(1);   /* async scope: the default affinity mask (or CPU sets with =sets) */
+ }
+ 

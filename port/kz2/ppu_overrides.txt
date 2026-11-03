@@ -65,3 +65,9 @@
 000B1E78  # 1.29 cover finder (= v1.01 0xAD4F0): result at lr 0x1764D0 clears the cover_toggle latch when nothing is found
 00173E80  # 1.29 SoldierJoystickController::UpdateLook (= v1.01 0x16E620): notes C and dt for the mouse look
 0015A7F0  # 1.29 controller view setter (vtable slot 44: C+0x74, pitch C+0x78, pitch rate C+0xFC): mouse look pre-hook at lr 0x174CE8
+000821D0  # 1.29 motion getter(device, &a, &b, &c, &g): the right stick's tilt at the charge's lr 0x119CFC and the valve's lr 0x127288 (motion = auto|off, an earlier change)
+001174A8  # 1.29 ExplosiveLocation arm update (entity): "[motion] charge arm step" lines
+00125BF0  # 1.29 ValveRep update (rep, vtable 0xF7C1D4 slot): "[motion] valve" angle lines
+007D0818  # 1.29 tanf (libm): KZ2_FOV_LOG=1 lists the callers and arguments (an earlier change FOV search)
+0066F3C0  # 1.29 Camera FieldOfView writer (camera, resource): KZ2_FOV_LOG=1 (an earlier change FOV search)
+003D9640  # 1.29 Frustum perspective setter(frustum, pos, ?, ?, f1 near, f2 far, f3 FOV deg, f4 aspect): KZ2_FOV_LOG=1 lists callers (an earlier change FOV search); KZ2_FOV

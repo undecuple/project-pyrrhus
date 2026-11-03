@@ -109,6 +109,8 @@ RULES = [
     (TOOLKIT + "/third_party/at3_standalone/COPYING.LGPLv2.1", "licenses/at3_standalone-COPYING.LGPLv2.1.txt",
      "file", {}),
     ("public/licenses/LGPL-2.1.txt", "licenses/LGPL-2.1.txt", "file", {}),   # the one LGPL text; NOTICE.md links it
+    ("public/licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-LICENSE.txt", "file", {}),
+    ("public/licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "file", {}),
     ("public/README.md", "README.md", "file", {}),
     ("public/NOTICE.md", "NOTICE.md", "file", {}),
     ("installer/run.cmd", "run.cmd", "file", {}),

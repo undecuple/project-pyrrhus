@@ -1,7 +1,7 @@
 # Known issues
 
 What is wrong or unfinished today, stated plainly. It is checked against [FEATURES.md](FEATURES.md) and the README's
-[status table](STATUS.md); where those change, this page changes with them. Last checked 2026-10-29.
+[status table](STATUS.md); where those change, this page changes with them. Last checked 2026-11-02.
 Unless an entry says otherwise, everything below was observed by us on Windows x64 builds run under Proton on Linux;
 numbers come from scripted runs unless an entry says hand play. On native Windows our own tests covered the installer
 and the first-run build (in a virtual machine without a GPU). Players have since installed and played the game on
@@ -25,9 +25,13 @@ and the newest log file).
   open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players
   (issue #13), not tested by us. See
   [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
-- **Not yet in the port:** the settings and controls menus, skirmish with bots, online play,
+- **Not yet in the port:** most of the game's settings and controls menus (only the Display page has port rows, see Display below), online play,
   trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop"
   entry and a Keyboard page that saves key choices to `keybinds.ini`; both were checked in scripted runs only.
+- **Skirmish with bots (offline):** the main menu's Skirmish entry starts a match against bots. Checked in one scripted
+  run on one map with 7 bots: the match loaded, bots spawned, moved and scored, and our player fired, died and respawned,
+  at about 15 frames per second. Other maps and modes, and hand play, are not checked by us. A player reports wrong
+  lighting on some guns and on one map in bot matches; we did not see it on the map we ran and are asking for details.
 
 ## Frame rate
 
@@ -66,8 +70,9 @@ and the newest log file).
   screen is white, please report it with your compositor and GPU.
 - **Mouse cursor:** the cursor used to stay visible over the game. Patch 2098 hides it while the window has focus; this
   was checked on a virtual display only, not on a Wayland compositor. If it is still visible in game, please report it.
-- **Green sky in the first level:** the sky over Corinth River draws green instead of hazy grey and yellow. It shows in
-  our own scripted runs and in a player report (an RTX 5070 Ti); the cause is not yet known.
+- **Green sky in the first level (fixed, not yet confirmed on Windows):** the sky over Corinth River drew green instead
+  of hazy grey and yellow, because textures loaded after a full upload buffer were skipped and stayed empty. They are
+  now uploaded; scripted runs show the real sky. If you still see a green sky, please report it with your GPU.
 - **Compared with RPCS3:** apart from the sky above, the first level matched RPCS3's frames in the checks made so far,
   but only one level has been compared. Other levels may show missing or wrong effects.
 - **Seen in hand-play recordings (2026-10-22):** with PlayStation 4 or 5 symbols, the START and SELECT labels (OPTIONS, TOUCHPAD,
@@ -85,6 +90,8 @@ and the newest log file).
   reported to freeze the picture after the switch on a flip-model swap chain; the port now resizes the swap chain after
   every switch and keeps drawing (borderless) if a present fails, but this is only tried under Proton, not on real
   Windows.
+- **FSR 1 also upscales the HUD** (Options > Display > Upscaling): the game draws the HUD into the same image. With
+  a wide field of view the view widens at the very end of a cutscene's hand-over, not during it.
 - **Laptops with two graphics chips:** the game now asks Windows for the high-performance GPU first and logs every
   adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop; if the game still runs on
   the integrated chip, set `kz2.exe` to High performance in Windows' graphics settings and tell us in #13.
@@ -108,9 +115,7 @@ and the newest log file).
   default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
   aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
   with `aim_assist = auto` the aim assist turns off while the mouse aims.
-- **Motion sections:** the real motion sensor reaches the game (the loading screen tilts). The campaign's valve and
-  charge sections have not been done by hand yet. As a stand-in, holding L1 and R1 and moving the right stick turns the
-  valve; that it completes the valve is not proven.
+- **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks and push the right stick to one side (more than half way) and then the other; a controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. `motion = off` in `gameplay.ini` always uses the stick. The real motion sensor reaches the game (the loading screen tilts). A pad reached over XInput has no motion sensors, so the stick is used. Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
 - **Keyboard and mouse:** the game can be played with a keyboard and mouse: the mouse looks and aims, and its buttons fire and zoom by default (`keybinds.ini`). Mouse look has only been checked in scripted test runs, not yet by hand, and it does not work in vehicles or on mounted guns yet.
 
 ## Game data and version
@@ -128,7 +133,7 @@ and the newest log file).
 - The build is heavy: each lifted source chunk can need over 1 GB of memory to compile, the build takes roughly 18
   minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. 16 GB of RAM or more
   is advised (8 GB works with 2 jobs; see [requirements.md](requirements.md)).
-- macOS and native Windows builds are untested ([BUILDING.md](BUILDING.md)).
+- macOS and native Windows builds are untested ([BUILDING.md](BUILDING.md)). Cross builds from a Linux host outside our Nix shell: the toolchain fixes (#34) are checked with a test project and our own build, not on a real Fedora, Debian or Arch host.
 - **Install folder on an NTFS drive.** The launcher links your game folder into the install folder's `vfs` folder,
   and the game writes its caches there. A drive that cannot hold such a link (FAT32 or exFAT, common on USB drives
   and SD cards) gets a folder of its own under `%LOCALAPPDATA%\Project Pyrrhus` (`vfs-` and six letters and digits,

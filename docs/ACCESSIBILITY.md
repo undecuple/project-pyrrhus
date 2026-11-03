@@ -1,8 +1,8 @@
 # Accessibility
 
 What the port offers today to adjust how the game is played, seen and read. Facts only: where something is missing,
-this page says so. Last checked 2026-10-27; see also [KNOWN_ISSUES.md](KNOWN_ISSUES.md). No installer or portable zip
-is released yet, so the installer and Start menu entries below describe the release builds, which you cannot download yet.
+this page says so. Last checked 2026-11-02; see also [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The installer and portable zip are
+published as pre-releases; the installer and Start menu entries below belong to the installer.
 
 ## Controls
 
@@ -18,6 +18,7 @@ is released yet, so the installer and Start menu entries below describe the rele
   instead of hold, and can switch the aim assist off. All three are off or original by default; set them in
   `gameplay.ini` next to `keybinds.ini` (`crouch_toggle = 1`, `cover_toggle = 1`, `aim_assist = off`; see BUILDING.md for
   the `KZ2_*` variables). There is no in-game page for them yet.
+- **Motion controls are optional.** `motion = off` in `gameplay.ini` replaces every tilt (valves, charges) with the right stick; hold L1 and R1 as the game asks. `auto` (the default) uses the controller's tilt only when it has a working accelerometer.
 - **Not yet:** remapping single pad buttons, and the game's own controls menu (sensitivity, invert Y).
 
 ## Button prompts
@@ -31,6 +32,8 @@ in `keybinds.ini` under `[prompts]`. Known problem: in the PS4/PS5 set, the STAR
 - **Window modes.** Borderless window (the default for a new install), windowed or fullscreen: pick one in the
   installer, in the portable zip's first run or with the Start menu entry "Display". Alt+Enter switches between
   borderless and a window while playing; a `display.ini` you already have keeps its mode.
+- **Field of view** can be widened in Options > Display (45-75; 45 is the original), which can help with motion
+  sickness. It changes first-person play only; cutscenes keep their framing.
 - **Motion blur** is off by default (it looks doubled below 30 frames per second); a switch turns it back on.
 - **Not yet:** the game's own brightness and display options menu.
 

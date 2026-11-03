@@ -106,6 +106,7 @@ int main(void)
     expect("EdgeAnim keys on by default", EK, "Anim.EdgeAnim", 76, "KZ2_NATIVE_JOB_EDGEANIM default");
     expect("VJCLEAR on by default", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77, "KZ2_NATIVE_JOB_VJCLEAR default");
     expect("VJCOPY on by default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY default");
+    expect("VJVERT on by default", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT default");
     expect("EdgeAnim on an unrecorded slot: off", EA, "Anim.EdgeAnim", 99, NULL);
     setenv_(0, "KZ2_NATIVE_JOB_POST", "0");
     expect("POST=0 leaves EdgeAnim on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
@@ -113,6 +114,8 @@ int main(void)
     expect("POST=1 leaves EdgeAnim default", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
     expect("POST=1 leaves VJCOPY default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78,
            "KZ2_NATIVE_JOB_VJCOPY default");
+    expect("POST=1 leaves VJVERT default", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79,
+           "KZ2_NATIVE_JOB_VJVERT default");
     setenv_(0, EA, "0");
     expect("EDGEANIM=0 off", EA, "Anim.EdgeAnim", 75, NULL);
     expect("EDGEANIM=0 turns the keys off", EK, "Anim.EdgeAnim", 76, NULL);
@@ -123,12 +126,20 @@ int main(void)
     expect("VJCOPY=0 off", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, NULL);
     expect("VJCOPY=0 leaves VJCLEAR on", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77,
            "KZ2_NATIVE_JOB_VJCLEAR default");
+    expect("VJCOPY=0 leaves VJVERT on", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79,
+           "KZ2_NATIVE_JOB_VJVERT default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJVERT", "0");
+    expect("VJVERT=0 off", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, NULL);
+    expect("VJVERT=0 leaves VJCLEAR on", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77,
+           "KZ2_NATIVE_JOB_VJCLEAR default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJVERT", "1");
+    expect("VJVERT=1 on", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT=1");
     setenv_(0, "KZ2_NATIVE_JOB_VJCOPY", "1");
     expect("VJCOPY=1 on", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY=1");
     /* the default list is exactly k_def's flags */
     const size_t n = sizeof kz2_native_default_on / sizeof kz2_native_default_on[0];
-    if (n != NDEF + 3) {   /* + EDGEANIM, VJCLEAR, VJCOPY */
-        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 3);
+    if (n != NDEF + 4) {   /* + EDGEANIM, VJCLEAR, VJCOPY, VJVERT */
+        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 4);
         fails++;
     }
     for (size_t i = 0; i < NDEF; i++)

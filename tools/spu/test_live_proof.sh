@@ -3,7 +3,8 @@
 # that writes r5 and r6, then calls a job manager API through a pointer (bisl); the job manager saves its link in a save slot, calls
 # an inner routine with another link register, reloads the link and returns. Cases: the clean case; a read of r6
 # right after the call; the job manager reading r5 (a register the job did not overwrite); r5 spilled to a save slot and
-# reloaded then read (taint through the slot); an unresolved indirect branch.
+# reloaded then read (taint through the slot); an unresolved indirect branch. An earlier change: --leaf with several ranges,
+# --keep.
 #   nix develop --command tools/sandbox.sh -- tools/spu/test_live_proof.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; O="$ROOT/${KZ2_OUT:-work}/spu/t_live_proof"; case "$O" in /*) ;; *) O="$ROOT/$O" ;; esac
@@ -44,9 +45,10 @@ pm() {
     "0x140 il \$r7, 0" \
     "0x144 bi \$r4"
 }
-run() {   # EXPECT(clean|read|unresolved) NAME
+run() {   # EXPECT(clean|read|unresolved) NAME [READ-AT]; LEAF and KEEP override the leaf ranges / kept regs
   local out
-  out=$(python3 "$ROOT/tools/spu/live_proof.py" --job "$O/job.dis" --pm "$O/pm.dis" --call 0x4004 --leaf 0x4100-0x4108 \
+  out=$(python3 "$ROOT/tools/spu/live_proof.py" --job "$O/job.dis" --pm "$O/pm.dis" --call 0x4004 \
+        --leaf "${LEAF:-0x4100-0x4108}" --keep "${KEEP:-}" \
         --bisl job:0x400C=pm:0x100 --spill pm:0x200,0x210 --pm-jobcall 0x0 2>&1)
   local res; res=$(grep '^RESULT' <<<"$out")
   case "$1" in
@@ -61,5 +63,11 @@ job "il \$r6, 7";  pm "nop" "a \$r8, \$r5, \$r5";               run read "the jo
 job "il \$r6, 7";  pm "stqa \$r5, 0x210" "lqa \$r8, 0x210";     run clean "r5 saved, the slot reloaded into r8 unread"
 job "il \$r6, 7";  pm "stqa \$r5, 0x210" "lqa \$r8, 0x210" "a \$r9, \$r8, \$r8"; run read "taint through the save slot" "pm:0x110"
 job "nop";  pm "il \$r5, 3" "bi \$r12";                         run unresolved "an indirect jump with no target"
-[[ $fail == 0 ]] && echo "PASS test_live_proof (6 cases)"
+# a leaf in several ranges (a routine and its callees) and registers the native code keeps
+job "a \$r2, \$r6, \$r6"; pm "il \$r5, 3" "nop"
+LEAF=0x4100-0x4104 run clean "r6 outside the one range given"
+LEAF=0x4100-0x4104,0x4104-0x4108 run read "r6 written in the second range" "job:0x4008"
+KEEP=6 run clean "r6 kept (the native code leaves it as the SPU code does)"
+KEEP=2-5,7 run read "a kept list without r6" "job:0x4008"
+[[ $fail == 0 ]] && echo "PASS test_live_proof (10 cases)"
 exit $fail

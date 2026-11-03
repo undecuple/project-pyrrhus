@@ -106,7 +106,8 @@ def one(tmp, record, newname):
     # a fresh cache for the new place is accepted
     os.makedirs(obj, exist_ok=True)
     with open(os.path.join(obj, "CMakeCache.txt"), "w") as f:
-        f.write(f"CMAKE_CACHEFILE_DIR:INTERNAL={obj}\nCMAKE_HOME_DIRECTORY:INTERNAL={os.path.join(new, 'port', 'kz2')}\n")
+        f.write(f"CMAKE_CACHEFILE_DIR:INTERNAL={obj}\nCMAKE_HOME_DIRECTORY:INTERNAL={os.path.join(new, 'port', 'kz2')}\n"
+                f"CMAKE_TOOLCHAIN_FILE:FILEPATH={os.path.join(new, 'port', 'cmake', 'mingw-w64.cmake')}\n")
     check(fr.cache_is_here(new, obj) and len(fr.cmd_compile(c)) == 1, f"{tag} a cache of this place is reused")
     check(fr.prepare_sources(c) == [], f"{tag} nothing to clean then")
 

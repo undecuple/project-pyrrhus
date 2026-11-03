@@ -230,22 +230,22 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location, uint32_t offs
  * mode, scaling and filter are kept in display.ini beside keybinds.ini ([display] mode = windowed|borderless|fullscreen,
  * scaling = fit|stretch, filter = bilinear|nearest; rsx_display_mode.h), read here before the window opens and written
  * by the window's thread when Alt+Enter changes the mode. KZ2_DISPLAY, KZ2_DISPLAY_SCALING, KZ2_DISPLAY_FILTER win for
- * one run, and then nothing is saved (rsx_null_backend.c). KZ3's Options rows for these are not ported. */
+ * one run, and then nothing is saved (rsx_null_backend.c). KZ3's Options rows for these are not ported. An earlier change: the save
+ * writes the three keys into the file key by key, so the Display page's port rows (fov, upscale, sharpness) stay. */
 #ifdef _WIN32
 #include "rsx_display_mode.h"
 extern "C" int  pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);   /* cellPad.c (patch 2095) */
 extern "C" void rsx_display_configure(int saved_mode, int saved_scaling, int saved_filter,
                                       void (*save)(int mode, int scaling, int filter));   /* rsx_null_backend.c */
+extern "C" int  kz2_display_ini_set3(const char* mode, const char* scaling, const char* filter);   /* kz2_port_settings.cpp */
+extern "C" void kz2_port_settings_load(void);                                                     /* kz2_port_settings.cpp */
 
 static void kz2_display_save(int mode, int scaling, int filter)
 {
     wchar_t p[1100];
-    char t[512];
-    const int n = rsx_dm_ini_write(t, sizeof t, mode, scaling, filter);
-    if (n <= 0 || !pad_kb_sibling_path(L"display.ini", p, 1100)) return;
-    FILE* f = _wfopen(p, L"wb");
-    const bool ok = f && fwrite(t, 1, (size_t)n, f) == (size_t)n;
-    if (f) fclose(f);
+    if (!pad_kb_sibling_path(L"display.ini", p, 1100)) return;
+    /* key by key (kz2_port_settings.cpp), so the Display page's port rows (fov, upscale, sharpness) survive */
+    const bool ok = kz2_display_ini_set3(rsx_dm_name(mode), rsx_dm_scaling_name(scaling), rsx_dm_filter_name(filter)) != 0;
     char shown[1200];   /* issue #16: %APPDATA%\..., never the user name */
     printf("[display] %s: mode %s, scaling %s, filter %s %s\n", kz2_log_path_w(p, shown, sizeof shown),
            rsx_dm_name(mode), rsx_dm_scaling_name(scaling),
@@ -283,6 +283,7 @@ static int kz2_rsx_init(uint32_t w, uint32_t h, const char* title)
 {
 #ifdef _WIN32
     kz2_display_load();   /* patch 2095 */
+    kz2_port_settings_load();   /* fov, upscale, sharpness (display.ini; the Display page's port rows) */
     if (rsx_live_draw_enabled()) {
         if (rsx_null_backend_init(w, h, title) == 0 &&
             rsx_live_draw_init(rsx_null_backend_get_hwnd(), w, h, rsx_live_guest_ptr, nullptr) == 0) {
@@ -904,6 +905,7 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
 
 extern "C" void kz2_prompts_register(void);   /* kz2_prompts.cpp */
 
+extern "C" void kz2_motion_init(void);   /* kz2_ppu_overrides.cpp */
 int main(int argc, char** argv)
 {
 #ifdef _WIN32
@@ -995,6 +997,10 @@ int main(int argc, char** argv)
         setenv(e[0], e[1], 0);
 #endif
     }
+
+    /* Valves and demolition charges (ENHANCEMENT): gameplay.ini motion = auto|on|off to cellPad (patch 6049)
+     * and one "[motion]" line; the hooks are in kz2_ppu_overrides.cpp (kz2_motion.h). */
+    kz2_motion_init();
 
     if (!alloc_guest_vm()) {
         fprintf(stderr, "ERROR: could not allocate the guest address space\n");

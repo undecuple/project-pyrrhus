@@ -65,3 +65,31 @@ int kz2_pad_layout_fix_map(int mode, int32_t map[KZ2_PAD_NFUNC], uint32_t scheme
         if (kz2_pad_layout_slot_ok(f) && map[f] != want[f]) { map[f] = want[f]; n++; }
     return n;
 }
+
+uint16_t kz2_ebutton_mask(int32_t b)
+{
+    /* EButton: Triangle 0, Circle 1, Cross 2, Square 3, L2 4, R2 5, L1 6, R1 7, Start 8, Select 9, L3 10, R3 11,
+     * Up 12, Right 13, Down 14, Left 15 (the RE notes "An earlier change") */
+    static const uint16_t m[16] = { 0x1000, 0x2000, 0x4000, 0x8000, 0x0100, 0x0200, 0x0400, 0x0800,
+                                    0x0008, 0x0001, 0x0002, 0x0004, 0x0010, 0x0020, 0x0040, 0x0080 };
+    return b >= 0 && b < 16 ? m[b] : 0;
+}
+
+int kz2_kb_roles(const int32_t map[KZ2_PAD_NFUNC], uint16_t out[16])
+{
+    /* key bit (CELL mask) -> its Standard 1 function (kz2_pad_original[0] puts each of these on that bit) */
+    static const struct { uint16_t bit; int8_t func; } role[] = {
+        { 0x0800, 0 }, { 0x0004, 2 }, { 0x0002, 4 }, { 0x4000, 5 }, { 0x2000, 6 }, { 0x0200, 8 },
+        { 0x8000, 9 }, { 0x0100, 10 }, { 0x1000, 13 }, { 0x0400, 16 }, { 0x0010, 19 },
+    };
+    int changed = 0;
+    for (int i = 0; i < 16; i++) out[i] = (uint16_t)(1u << i);
+    for (unsigned k = 0; k < sizeof role / sizeof role[0]; k++) {
+        const uint16_t m = kz2_ebutton_mask(map[role[k].func]);
+        if (!m) continue;
+        int i = 0;
+        while ((1u << i) != role[k].bit) i++;
+        if (out[i] != m) { out[i] = m; changed++; }
+    }
+    return changed;
+}

@@ -1,4 +1,4 @@
-# From Project Helghast cmake/llvm-mingw.cmake (unchanged below this line except comment wording).
+# From Project Helghast cmake/llvm-mingw.cmake (unchanged below this line except comment wording and the "KZ2" PACKAGE mode).
 # Build the Windows x64 exe with llvm-mingw (clang + lld + libc++/libunwind, MinGW-w64 UCRT): the release's
 # bundled compiler (KZ3 chose it for the installer payload) and the llvm-mingw trial. Mirrors cmake/mingw-w64.cmake (the
 # verified GCC 16.2 cross build). Works with a Windows-hosted llvm-mingw (the payload's toolchain\llvm-mingw,
@@ -56,6 +56,9 @@ endif()
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# KZ2 (public #34): find_package config files only from the target too: on a Linux host a CMake package of the
+# host (an SDL3 or ZLIB config under /usr/lib/cmake) is a Linux library and must not be linked into the exe.
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 # Windows 10 API level, as the nixpkgs mingw-w64 the GCC build uses defaults to: llvm-mingw's _mingw.h defaults
 # _WIN32_WINNT to 0x601 (Windows 7), which hides GetCurrentThreadStackLimits (0x602+) used by

@@ -18,15 +18,18 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 | ✅ | **Update 1.29 as the base version:** the build targets it and reads its added archive and patch files; the patches' effect on the game data is not checked yet |
 | 🔧 | **Saves:** checkpoint saves are written in the first level; loading one back is not checked yet |
 | 🔧 | **Audio and movies:** menu and in-game sound and music play; the intro movie plays (the other 27 are not tried yet); sound is mixed down to stereo |
-| 🔧 | **Motion-control sections** (valves, charges) without motion sensors: a right-stick stand-in is being tested |
+| 🔧 | **Motion-control sections** (valves, charges) without motion sensors: the right stick now drives the game's valve and charge code (`motion = auto|on|off`); host-tested, not yet played through in the game |
 | 📋 | **The whole campaign, start to finish:** only the first level has been played so far |
-| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.6](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6)<!-- /version -->) |
+| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.7](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7)<!-- /version -->) |
+| 📋 | **Install without the link** to your game files (next version): today the launcher links them into the install folder, or uses a folder under `%LOCALAPPDATA%` where it cannot |
 
 ## 2. PC display and settings  🔧
 
 - 🔧 Windowed, borderless and exclusive fullscreen, chosen in the installer or the launcher, and Alt+Enter (tried under Proton only)
 - ✅ Motion blur off by default while the port runs below 30 frames/s, with a switch to turn it back on
-- 📋 Field of view, motion blur strength and bloom as settings on the game's own Display page
+- ✅ Field of view (45-75), FSR 1 upscaling and its sharpness as rows on the game's own Display page (checked under Proton: field of view in play, FSR 1 in the menu only)
+- 📋 FSR 1 without the HUD (next version)
+- 📋 Motion blur strength and bloom as settings on the same page
 - 📋 Widescreen and ultrawide: the view follows the window's shape, the HUD, menus and movies stay 16:9 and centred
 - 📋 60 frames/s as an option (some of the game's timing breaks above 30)
 - 📋 Surround sound (5.1 and 7.1 output)
@@ -40,7 +43,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 4. Multiplayer  📋
 
-- 📋 Skirmish against bots, offline
+- ✅ Skirmish against bots, offline (one map checked in a scripted run; other maps and modes not checked yet)
 - 📋 Online Warzone through a self-hosted server only: no server is preset, and the port goes online only when you choose online play
 - 📋 A two-player campaign (Killzone 2 on PS3 has none): feasibility first
 

@@ -97,7 +97,7 @@ def negative(base, layout):
     save(pages, c)
     rd = pages / "README.md"
     rk = rd.read_text(encoding="utf-8")
-    rd.write_text(rk.replace("status-partly%20playable", "status-released"), encoding="utf-8")
+    rd.write_text(rk.replace("is a pre-release, partly playable", "is released"), encoding="utf-8")
     check(not fails(repo, "C4"), f"{layout}: released agrees once README and criteria say so", recomp_card.check(repo))
     crit.write_text(keep, encoding="utf-8")
     check(bool(fails(repo, "C4")), f"{layout}: released while the criteria are pending -> C4")

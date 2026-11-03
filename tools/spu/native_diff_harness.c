@@ -20,6 +20,7 @@
 #include "spu_helpers.h"
 #include "spu_interp.h"
 #include "kz2_native_jobs.h"
+#include "harness_mfc.h"
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -118,9 +119,26 @@ static volatile int why;
 void spu_halt(spu_context* c) { (void)c; if (!why) why = R_STOP; siglongjmp(jb, 1); }
 void spu_stop(spu_context* c) { c->status = SPU_STATUS_STOPPED_BY_STOP; why = R_STOP; siglongjmp(jb, 1); }
 static void chan(void) { why = R_CHAN; siglongjmp(jb, 1); }
-u128 spu_rdch(spu_context* c, uint32_t ch) { (void)c; (void)ch; chan(); return spu_splat_u32(0); }
+/* the MFC model (harness_mfc.h): one log per side (A lifted, B native, C interpreter); MFC writes and
+ * reads go to the context's log, puts with their bytes; anything else (or another context) ends the run as before. */
+static spu_context S, A, B, C;
+static hmfc_log LA, LB, LC;
+static hmfc_log* mfc_log_of(spu_context* c) { return c == &A ? &LA : c == &B ? &LB : c == &C ? &LC : NULL; }
+u128 spu_rdch(spu_context* c, uint32_t ch)
+{
+    hmfc_log* l = mfc_log_of(c);
+    uint32_t v;
+    if (l && hmfc_rdch(l, ch, &v)) return spu_splat_u32(v);
+    chan();
+    return spu_splat_u32(0);
+}
 uint32_t spu_rchcnt(spu_context* c, uint32_t ch) { (void)c; (void)ch; chan(); return 0; }
-void spu_wrch(spu_context* c, uint32_t ch, u128 v) { (void)c; (void)ch; (void)v; chan(); }
+void spu_wrch(spu_context* c, uint32_t ch, u128 v)
+{
+    hmfc_log* l = mfc_log_of(c);
+    if (l && hmfc_wrch(l, c->ls, ch, v._u32[0]) == 1) return;
+    chan();
+}
 void spu_restart_dispatch(spu_context* c) { (void)c; why = R_RESTART; siglongjmp(jb, 1); }
 void spu_spurs_taskset_syscall(spu_context* c) { (void)c; chan(); }
 void spu_indirect_branch(spu_context* c)
@@ -190,7 +208,6 @@ static uint32_t rnd(void)
 static uint8_t* image;
 static long image_len;
 static uint32_t base;
-static spu_context S, A, B, C;
 
 /* A context's local store is its own ls_store array; ctx->ls points at it (spu_context_init). A struct copy keeps
  * the source's pointer, so every copy is repointed at its own array (the copy of the bytes comes with the struct). */
@@ -790,6 +807,80 @@ static void synth_ea12438(spu_context* c, uint64_t seed)
     c->gpr[22]._u32[0] = rnd() % 3 ? 1 : (rnd() & 0xE);
 }
 
+/* Particles.VertexJob 0x50F8 (slot 79): the vertex emitter. The pointer at LS 0x84C0 (to a block at
+ * 0x2A000 + 16 k: the relight byte at +0x9EC, the mode word at +0x9F0, the falloff word +0x9F4, the hemisphere word
+ * +0xA08), the light pointer at 0x84B0 (two quadwords at +0x30, +0x40), the matrix and scales at 0x8800-0x8890, the
+ * coefficients at 0x1BA00-0x1BB60, the 8x8x8 grid at 0x19B00, the descriptor (format bits: every combination of
+ * 0x200, 0x20, 0x10, 0x400 and format & 7), the 4-byte attribute, the ring state at 0x27B80 (index 0/1, a fill
+ * offset near the end of the buffer a third of the time: a put and a tag wait, the vertex split over both buffers),
+ * floats in their ranges or (a quarter of the trials) with zero, denormal, exponent-255 and negative words; half the
+ * trials with the game's stack pointer (0x1F630, just below the ring) and r10 in the caller's frame. 1 in 32 a stack
+ * pointer or a ring state the native code declines. */
+static uint32_t fbits_in(float lo, float hi)
+{
+    float f = lo + (hi - lo) * (float)(rnd() % 100001) / 100000.0f;
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return g_dirty && rnd() % 6 == 0 ? rfloat() : u;
+}
+static void fq(spu_context* c, int r, float lo, float hi)
+{
+    for (int k = 0; k < 4; k++) c->gpr[r]._u32[k] = fbits_in(lo, hi);
+}
+static void fls(spu_context* c, uint32_t a, uint32_t n, float lo, float hi)
+{
+    for (uint32_t i = 0; i < n; i += 4) be32w(c->ls + a + i, fbits_in(lo, hi));
+}
+static void synth_vjvert(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    g_dirty = rnd() % 4 == 0;
+    const uint32_t P = 0x2A000 + 16 * (rnd() % 64), Q = 0x2B000 + 16 * (rnd() % 16);
+    be32w(c->ls + 0x84C0, P);
+    be32w(c->ls + 0x84B0, Q);
+    c->ls[P + 0x9EC] = rnd() % 4 == 0 ? 0 : (uint8_t)(1 + rnd() % 255);   /* relight or not */
+    const uint32_t mode = (uint32_t[]){0, 1, 2, 0, 1, 2, 3, 0xFFFFFFFFu, 2, 2}[rnd() % 10];
+    be32w(c->ls + P + 0x9F0, mode);
+    be32w(c->ls + P + 0x9F4, fbits_in(0.0f, 2.0f));
+    be32w(c->ls + P + 0xA08, fbits_in(-1.0f, 1.0f));
+    fls(c, Q + 0x30, 32, -20.0f, 20.0f);
+    fls(c, 0x8800, 0x30, -1.0f, 1.0f);
+    fls(c, 0x8880, 0x20, -2.0f, 2.0f);
+    fls(c, 0x1BA00, 0x90, -1.0f, 1.0f);
+    fls(c, 0x1BB40, 0x10, -1.0f, 0.0f);   /* the grid origin and scale: indices below 0, 0-7 and above 7 */
+    fls(c, 0x1BB50, 0x10, 1.0f, 3.0f);
+    fls(c, 0x1BB60, 0x10, -2.0f, 2.0f);
+    fls(c, 0x19B00, 0x1000, 0.0f, 1.5f);   /* above 1 too: 1 - lerp below 0 (@0x5A84) */
+    const uint32_t desc = 0x2C000 + 16 * (rnd() % 64);
+    be32w(c->ls + desc + 8, (rnd() & 0x630u) | (rnd() % 8) | (rnd() % 8 == 0 ? rnd() & ~0x637u : 0));
+    const uint32_t b = rnd() & 1, f = rnd() % 3 == 0 ? 0x4000 - rnd() % 24 : 16 * (rnd() % 1024) + 2 * (rnd() % 8);
+    be32w(c->ls + 0x27B80, b);
+    be32w(c->ls + 0x27B84, f);
+    be32w(c->ls + 0x27B88, 0x30000000u + 0x4000u * (rnd() % 256));
+    be32w(c->ls + 0x27B8C, rnd() % 32);
+    be32w(c->ls + 0x27B90, rnd() % 32);
+    setreg(c, 3, desc);
+    fq(c, 6, -0.5f, 3.0f);
+    fq(c, 7, -1.0f, 1.0f);
+    fq(c, 8, -0.5f, 1.5f);
+    fq(c, 9, -0.1f, 1.2f);
+    setreg(c, 10, 0x2D000 + rnd() % 256);
+    fq(c, 11, -1.0f, 1.0f);
+    if (rnd() % 2) {   /* the game's stack: just below the ring, r10 in the caller's frame */
+        c->gpr[1] = spu_splat_u32(0x1F630);
+        c->gpr[1]._u32[1] = rnd();
+        if (rnd() % 2) setreg(c, 10, 0x1F660 + 4 * (rnd() % 8));
+    }
+    if (rnd() % 32 == 0) {   /* the declined cases */
+        switch (rnd() % 4) {
+        case 0: c->gpr[1]._u32[0] += 4; break;
+        case 3: c->gpr[1]._u32[0] = 0x1FB80 + 16 * (rnd() % 64); break;   /* the frame in the ring */
+        case 1: be32w(c->ls + 0x27B80, 2 + rnd() % 4); break;
+        default: be32w(c->ls + 0x27B84, 0x4001 + rnd() % 64); break;
+        }
+    }
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -804,12 +895,36 @@ static const struct {
     {"zero", synth_zero},             {"ilr", synth_ilr},
     {"ea_13100", synth_ea13100},      {"ea_12438", synth_ea12438},
     {"bss_clear", synth_bss},         {"vj_memcpy", synth_vjcopy},
+    {"vj_vertex", synth_vjvert},
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
 
 /* ---- one case ---- */
-static long n_case, n_match, n_mis, n_fb, n_imis, n_bad;
+static long n_case, n_match, n_mis, n_fb, n_imis, n_bad, n_puts;
+
+/* gates whose r3 is a result (VertexJob's vertex emitter leaves its last memcpy's destination there, as
+ * the SPU code does) */
+static int kind_r3(const kz2_native_entry* e) { return e->kind && !strcmp(e->kind, "vj_vertex"); }
+
+/* HARNESS_MFC_MUTATE=ea|data|tag|drop|order (the harness's own test, test_native_vjvert.sh): change the native side's
+ * log after its run, so the compare must catch it. */
+static void mfc_mutate(hmfc_log* l)
+{
+    static const char* m = (const char*)1;
+    if (m == (const char*)1) m = getenv("HARNESS_MFC_MUTATE");
+    if (!m || !*m || !l->n || l->overflow) return;
+    for (int i = 0; i < l->n; i++) {
+        hmfc_ev* e = &l->ev[i];
+        if (e->ch != HMFC_Cmd || e->rd) continue;
+        if (!strcmp(m, "ea")) e->eal += 16;
+        else if (!strcmp(m, "tag")) e->tag ^= 1;
+        else if (!strcmp(m, "data") && e->data && (e->size & 0x7FFF)) e->data[(e->size & 0x7FFF) - 1] ^= 0x01;
+        else if (!strcmp(m, "drop")) { free(e->data); memmove(e, e + 1, (size_t)(l->n - i - 1) * sizeof *e); l->n--; }
+        else if (!strcmp(m, "order") && i > 0) { hmfc_ev t = l->ev[i - 1]; l->ev[i - 1] = *e; *e = t; }
+        return;
+    }
+}
 static uint64_t t_lift, t_nat, b_lift, b_nat;
 static int do_interp;
 
@@ -837,6 +952,8 @@ static void one(const char* name, int slot, uint32_t entry)
     if (S.ls != S.ls_store) { printf("C %s state LS not in its context\n", name); n_bad++; return; }
     ctx_copy(&A, &S);
     ctx_copy(&B, &S);
+    hmfc_reset(&LA);
+    hmfc_reset(&LB);
     uint64_t t0 = now_ns();
     int ra = run_lifted(&A, lf);
     uint64_t t1 = now_ns();
@@ -882,6 +999,19 @@ static void one(const char* name, int slot, uint32_t entry)
             bad = 1;
             snprintf(diff, sizeof diff, "r%d", r);
         }
+    if (!bad && kind_r3(e) && memcmp(&A.gpr[3], &B.gpr[3], 16)) {   /* a gate that returns r3 */
+        bad = 1;
+        snprintf(diff, sizeof diff, "r3 lifted %08X %08X %08X %08X native %08X %08X %08X %08X", A.gpr[3]._u32[0],
+                 A.gpr[3]._u32[1], A.gpr[3]._u32[2], A.gpr[3]._u32[3], B.gpr[3]._u32[0], B.gpr[3]._u32[1],
+                 B.gpr[3]._u32[2], B.gpr[3]._u32[3]);
+    }
+    /* the MFC commands (harness_mfc.h) and the interrupt enable they toggle (bid/bie) */
+    mfc_mutate(&LB);
+    if (!bad && hmfc_compare(&LA, &LB, diff, sizeof diff)) bad = 1;
+    if (!bad && A.int_enable != B.int_enable) {
+        bad = 1;
+        snprintf(diff, sizeof diff, "int_enable lifted %u native %u", A.int_enable, B.int_enable);
+    }
     int scratch = 0;
     for (int r = 2; r < 80; r++) scratch += memcmp(&A.gpr[r], &B.gpr[r], 16) != 0;
     if ((A.pc & SPU_LS_MASK) != g_end || (e->cont && (B.pc & SPU_LS_MASK) != g_end)) {
@@ -891,6 +1021,7 @@ static void one(const char* name, int slot, uint32_t entry)
     int ib = 0;
     if (do_interp) {
         ctx_copy(&C, &S);
+        hmfc_reset(&LC);
         C.ls[g_end] = 0; C.ls[g_end + 1] = 0; C.ls[g_end + 2] = 0x3F; C.ls[g_end + 3] = 0xFF;
         memcpy(A.ls + g_end, C.ls + g_end, 4);   /* the stop the interpreter needs (not in the lifted run) */
         int rc = run_interp(&C, entry);
@@ -911,6 +1042,9 @@ static void one(const char* name, int slot, uint32_t entry)
                              A.gpr[r]._u32[0], A.gpr[r]._u32[1], A.gpr[r]._u32[2], A.gpr[r]._u32[3],
                              C.gpr[r]._u32[0], C.gpr[r]._u32[1], C.gpr[r]._u32[2], C.gpr[r]._u32[3]);
             }
+        /* the interpreter's MFC log too; not its int_enable: spu_interp.c ignores the E/D bits of the bi
+         * family (bie/bid leave int_enable as it was; the lifted code sets it), an interpreter gap (spu report) */
+        if (!ib && hmfc_compare(&LA, &LC, diff[0] ? (char[200]){0} : diff, 200)) ib = 1;
         n_imis += ib;
     }
     if (bad) n_mis++; else n_match++;
@@ -918,11 +1052,17 @@ static void one(const char* name, int slot, uint32_t entry)
      * their local store: they read their inputs and rewrite their outputs; no state reset needed between runs). */
     static int bench = -1;
     if (bench < 0) bench = getenv("HARNESS_BENCH") ? atoi(getenv("HARNESS_BENCH")) : 0;
-    if (bench > 0 && !bad) {
+    if (bench > 0 && !bad && !hmfc_puts(&LA)) {   /* cases with a put time the harness's MFC model */
         uint64_t bl = ~0ull, bn = ~0ull;
         g_no_arm = 1;
         for (int r = 0; r < bench; r++) {
             memcpy(A.gpr, S.gpr, sizeof S.gpr);
+            if (kind_r3(e)) {   /* the vertex emitter advances its ring state (LS 0x27B80): restore it */
+                memcpy(A.ls + 0x27B80, S.ls + 0x27B80, 32);
+                memcpy(B.ls + 0x27B80, S.ls + 0x27B80, 32);
+                hmfc_reset(&LA);
+                hmfc_reset(&LB);
+            }
             uint64_t a0 = now_ns();
             run_lifted(&A, lf);
             uint64_t a1 = now_ns();
@@ -936,8 +1076,9 @@ static void one(const char* name, int slot, uint32_t entry)
         b_lift += bl;
         b_nat += bn;
     }
-    printf("C %s %s scratch_regs_differ=%d lifted_us=%.1f native_us=%.1f%s%s%s\n", name, bad ? "MISMATCH" : "ok",
-           scratch, (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, do_interp ? (ib ? " interp=MISMATCH" : " interp=ok") : "",
+    n_puts += hmfc_puts(&LA);
+    printf("C %s %s scratch_regs_differ=%d mfc_puts=%d lifted_us=%.1f native_us=%.1f%s%s%s\n", name,
+           bad ? "MISMATCH" : "ok", scratch, hmfc_puts(&LA), (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, do_interp ? (ib ? " interp=MISMATCH" : " interp=ok") : "",
            diff[0] ? " " : "", diff);
 }
 
@@ -1029,8 +1170,9 @@ int main(int argc, char** argv)
         fprintf(stderr, "usage: see the header\n");
         return 2;
     }
-    printf("T slot=%d cases=%ld match=%ld mismatch=%ld fallback=%ld broken=%ld interp_mismatch=%ld lifted_ms=%.2f "
-           "native_ms=%.2f speedup=%.2f\n", slot_seen, n_case, n_match, n_mis, n_fb, n_bad, n_imis, t_lift / 1e6,
+    printf("T slot=%d cases=%ld match=%ld mismatch=%ld fallback=%ld broken=%ld interp_mismatch=%ld mfc_puts=%ld "
+           "lifted_ms=%.2f native_ms=%.2f speedup=%.2f\n", slot_seen, n_case, n_match, n_mis, n_fb, n_bad, n_imis,
+           n_puts, t_lift / 1e6,
            t_nat / 1e6, t_nat ? (double)t_lift / (double)t_nat : 0.0);
     if (b_nat)
         printf("B slot=%d best-of lifted_ms=%.3f native_ms=%.3f speedup=%.2f\n", slot_seen, b_lift / 1e6, b_nat / 1e6,

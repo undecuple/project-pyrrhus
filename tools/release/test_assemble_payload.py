@@ -156,6 +156,8 @@ def fake_repo(root):
     put(root, "work/release/sdl3/LICENSE.txt", "Copyright (C) 1997-2026 Sam Lantinga\n")
     lgpl = "GNU LESSER GENERAL PUBLIC LICENSE Version 2.1\n"
     put(root, "public/licenses/LGPL-2.1.txt", lgpl)
+    put(root, "public/licenses/FidelityFX-FSR1-LICENSE.txt", "MIT, AMD\n")
+    put(root, "public/licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "MIT, Drobot\n")
     put(root, "work/ps3recomp-patched/third_party/at3_standalone/COPYING.LGPLv2.1", lgpl)
     put(root, "work/ffmpeg-win/bin/avcodec-63.dll", fake_dll(3 << 20))
     put(root, "work/ffmpeg-win/bin/avutil-61.dll", fake_dll(2000))
@@ -236,6 +238,7 @@ def main():
                 "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
                 "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
                 "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
+                "licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt",
                 "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt", "licenses/FFmpeg-LICENSE-build.txt"}
         want |= {"ffmpeg/include/" + rel for rel in FF_HEADERS}   # issue #16: the headers ship (*.h only)
         check(got == want, "payload holds exactly the allowlisted files",

@@ -1,5 +1,6 @@
 /* See kz2_gameplay.h. Pure logic, no guest memory. */
 #include "kz2_gameplay.h"
+#include "kz2_motion.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -32,6 +33,23 @@ int kz2_gp_parse_aim(const char* s)
     return b < 0 ? -1 : (b ? KZ2_AIM_ON : KZ2_AIM_OFF);
 }
 
+int kz2_gp_parse_motion(const char* s)
+{
+    if (!s || !*s) return -1;
+    if (ieq(s, "auto")) return KZ2_MOTION_AUTO;
+    const int b = kz2_gp_parse_bool(s);
+    return b < 0 ? -1 : (b ? KZ2_MOTION_ON : KZ2_MOTION_OFF);
+}
+
+int kz2_gp_apply_motion_env(kz2_gameplay_cfg* c, const char* motion)
+{
+    if (!motion || !*motion) return 0;
+    const int x = kz2_gp_parse_motion(motion);
+    if (x < 0) return 1;
+    c->motion = x;
+    return 0;
+}
+
 /* A positive finite number up to 1000, else -1. */
 static float kz2_gp_parse_pos(const char* s)
 {
@@ -59,7 +77,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
 {
     c->aim_assist = KZ2_AIM_AUTO; c->crouch_toggle = 0; c->cover_toggle = 0;
     c->mouse_look = 1; c->mouse_sens = KZ2_MOUSE_SENS_DEF; c->mouse_zoom = 1.0f; c->mouse_yaw = KZ2_MOUSE_YAW_DEF;
-    c->mouse_invert = 0;
+    c->mouse_invert = 0; c->motion = KZ2_MOTION_AUTO;
     int bad = 0, in = 0;   /* in: 1 = [gameplay], 2 = [mouse] */
     const char* p = text ? text : "";
     while (*p) {
@@ -91,6 +109,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
         if (ieq(k, "aim_assist")) { const int x = kz2_gp_parse_aim(v); if (x < 0) bad++; else c->aim_assist = x; }
         else if (ieq(k, "crouch_toggle")) { const int x = kz2_gp_parse_bool(v); if (x < 0) bad++; else c->crouch_toggle = x; }
         else if (ieq(k, "cover_toggle")) { const int x = kz2_gp_parse_bool(v); if (x < 0) bad++; else c->cover_toggle = x; }
+        else if (ieq(k, "motion")) { const int x = kz2_gp_parse_motion(v); if (x < 0) bad++; else c->motion = x; }
     }
     return bad;
 }
@@ -200,12 +219,16 @@ const kz2_gameplay_cfg* kz2_gameplay_get(void)
     bad = kz2_gp_ini_parse(t, &cfg);
     const int benv = kz2_gp_apply_env(&cfg, getenv("KZ2_AIM_ASSIST"), getenv("KZ2_CROUCH_TOGGLE"), getenv("KZ2_COVER_TOGGLE")) +
                      kz2_gp_apply_mouse_env(&cfg, getenv("KZ2_MOUSE_LOOK"), getenv("KZ2_MOUSE_SENS"), getenv("KZ2_MOUSE_ZOOM_SENS"),
-                                            getenv("KZ2_MOUSE_YAW"), getenv("KZ2_MOUSE_INVERT"));
+                                            getenv("KZ2_MOUSE_YAW"), getenv("KZ2_MOUSE_INVERT")) +
+                     kz2_gp_apply_motion_env(&cfg, getenv("KZ2_MOTION"));
+    /* The old switch of patch 4015's stand-in: KZ2_MOTION_STICK=0 (no stand-in) is motion = on when KZ2_MOTION is unset. */
+    { const char* m = getenv("KZ2_MOTION"), *o = getenv("KZ2_MOTION_STICK");
+      if ((!m || !*m) && o && o[0] == '0') cfg.motion = KZ2_MOTION_ON; }
     static const char* const an[3] = { "auto", "on", "off" };
     fprintf(stderr, "[gameplay] aim_assist %s, crouch_toggle %d, cover_toggle %d, mouse_look %d (sensitivity %.3g x %.4g deg/count,"
-            " zoom x%.3g, invert_y %d) (gameplay.ini %s; %d bad value(s) ignored)\n",
+            " zoom x%.3g, invert_y %d), motion %s (gameplay.ini %s; %d bad value(s) ignored)\n",
             an[cfg.aim_assist], cfg.crouch_toggle, cfg.cover_toggle, cfg.mouse_look, cfg.mouse_sens, cfg.mouse_yaw,
-            cfg.mouse_zoom, cfg.mouse_invert, file ? "read" : "not there", bad + benv);
+            cfg.mouse_zoom, cfg.mouse_invert, an[cfg.motion], file ? "read" : "not there", bad + benv);
     done = 1;
     return &cfg;
 }

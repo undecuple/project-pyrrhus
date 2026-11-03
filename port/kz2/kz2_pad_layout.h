@@ -29,6 +29,16 @@ int kz2_pad_layout_is_modern(const int32_t map[KZ2_PAD_NFUNC]);
  * any other map is left alone. Returns the number of slots changed (0 = nothing written). */
 int kz2_pad_layout_fix_map(int mode, int32_t map[KZ2_PAD_NFUNC], uint32_t scheme);
 
+/* Keys keep their action (patch 6050): keybinds.ini binds a key to a pad button and names the button's Standard 1 action
+ * (l1 close combat, r3 zoom, ...). From the live profile map (EButton per function, map[0..19]) the CELL_PAD_CTRL mask
+ * each key bit (1 << i, i = 0..15) must become so the key does that action: R1 fire (0), R3 zoom (2), L3 sprint (4),
+ * Cross jump (5), Circle use (6), R2 grenade (8), Square reload (9), L2 crouch (10), Triangle next weapon (13),
+ * L1 close combat (16), Up objective (19); Start, Select and the other d-pad bits stay. A function that is unbound or
+ * not on a pad button keeps the key's own button. Returns the number of keys whose button changes. */
+int kz2_kb_roles(const int32_t map[KZ2_PAD_NFUNC], uint16_t out[16]);
+/* EButton id (0..15) -> CELL_PAD_CTRL mask (DIGITAL1 | DIGITAL2 << 8); 0 for anything else. */
+uint16_t kz2_ebutton_mask(int32_t button);
+
 #ifdef __cplusplus
 }
 #endif

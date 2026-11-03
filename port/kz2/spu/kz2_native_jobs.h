@@ -21,7 +21,9 @@
  * 256 KB local store) at the gate, written to DIR/s<slot>_<n>.kz2nj, then the lifted body runs. KZ2_NATIVE_REC_N
  * (default 24) records per slot, KZ2_NATIVE_REC_EVERY (default 61) calls between records, KZ2_NATIVE_REC_AFTER
  * (default 120) seconds before the first; KZ2_NATIVE_REC_DOF_BLUR=1 counts only DepthOfField gather calls with a blur
- * radius above 0. Recording also counts the calls per slot (`[native] slot N ... calls=`). The records
+ * radius above 0; KZ2_NATIVE_REC_SLOT=<slot>:<every>:<n>[,...] gives slots their own spacing and count,
+ * KZ2_NATIVE_REC_VJFLUSH=<n> adds up to n VertexJob vertex calls that fill its ring buffer (the DMA put).
+ * Recording also counts the calls per slot (`[native] slot N ... calls=`). The records
  * hold game data: keep them under work/, never commit them.
  * tools/spu/native_diff.py replays them through the lifted and the native code and compares (native_diff_harness.c).
  */

@@ -53,7 +53,9 @@ def build(name, bdir):
     srcs = [os.path.join(ROOT, "tools/spu/native_diff_harness.c"), os.path.join(lift, "spu_recomp.c"),
             os.path.join(PT, "runtime/spu/spu_drain.c"), os.path.join(PT, "runtime/spu/spu_interp.c"),
             *sorted(glob.glob(os.path.join(ROOT, "port/kz2/spu/native_*.c")))]
-    newest = max(os.path.getmtime(s) for s in srcs + [os.path.join(ROOT, "port/kz2/spu/kz2_native_jobs.h")])
+    newest = max(os.path.getmtime(s) for s in srcs + [os.path.join(ROOT, "port/kz2/spu/kz2_native_jobs.h"),
+                                                       os.path.join(ROOT, "tools/spu/harness_mfc.h"),
+                                                       *glob.glob(os.path.join(ROOT, "port/kz2/spu/*.h"))])
     if not os.path.exists(exe) or os.path.getmtime(exe) < newest:
         inc = ["-I", os.path.join(PT, "runtime/spu"), "-I", os.path.join(PT, "include"), "-I",
                os.path.join(PT, "runtime"), "-I", lift, "-I", os.path.join(ROOT, "port/kz2/spu")]

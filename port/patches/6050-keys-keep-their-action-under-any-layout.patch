@@ -1,0 +1,154 @@
+KZ2 patch 6050 (fix, ENHANCEMENT side): keys keep their action under every pad layout.
+
+Report (0.1.6): "F aims down sights and the right mouse button is melee", while the docs say the mouse buttons fire and
+zoom. Root cause: keybinds.ini binds keys to pad buttons (patch 2037: l1 = F "close combat", r3 = Mouse2/V "zoom,
+flashlight", the game's Standard 1 meanings), but the game maps actions to buttons through the player profile, which
+the in-game controller scheme (Alternate 2: zoom L1, close combat R3) and the port's Modern layout (KZ2_PAD_LAYOUT,
+same two swapped) rewrite. The keys followed the buttons, so under those layouts F zoomed and the right button meleed.
+Fix: pad_kb_roles.h (new, pure) and cellPad.c: pad_kb_set_roles(table, valid_ms) takes, from the title port, the button
+each key's Standard action is on in the live profile (port/kz2: kz2_kb_roles from the profile map at 0x011B0540+0x240
+-> +0x64, refreshed by the on-foot look update 0x00173E80, valid 300 ms); pad_merge_keyboard maps the keys through it;
+pad_kb_key_for_input (keycap prompts) shows the key whose action lands on the prompt's button. A key keeps the
+button it got when it went down until it comes up (pad_kb_roles_latch): the table can lapse under a held key. Menus, vehicles and
+mounted guns, where the look update does not run, keep the plain buttons (menu accept and back are buttons). Pads and
+keybinds.ini are unchanged (every edit keeps working; a key bound to "l1" now means "close combat" on foot).
+diff -ruN a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c	2026-11-02 16:04:42.700198823 -0600
++++ b/libs/input/cellPad.c	2026-11-02 17:02:46.448395034 -0600
+@@ -70,6 +70,7 @@
+ #endif
+ #include "pad_host.h"
+ #include "pad_motion_stick.h"   /* 4015, 6049 */
++#include "pad_kb_roles.h"      /* 6050 */
+ #ifndef _WIN32
+ /* 4011: PKB_PROMPTS_* and the value names on every platform (pure header; the Windows keyboard code below includes it
+  * again for the bindings, which only Windows polls). */
+@@ -116,6 +117,31 @@
+     if (rx) *rx = (unsigned char)s_motion_rx[port];
+     return s_motion_live[port];
+ }
++#ifdef _WIN32
++/* 6050: the keys' role table (pad_kb_roles.h), set by the title port while the player is on foot; used until
++ * s_kb_roles_until (GetTickCount64 ms), so it lapses by itself in menus. Read and written under s_kb_roles_lock. */
++static unsigned short     s_kb_roles[16];
++static unsigned long long s_kb_roles_until;
++static SRWLOCK            s_kb_roles_lock = SRWLOCK_INIT;
++void pad_kb_set_roles(const unsigned short out[16], unsigned valid_ms)
++{
++    AcquireSRWLockExclusive(&s_kb_roles_lock);
++    memcpy(s_kb_roles, out, sizeof s_kb_roles);
++    s_kb_roles_until = GetTickCount64() + valid_ms;
++    ReleaseSRWLockExclusive(&s_kb_roles_lock);
++}
++/* 1 and the table when it is in force now. */
++static int pad_kb_roles_now(unsigned short out[16])
++{
++    AcquireSRWLockShared(&s_kb_roles_lock);
++    const int on = GetTickCount64() < s_kb_roles_until;
++    if (on) memcpy(out, s_kb_roles, sizeof s_kb_roles);
++    ReleaseSRWLockShared(&s_kb_roles_lock);
++    return on;
++}
++#else
++void pad_kb_set_roles(const unsigned short out[16], unsigned valid_ms) { (void)out; (void)valid_ms; }   /* keys: Windows only */
++#endif
+ static PadLastDevice s_last_dev = { PAD_DEV_NONE, -1 };
+ static int           s_keys_active = 0;   /* this poll had keyboard/mouse input (pad_poll_keyboard) */
+ static unsigned      s_keys_new_b, s_keys_new_d;   /* 4016: the keys that went down (the log line names them) */
+@@ -433,6 +459,13 @@
+ {
+     int i = pad_kb_input_by_name(name, strlen(name)), vk = 0;
+     if (i < 0 || slot < 0 || slot >= PKB_SLOTS) return 0;
++    {   /* 6050: the prompt names the button that does the action now; show the key whose role lands there */
++        unsigned short roles[16];
++        if (pad_kb_inputs[i].btn && pad_kb_roles_now(roles)) {
++            const unsigned src = pad_kb_roles_source(roles, pad_kb_inputs[i].btn);
++            for (int j = 0; j < PKB_N_INPUTS; j++) if (pad_kb_inputs[j].btn == src) { i = j; break; }
++        }
++    }
+     AcquireSRWLockShared(&s_kb_lock);
+     if (s_kb_ready) vk = s_kb.key[i][slot];
+     ReleaseSRWLockShared(&s_kb_lock);
+@@ -539,8 +572,21 @@
+         hs->connected = 1;
+         hs->analog_lx = hs->analog_ly = hs->analog_rx = hs->analog_ry = 128;
+     }
++    unsigned keys;
++    {   /* 6050: on foot, each key does its Standard action under any layout (pad_kb_roles.h); a held key keeps the
++         * button it got when it went down */
++        static PadKbRoleLatch latch;
++        unsigned short roles[16];
++        const int on = pad_kb_roles_now(roles);
++        static int was_on, said;
++        if (was_on && !on && k->buttons && said < 20) {   /* the table lapsed under a held key: the latch keeps it */
++            said++; printf("[keys] on-foot table lapsed with keys 0x%04X held (kept as pressed)\n", k->buttons); fflush(stdout);
++        }
++        was_on = on;
++        keys = pad_kb_roles_latch(&latch, on ? roles : NULL, k->buttons);
++    }
+     if (!k->buttons && !k->dirs) return;
+-    hs->buttons |= k->buttons;
++    hs->buttons |= (u16)keys;
+     if (k->dirs & ((1u << PKB_LS_LEFT) | (1u << PKB_LS_RIGHT)))
+         hs->analog_lx = pad_kb_axis(k->dirs, PKB_LS_LEFT, PKB_LS_RIGHT);
+     if (k->dirs & ((1u << PKB_LS_UP) | (1u << PKB_LS_DOWN)))
+diff -ruN a/libs/input/pad_kb_roles.h b/libs/input/pad_kb_roles.h
+--- a/libs/input/pad_kb_roles.h	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/input/pad_kb_roles.h	2026-11-02 17:02:35.507139341 -0600
+@@ -0,0 +1,56 @@
++/*
++ * pad_kb_roles.h -- keys keep their action under every pad layout (KZ2 port patch 6050; ENHANCEMENT, a fix of the
++ * keyboard defaults).
++ *
++ * keybinds.ini binds keys to pad buttons, and its labels name what each button does in the game's Standard layout
++ * ("l1 = close combat", "r3 = zoom, flashlight": F and the right mouse button by default). The game decides what a
++ * button does from the player profile's button map, which the in-game controller scheme (Standard 1-4, Alternate 1-2)
++ * and the port's Modern layout rewrite. So under Alternate 2 or Modern (zoom on L1, close combat on R3) F zoomed and
++ * the right mouse button meleed: the keys followed buttons, not actions.
++ * Now, while the player is on foot (the title port says so, with a time limit), each key's button is replaced by the
++ * button the live profile gives that key's Standard action (out[i] for the button bit 1 << i; the title port computes
++ * the table from the profile, port/kz2/kz2_pad_layout.c). Menus, vehicles and mounted guns keep the plain buttons
++ * (menu accept/back are buttons, not actions). Pads are never touched (they follow the scheme, as on the PS3), and
++ * keybinds.ini keeps its meaning and every edit in it.
++ *
++ * Pure: no OS call; tools/runtime/test_pad_layout.c tests it on the host.
++ */
++#ifndef PS3RECOMP_PAD_KB_ROLES_H
++#define PS3RECOMP_PAD_KB_ROLES_H
++
++/* buttons: CELL_PAD_CTRL_* bits (DIGITAL1 | DIGITAL2 << 8) of the keys; out[16]: the mask each bit becomes. */
++static inline unsigned pad_kb_roles_apply(const unsigned short out[16], unsigned buttons)
++{
++    unsigned r = 0;
++    for (int i = 0; i < 16; i++) if (buttons & (1u << i)) r |= out[i];
++    return r;
++}
++
++/* Per key, the button chosen when it went down is kept until it comes up, so a key held while the table lapses (the
++ * game skips its on-foot look update for a moment while zooming in) does not turn into its plain button half-way
++ * (the right mouse button held to zoom became R3 = close combat under Modern: kz2-r65-keys-modern). roles = NULL: the
++ * plain buttons for new presses. */
++typedef struct { unsigned short held[16]; unsigned prev; } PadKbRoleLatch;
++static inline unsigned pad_kb_roles_latch(PadKbRoleLatch* l, const unsigned short* roles, unsigned buttons)
++{
++    unsigned r = 0;
++    for (int i = 0; i < 16; i++) {
++        const unsigned bit = 1u << i;
++        if (!(buttons & bit)) continue;
++        if (!(l->prev & bit)) l->held[i] = roles ? roles[i] : (unsigned short)bit;
++        r |= l->held[i];
++    }
++    l->prev = buttons & 0xFFFFu;
++    return r;
++}
++
++/* The key bit whose role lands on button bit `b` (for the keycap prompts: the game's prompt names the button that now
++ * does the action, the keycap shows the key for that action); b itself when no other key's role lands there. */
++static inline unsigned pad_kb_roles_source(const unsigned short out[16], unsigned b)
++{
++    for (int i = 0; i < 16; i++) if ((1u << i) == b && out[i] == b) return b;   /* b's own key still does b's action */
++    for (int i = 0; i < 16; i++) if (out[i] == b) return 1u << i;
++    return b;
++}
++
++#endif /* PS3RECOMP_PAD_KB_ROLES_H */

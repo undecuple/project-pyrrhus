@@ -1,7 +1,7 @@
 /* Player gameplay settings (ENHANCEMENT, all off / original by default): aim_assist, crouch_toggle,
- * cover_toggle. Home: gameplay.ini beside keybinds.ini ([gameplay] section; display.ini is rewritten whole by the
- * window thread on every Alt+Enter and keybinds.ini by the capture page, so neither keeps a foreign key; this file is
- * only ever read). KZ2_AIM_ASSIST, KZ2_CROUCH_TOGGLE, KZ2_COVER_TOGGLE win for one run.
+ * cover_toggle, motion (valves and charges; kz2_motion.h). Home: gameplay.ini beside keybinds.ini ([gameplay] section; display.ini
+ * belongs to the display settings and the Display page's port rows, kz2_port_settings.cpp, and keybinds.ini to the capture
+ * page; this file is only ever read). KZ2_AIM_ASSIST, KZ2_CROUCH_TOGGLE, KZ2_COVER_TOGGLE win for one run.
  * Pure logic (no guest memory) so tools/runtime/test_gameplay.sh tests it on the host; the guest glue (hooks on the
  * game's functions, addresses in comments) is in kz2_ppu_overrides.cpp. */
 #pragma once
@@ -22,6 +22,8 @@ typedef struct {
     float mouse_zoom;   /* mouse_zoom_sensitivity, extra factor while zoomed (default 1.0); KZ2_MOUSE_ZOOM_SENS */
     float mouse_yaw;    /* mouse_yaw, degrees per count at sensitivity 1 (default 0.022, Quake/Source m_yaw); KZ2_MOUSE_YAW */
     int   mouse_invert; /* mouse_invert_y 0/1 (default 0); KZ2_MOUSE_INVERT */
+    /* an earlier change (ENHANCEMENT): */
+    int   motion;       /* motion = auto|on|off, KZ2_MOTION_* in kz2_motion.h (default auto); KZ2_MOTION */
 } kz2_gameplay_cfg;
 
 #define KZ2_MOUSE_SENS_DEF 2.5f
@@ -29,6 +31,10 @@ typedef struct {
 
 /* "auto"/"on"/"off" (case-insensitive; also 1/0/true/false/yes/no for on/off) -> KZ2_AIM_*; NULL, "" or anything else -> -1. */
 int kz2_gp_parse_aim(const char* s);
+/* motion: "auto"/"on"/"off" (also 1/0/true/false/yes/no for on/off) -> KZ2_MOTION_* (kz2_motion.h); else -1. */
+int kz2_gp_parse_motion(const char* s);
+/* KZ2_MOTION (NULL = unset) overrides the file; a bad value is ignored and counted. */
+int kz2_gp_apply_motion_env(kz2_gameplay_cfg* c, const char* motion);
 /* "0"/"1"/"on"/"off"/"true"/"false"/"yes"/"no" -> 0/1; NULL, "" or anything else -> -1. */
 int kz2_gp_parse_bool(const char* s);
 /* Defaults, then the [gameplay] section of an ini text (other sections ignored; "key = value", '#'/';' comments, a bad

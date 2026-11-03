@@ -5,11 +5,14 @@ toolchain, from lift outputs made elsewhere, and time it. Runs firstrun.py's own
 the lift. Standard library only. Meant for Windows (under Proton) with the payload tree; also runs on Linux.
 
     trial_build.py --root PAYLOAD --build DIR [--jobs N] [--toolchain DIR | --cross] [--configure-only] [--stamp]
+                   [--release-flags FLAGS]
 
   --build   holds recomp/ (ppu_recomp.h + chunks) copied from a NixOS lift (KZ2 has no SPU lift yet); obj/
             and kz2.exe are written under it (firstrun.py's layout)
   --cross   no llvm-mingw: firstrun.py's own fallback (port/cmake/mingw-w64.cmake, the NixOS cross compiler; run in
             `nix develop .#win`). Same configure arguments otherwise, so the CMake decisions are the player's.
+  --release-flags "FLAGS"  replace firstrun.RELEASE_FLAGS (CMAKE_C/CXX_FLAGS_RELEASE) for this trial only: the
+            optimisation A/B of an earlier change (issue #37) builds the same payload and lift with -O2 and -O3
   --stamp   after the compile, firstrun.py's stamp step too: its command (firstrun_check --build-dir, the B rules) and
             after_stamp (kz2.exe, the decoder DLLs, fonts and SDL3.dll beside it in DIR), so DIR/kz2.exe runs as an
             installed build does (the issue #16 reproduction and fix check).
@@ -46,7 +49,10 @@ def main(argv=None, out=sys.stdout):
     ap.add_argument("--configure-only", action="store_true")
     ap.add_argument("--cross", action="store_true", help="firstrun's fallback cross toolchain (no llvm-mingw)")
     ap.add_argument("--stamp", action="store_true", help="also run firstrun's stamp step and after_stamp")
+    ap.add_argument("--release-flags", default="", help="replace firstrun.RELEASE_FLAGS for this trial (an A/B)")
     a = ap.parse_args(argv)
+    if a.release_flags:
+        fr.RELEASE_FLAGS = a.release_flags
     root, build = os.path.abspath(a.root), os.path.abspath(a.build)
     tools = fr.payload_tools(root)
     tc = "" if a.cross else os.path.abspath(a.toolchain) if a.toolchain else tools.get("llvm_mingw", "")
@@ -60,6 +66,7 @@ def main(argv=None, out=sys.stdout):
                  python=tools.get("python", sys.executable), cmake=tools.get("cmake", "cmake"),
                  ninja=tools.get("ninja", ""))
     rep = {"host": platform.platform(), "cores": os.cpu_count(), "jobs": ctx.jobs, "toolchain": tc,
+           "release_flags": fr.RELEASE_FLAGS,
            "cmake": ctx.cmake, "ninja": ctx.ninja, "python": ctx.python, "steps": []}
     env = ctx.env()
     ok = True

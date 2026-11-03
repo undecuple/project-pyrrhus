@@ -22,7 +22,8 @@ builder, done-marker). Standard library only, Python 3.11+, Windows and Linux.
   --jobs       compile/lift job count; default from free RAM: (available - 8 GB) / 1.5 GB, clamped 1..8 (build-kz2.sh)
   --toolchain  an llvm-mingw folder (bin/x86_64-w64-mingw32-clang[.exe]), built with port/cmake/llvm-mingw.cmake;
                default: the payload's <root>/toolchain/llvm-mingw when present, else port/cmake/mingw-w64.cmake
-               (NixOS cross).
+               (the GCC MinGW-w64 cross compiler on PATH; a NOTE line says so, public #34). Another toolchain than
+               the last configure's (obj/CMakeCache.txt) empties obj and configures again from scratch.
                The payload's toolchain/cmake, toolchain/ninja and (Windows) toolchain/python are used when present.
   --log-dir    folder the setup.exe / zip was started from (Inno passes {src}); not writable -> the temp folder
   --log-name   default Project-Pyrrhus-setup.log; an earlier log of the same name is renamed with its start time
@@ -243,7 +244,7 @@ class Ctx:
         if "lift" not in self.cache:
             self.cache["lift"] = lift_inputs_hash(self)
         return {"base": _h16(json.dumps(key, sort_keys=True)), "lift": self.cache["lift"],
-                "runtime": _h16(port_version(self.root))}
+                "runtime": _h16(port_version(self.root)), "toolchain": _h16(json.dumps(toolchain_id(self)))}
 
     def fingerprint(self, keys=()):
         """One hash of `base` plus the named extra parts ("lift", "runtime"); a step's marker stores the one for
@@ -490,7 +491,8 @@ def prepare_sources(c):
     recorded by the last finished build: every changed payload file gets the current time (ninja then rebuilds what
     depends on it), and a changed toolchain/ file empties obj/ (ninja does not track the compiler binary).
     No record (first build, a source tree) touches nothing. -> folders to clean."""
-    stale = [c.b("obj")] if not cache_is_here(c.root, c.b("obj")) else []   # the install folder moved
+    # the install folder moved, or obj was configured with another toolchain (public #34)
+    stale = [c.b("obj")] if not cache_is_here(c.root, c.b("obj")) or toolchain_changed(c) else []
     cur = payload_hashes(c.root)
     try:
         with open(c.b(*SOURCES_RECORD), encoding="utf-8") as f:
@@ -567,7 +569,8 @@ def refuse_future_files(c):
 def cmd_compile(c):
     refuse_future_files(c)
     build = [c.cmake, "--build", c.b("obj"), "-j", str(c.jobs)]
-    if not cache_is_here(c.root, c.b("obj")):     # the folder moved (or no configure ran): configure again, clean
+    # the folder moved, no configure ran, or obj's cache is another toolchain's: configure again, clean
+    if not cache_is_here(c.root, c.b("obj")) or toolchain_changed(c):
         remove_stale_obj(c)
         return [*cmd_configure(c), build]
     return [build]
@@ -834,9 +837,12 @@ STEPS = [   # weights (ASSUMPTION): from the developer build on Linux (-j4: lift
     # configure re-runs in place (no clean of obj\): a runtime-only update then recompiles only what changed
     # (ninja, with prepare_sources' touch of the changed payload files); a changed toolchain empties obj\.
     Step("spu-lift", "Lifting SPU code", 3, cmd_spu_lift, clean=lambda c: [c.b("spu")], keys=("lift",)),
-    Step("configure", "Configuring the build", 1, cmd_configure, clean=prepare_sources, keys=("lift", "runtime")),
-    Step("compile", "Compiling", 82, cmd_compile, ninja=True, keys=("lift", "runtime")),
-    Step("stamp", "Finishing", 1, cmd_stamp, after=after_stamp, keys=("lift", "runtime")),
+    # "toolchain" (public #34): another --toolchain re-runs configure, compile and stamp; prepare_sources then
+    # empties obj\ (CMake keeps the compiler of the first configure in its cache), so the configure is a fresh one.
+    Step("configure", "Configuring the build", 1, cmd_configure, clean=prepare_sources,
+         keys=("lift", "runtime", "toolchain")),
+    Step("compile", "Compiling", 82, cmd_compile, ninja=True, keys=("lift", "runtime", "toolchain")),
+    Step("stamp", "Finishing", 1, cmd_stamp, after=after_stamp, keys=("lift", "runtime", "toolchain")),
 ]
 
 
@@ -1108,6 +1114,56 @@ def cache_is_here(root, obj):
     if h is None:
         return not os.path.exists(os.path.join(obj, "build.ninja"))
     return _same(h[0], os.path.join(root, "port", "kz2")) and (not h[1] or _same(h[1], obj))
+
+
+def toolchain_id(c):
+    """(toolchain file name, llvm-mingw folder relative to the install folder or "") this build configures with."""
+    return ("llvm-mingw.cmake", root_relative(c.root, c.toolchain)) if c.toolchain else ("mingw-w64.cmake", "")
+
+
+def cache_toolchain(obj):
+    """(CMAKE_TOOLCHAIN_FILE, LLVM_MINGW_ROOT) recorded in obj/CMakeCache.txt, or None without a cache."""
+    try:
+        with open(os.path.join(obj, "CMakeCache.txt"), encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+    except OSError:
+        return None
+    got = []
+    for k in ("CMAKE_TOOLCHAIN_FILE", "LLVM_MINGW_ROOT"):
+        m = re.search(r"^" + k + r":[A-Z]+=(.*)$", txt, re.M)
+        got.append(m.group(1).strip() if m else "")
+    return tuple(got)
+
+
+def toolchain_changed(c):
+    """True when obj/CMakeCache.txt was made with another toolchain than this run's (public #34: a new --toolchain
+    over an earlier configure kept the old compiler, since CMake reads the toolchain file only on a fresh cache).
+    No cache: False (the configure is fresh anyway)."""
+    got = cache_toolchain(c.b("obj"))
+    if got is None:
+        return False
+    tc_file, tc_root = got
+    want_file, _ = toolchain_id(c)
+    if os.path.basename(tc_file.replace("\\", "/")) != want_file:
+        return True
+    if not c.toolchain:
+        return bool(tc_root)
+    return not tc_root or not _same(tc_root, c.toolchain)
+
+
+def pick_toolchain(arg, bundled, root, host_os=None):
+    """-> (llvm-mingw folder or "" for port/cmake/mingw-w64.cmake, a NOTE line or ""). --toolchain wins, then the
+    payload's toolchain/llvm-mingw; with neither the build falls back to the GCC MinGW-w64 cross compiler on PATH,
+    said out loud (public #34: on a Linux host that fallback was silent)."""
+    if arg:
+        return os.path.abspath(arg), ""
+    if bundled.get("llvm_mingw"):
+        return bundled["llvm_mingw"], ""
+    host = host_os or platform.system()
+    return "", (f"NOTE toolchain: no --toolchain given and no llvm-mingw in {os.path.join(root, 'toolchain', 'llvm-mingw')}; "
+                f"building on this {host} host with the system's GCC MinGW-w64 cross compiler "
+                "(x86_64-w64-mingw32-gcc on PATH, port/cmake/mingw-w64.cmake). Pass --toolchain DIR (an llvm-mingw "
+                "folder) to build with the release's compiler.")
 
 
 def remove_stale_obj(c):
@@ -2029,7 +2085,10 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
     if (a.interactive or a.bar) and not a.dry_run:
         out = ConsoleBar(out, steps)
     bundled = payload_tools(root)
-    toolchain = os.path.abspath(a.toolchain) if a.toolchain else bundled.get("llvm_mingw", "")
+    toolchain, tc_note = pick_toolchain(a.toolchain, bundled, root)
+    if tc_note:
+        print(tc_note, file=out0, flush=True)
+        notes.append("# " + tc_note)
     # a pick of PS3_GAME, PS3_GAME/USRDIR or the update's USRDIR names the folder above (as the check and the wizard)
     a.dump, a.update = _fc().resolve_dump(a.dump), _fc().resolve_update(a.update) if a.update else a.update
     ctx = Ctx(root=root, build=os.path.abspath(a.build or os.path.join(root, "build")),

@@ -8,7 +8,7 @@ if [[ -n "${KZ2_REAL_DISPLAY:-}" ]]; then
   export DISPLAY="$KZ2_REAL_DISPLAY"; XVFB=""          # user's display (proton-test.sh --real-display)
 else
   export DISPLAY=:99
-  Xvfb :99 -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
+  Xvfb :99 -screen 0 ${KZ2_XVFB_SIZE:-1280x720}x24 -nolisten tcp >/dev/null 2>&1 &
   XVFB=$!
   for _ in $(seq 50); do [[ -e /tmp/.X11-unix/X99 ]] && break; sleep 0.1; done
 fi

@@ -4,9 +4,21 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.7] - 2026-11-02 (pre-release)
+
+### Added
+- `gameplay.ini` `motion = auto|on|off`: `auto` uses the controller's own tilt when it has a working accelerometer and the right stick otherwise; `off` always uses the right stick; `on` only the controller's tilt. The log says when a pad is reached over XInput (no motion sensors) and what that means for valves and charges (#36).
+- Options > Display: Field of view (45-75, 45 = original; first-person only, cutscenes keep theirs), Upscaling (Off / FSR 1) and Sharpness rows, saved in display.ini (KZ2_FOV, RSX_UPSCALE, RSX_UPSCALE_SHARPNESS for one run). The shader cache is rebuilt once after this update (the renderer's sources changed).
+
+### Fixed
+- Demolition charges could not be armed, and valves turned only part way, with a controller that has no motion sensor or a pad mapper that stops the stick a little short of its end (a soft-lock in Blood Meridian). The game's valve and charge code follows the tilt with a one-degree dead band, and a charge arms only between about 33 and 37 degrees, so the old stand-in armed only in the last 4 % of the stick's travel. The right stick now drives that code directly: hold L1 and R1 as the game asks and push the stick more than half way. A virtual pad that reports a gyro or an empty motion sensor no longer counts as a motion controller. Tested with host tests; not yet played through a valve or charge in the game (#36).
+- With a controller scheme other than Standard 1 (or the Modern layout), the keyboard followed the buttons instead of the actions: F aimed and the right mouse button meleed. On foot, every key now does the action its `keybinds.ini` line names (right mouse zooms, F melees) whatever the layout; menus are unchanged. Checked under Proton with the Original and Modern layouts.
+- Build fixes for a Linux host (#34): both CMake toolchain files set `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY`, so a cross build no longer picks up host packages (`mingw-w64.cmake` now uses the distribution's MinGW-w64 sysroot, or `KZ2_MINGW_SYSROOT`, as its root path); a different `--toolchain` starts a fresh configure; the fall-back to the system GCC MinGW-w64 prints a note naming `--toolchain`. Checked with a test project and our own build, not on a real Fedora, Debian or Arch host.
+- The sky in the first level is no longer green. Textures that came after a full upload buffer were skipped and stayed empty; the buffer is now submitted and the texture uploaded. Shown in scripted runs, not yet confirmed on Windows.
 
 ### Changed
+- Particle vertex generation (the particle vertex job's vertex emitter, including its DMA transfer to the GPU buffer) runs as native code by default (bit-exact against the recompiled SPU code on recorded and synthetic inputs; 10-22 % less SPU time for that job in play; KZ2_NATIVE_JOB_VJVERT=0 turns it off).
+- Known issues and roadmap: offline Skirmish with bots works (checked in a scripted run on one map); the docs had said it was not in the port.
 - The game's fast path for system library calls keeps the caller's TOC slot, as the full path does (adapted from a J-Stars Victory VS+ PC port by Tsamiuy, MIT). The translated Killzone 2 code does not read that slot today; it guards against a later toolkit change.
 - The README and NOTICE list the project's official channels, and say that builds come only from this repository's GitHub Releases.
 - CI runs in a smaller Nix shell without RPCS3 and the GPU tools, which were built from source on every run; the checks and host tests are the same.

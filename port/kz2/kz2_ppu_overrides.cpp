@@ -1659,8 +1659,84 @@ static void kz2_mouse_pre(ppu_context* ctx)
     }
 }
 
+/* ---- Keys keep their action under any layout (patch 6050) ----------------------------------------------
+ * Each on-foot look update hands cellPad the button each key's Standard 1 action is on in the live profile map
+ * (*(0x011B0540 + 0x240) + 0x64 + 4 * function; kz2_kb_roles), valid 300 ms, so menus, vehicles and mounted guns
+ * (no on-foot look update) get the plain buttons back by themselves. One "[keys]" line each time the table changes.
+ * Test input KZ2_KEY_SCRIPT="T:KEY:SEC ..." (KEY = Mouse1, Mouse2, a letter or 0xVK): SendInput presses KEY for SEC
+ * seconds, T seconds after the first look update or after KZ2_MOUSE_ANCHOR appears (the mouse script's clock). */
+extern "C" void pad_kb_set_roles(const unsigned short out[16], unsigned valid_ms);   /* cellPad.c (patch 6050) */
+static void kz2_key_send(unsigned vk, int down)
+{
+    INPUT in; memset(&in, 0, sizeof in);
+    if (vk == 1 || vk == 2) {
+        in.type = INPUT_MOUSE;
+        in.mi.dwFlags = vk == 1 ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP) : (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+    } else {
+        in.type = INPUT_KEYBOARD; in.ki.wVk = (WORD)vk; in.ki.wScan = (WORD)MapVirtualKeyA(vk, 0);
+        in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+    }
+    SendInput(1, &in, sizeof in);
+}
+static void kz2_keys_tick(void)
+{
+    const uint32_t prof = vm_read32(0x011B0540u + 0x240u);
+    if (prof >= 0x10000u && prof < 0xF0000000u) {
+        int32_t map[KZ2_PAD_NFUNC];
+        for (int f = 0; f < KZ2_PAD_NFUNC; f++) map[f] = (int32_t)vm_read32(prof + 0x64u + 4u * (uint32_t)f);
+        uint16_t out[16];
+        const int changed = kz2_kb_roles(map, out);
+        static uint16_t s_last[16]; static int s_have;
+        if (!s_have || memcmp(s_last, out, sizeof out)) {
+            s_have = 1; memcpy(s_last, out, sizeof out);
+            fprintf(stderr, "[keys] on foot: %d key(s) follow their action to another button (zoom key -> 0x%04X, close combat key"
+                            " -> 0x%04X, use key -> 0x%04X, crouch key -> 0x%04X, grenade key -> 0x%04X)\n", changed, out[2], out[10],
+                    out[13], out[8], out[9]);
+            fflush(stderr);
+        }
+        pad_kb_set_roles(out, 300);
+    }
+    static int s_init, s_n; static double s_t0;
+    static struct { double t, sec; unsigned vk; int state; } s_ev[16];
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!s_init) {
+        s_init = 1; s_t0 = now;
+        const char* e = getenv("KZ2_KEY_SCRIPT");
+        while (e && *e && s_n < 16) {
+            while (*e == ' ' || *e == ';' || *e == '|') e++;
+            if (!*e) break;
+            char name[16] = ""; double t = 0, sec = 0.2;
+            if (sscanf(e, "%lf:%15[^:]:%lf", &t, name, &sec) >= 2) {
+                unsigned vk = 0;
+                if (!strcmp(name, "Mouse1")) vk = 1; else if (!strcmp(name, "Mouse2")) vk = 2;
+                else if (name[0] && !name[1] && name[0] >= 'A' && name[0] <= 'Z') vk = (unsigned)name[0];
+                else if (!strncmp(name, "0x", 2)) vk = (unsigned)strtoul(name, nullptr, 16);
+                if (vk) { s_ev[s_n].t = t; s_ev[s_n].sec = sec; s_ev[s_n].vk = vk; s_ev[s_n].state = 0; s_n++; }
+            }
+            while (*e && *e != ' ' && *e != ';' && *e != '|') e++;
+        }
+        if (s_n) fprintf(stderr, "[keys] test script: %d key press(es) through SendInput\n", s_n);
+    }
+    if (!s_n) return;
+    static const char* s_anchor = getenv("KZ2_MOUSE_ANCHOR");
+    if (s_anchor && *s_anchor) {
+        if (GetFileAttributesA(s_anchor) == INVALID_FILE_ATTRIBUTES) return;
+        s_anchor = nullptr; s_t0 = now;
+    }
+    const double t = now - s_t0;
+    for (int i = 0; i < s_n; i++) {
+        if (s_ev[i].state == 0 && t >= s_ev[i].t) {
+            s_ev[i].state = 1; kz2_key_send(s_ev[i].vk, 1);
+            fprintf(stderr, "[keys] test t=%.2f: 0x%02X down\n", t, s_ev[i].vk); fflush(stderr);
+        } else if (s_ev[i].state == 1 && t >= s_ev[i].t + s_ev[i].sec) {
+            s_ev[i].state = 2; kz2_key_send(s_ev[i].vk, 0);
+            fprintf(stderr, "[keys] test t=%.2f: 0x%02X up\n", t, s_ev[i].vk); fflush(stderr);
+        }
+    }
+}
 [[maybe_unused]] static void kz2_update_look(ppu_context* ctx, void (*lifted)(ppu_context*))
 {
+    kz2_keys_tick();
     /* f1 is the game clock in seconds (r63 run a: 47.33, 47.40, ... one 1/15 s step per update at 15 fps), not a step:
      * dt = the clock's step since this controller's last update (first update or a jump: 1/30 s). */
     static uint32_t s_C;
@@ -1684,4 +1760,240 @@ void func_00173E80(ppu_context* ctx) { kz2_update_look(ctx, func_00173E80__lifte
 #endif
 #ifdef PPU_OVERRIDE_0015A7F0
 void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifted, 0x00174CE8u); }   // @0x0015A7F0 view setter (1.29)
+#endif
+
+/* ---- Valves and demolition charges without a motion sensor (ENHANCEMENT; kz2_motion.h has the decode) ----
+ * gameplay.ini motion = auto|on|off (KZ2_MOTION). The motion getter @0x000821D0(device r3, &a r4, &b r5, &c r6, &g r7)
+ * has three callers: the charge controller (lr 0x00119CFC), the valve controller (lr 0x00127288) and the zoom aim
+ * correction (lr 0x00173748). When the stick drives the tilt (kz2_motion_feed), the getter's a/b/c are replaced at the
+ * first two only, by the tilt of port 0's right stick X (pad_motion_port, patch 6049); the zoom aim is never touched.
+ * Both callers keep the controller in r31 across the call (`ori r31, r3, 0` @0x00119CA0 / @0x00127228), so the hook
+ * reads the controller's hand (+0x100) and dead band (charge +0x114, valve +0x110) from it for the log.
+ * ASSUMPTION: the player's pad is port 0 (single player; the game's device object was not mapped to a port).
+ * Lines: one "[motion] ... right stick" per controller kind the first time the stick drives it; every arm step of a
+ * charge (@0x001174A8: entity +0x244 steps, resource +0xC4 -> +0x1F0 range count, +0x1F4 the {min, max} pairs in
+ * fractions of 45 deg, hand +0x25C); a valve's angle (@0x00125BF0: rep +0x240, radians) each time it has moved 30 deg.
+ * KZ2_MOTION_LOG=1 adds the stick, the tilt and the hand of every getter call (at most 4000 lines). */
+#include "kz2_motion.h"
+extern "C" int  pad_motion_port(unsigned port, unsigned char* rx);   /* cellPad.c (patch 6049) */
+extern "C" void pad_motion_set_mode(int mode);
+static int kz2_motion_log_on(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("KZ2_MOTION_LOG"); v = e && e[0] == '1'; }
+    return v;
+}
+static void kz2_put_f32(uint32_t ea, float f) { uint32_t u; memcpy(&u, &f, 4); vm_write32(ea, u); }
+static std::chrono::steady_clock::time_point kz2_motion_t0 = std::chrono::steady_clock::now();
+static double kz2_motion_t(void)   /* seconds since kz2_motion_init (the "t=" of every [motion] line) */
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - kz2_motion_t0).count();
+}
+extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
+{
+    kz2_motion_t0 = std::chrono::steady_clock::now();
+    const int m = kz2_gameplay_get()->motion;
+    pad_motion_set_mode(m);
+    static const char* const mn[3] = { "auto", "on", "off" };
+    fprintf(stderr, "[motion] motion = %s: %s\n", mn[m],
+            m == KZ2_MOTION_OFF ? "the right stick turns valves and arms charges (the pad's own tilt is not used)"
+            : m == KZ2_MOTION_ON ? "only the pad's own tilt (a pad without an accelerometer cannot turn valves or arm charges)"
+                                 : "the pad's own tilt when it has a working accelerometer, else the right stick");
+}
+[[maybe_unused]] static void kz2_motion_get(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t lr = (uint32_t)ctx->lr;
+    const int kind = lr == KZ2_MOTION_LR_CHARGE ? 1 : lr == KZ2_MOTION_LR_VALVE ? 2 : 0;
+    const uint32_t pa = (uint32_t)ctx->gpr[4], pb = (uint32_t)ctx->gpr[5], pc = (uint32_t)ctx->gpr[6];
+    const uint32_t C = (uint32_t)ctx->gpr[31];
+    lifted(ctx);
+    if (!kind) return;
+    unsigned char rx = 128;
+    const int live = pad_motion_port(0, &rx);
+    if (!kz2_motion_feed(kz2_gameplay_get()->motion, live)) return;
+    const float s = kz2_motion_unit(rx), deg = kz2_motion_deg(s);
+    float v[3];
+    kz2_motion_vec(deg, v);
+    const float a0 = kz2_gp_f32(pa), b0 = kz2_gp_f32(pb), c0 = kz2_gp_f32(pc);
+    kz2_put_f32(pa, v[0]); kz2_put_f32(pb, v[1]); kz2_put_f32(pc, v[2]);
+    static int s_first[3];
+    static unsigned s_lines;
+    const char* nm = kind == 1 ? "charge" : "valve";
+    const float band = kz2_gp_f32(C + (kind == 1 ? 0x114u : 0x110u)) * 57.29578f;
+    const float hand = kz2_gp_f32(C + 0x100) * 57.29578f;
+    if (!s_first[kind]) {
+        s_first[kind] = 1;
+        fprintf(stderr, "[motion] t=%.2f %s controller 0x%08X: the right stick drives the tilt (pad accelerometer %s; dead band %.3f deg;"
+                " full tilt %.2f deg from %.0f %% of the stick)\n", kz2_motion_t(), nm, C, live ? "working" : "none", band,
+                (double)KZ2_MOTION_PEAK_DEG, (double)(KZ2_MOTION_FULL_AT * 100.0f));
+        fflush(stderr);
+    }
+    if (kz2_motion_log_on() && s_lines < 4000) {
+        static uint8_t s_rx[3] = { 0, 0, 0 };
+        static unsigned s_n[3];
+        if (rx != s_rx[kind] || ++s_n[kind] % 15 == 0) {
+            s_rx[kind] = rx; s_lines++;
+            fprintf(stderr, "[motion] t=%.2f %s: stick %3u (%+.3f) tilt %+.2f deg, getter had %.4f %.4f %.4f, hand %+.2f deg, band %.3f\n",
+                    kz2_motion_t(), nm, rx, s, deg, a0, b0, c0, hand, band);
+        }
+    }
+}
+[[maybe_unused]] static void kz2_charge_arm(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t E = (uint32_t)ctx->gpr[3];
+    const uint32_t before = vm_read32(E + 0x244);
+    lifted(ctx);
+    const uint32_t after = vm_read32(E + 0x244);
+    static unsigned s_lines;
+    if (after == before || s_lines >= 200) return;
+    s_lines++;
+    const uint32_t res = vm_read32(E + 0xC4);
+    const uint32_t n = res ? vm_read32(res + 0x1F0) : 0, arr = res ? vm_read32(res + 0x1F4) : 0;
+    char win[160] = "";
+    for (uint32_t i = 0, o = 0; arr && i < n && i < 6 && o < sizeof win - 32; i++)
+        o += (uint32_t)snprintf(win + o, sizeof win - o, " [%.2f..%.2f]", kz2_gp_f32(arr + 8 * i) * 45.0f, kz2_gp_f32(arr + 8 * i + 4) * 45.0f);
+    fprintf(stderr, "[motion] t=%.2f charge 0x%08X arm step %u of %u (hand %+.2f deg; windows in deg:%s)%s\n", kz2_motion_t(), E, after, n,
+            kz2_gp_f32(E + 0x25C) * 45.0f, win, after >= n && n ? ": armed" : "");
+    fflush(stderr);
+}
+[[maybe_unused]] static void kz2_valve_rep(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t R = (uint32_t)ctx->gpr[3];
+    lifted(ctx);
+    static uint32_t s_R;
+    static float s_last;
+    static unsigned s_lines;
+    const float ang = kz2_gp_f32(R + 0x240) * 57.29578f;
+    if (R != s_R) { s_R = R; s_last = ang; return; }
+    if (fabsf(ang - s_last) >= 30.0f && s_lines < 200) {
+        s_lines++;
+        fprintf(stderr, "[motion] t=%.2f valve 0x%08X angle %.1f deg (was %.1f; hand %+.2f deg)\n", kz2_motion_t(), R, ang, s_last,
+                kz2_gp_f32(R + 0x248) * 57.29578f);
+        fflush(stderr);
+        s_last = ang;
+    }
+}
+#ifdef PPU_OVERRIDE_000821D0
+void func_000821D0(ppu_context* ctx) { kz2_motion_get(ctx, func_000821D0__lifted); }   // @0x000821D0 motion getter (1.29)
+#endif
+#ifdef PPU_OVERRIDE_001174A8
+void func_001174A8(ppu_context* ctx) { kz2_charge_arm(ctx, func_001174A8__lifted); }   // @0x001174A8 charge arm update (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00125BF0
+void func_00125BF0(ppu_context* ctx) { kz2_valve_rep(ctx, func_00125BF0__lifted); }   // @0x00125BF0 ValveRep update (1.29)
+#endif
+
+/* ---- Field of view search (diagnostic only: KZ2_FOV_LOG=1) ------------------------------------------------
+ * tanf @0x007D0818 (libm; 33 call sites) and the Camera FieldOfView writer @0x0066F3C0(camera r3, resource r4: near
+ * R+0x28 -> C+0x6C, far R+0x2C -> C+0x70, FieldOfView C+0x74 scaled at 0x0066F420, ViewConeAspect C+0x78,
+ * FOVAspectAdjust C+0x84; the Camera attribute table @0x00F3AF00). Lists, per caller, the first arguments and every
+ * change of more than 1 %, to find the projection's half angle. */
+static int kz2_fov_log_on(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("KZ2_FOV_LOG"); v = e && e[0] == '1'; }
+    return v;
+}
+[[maybe_unused]] static void kz2_fov_tanf(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    if (!kz2_fov_log_on()) { lifted(ctx); return; }
+    const uint32_t lr = (uint32_t)ctx->lr;
+    const double x = ctx->fpr[1];
+    lifted(ctx);
+    static uint32_t s_lr[64]; static float s_x[64]; static unsigned s_n[64], s_lines;
+    int i = 0;
+    while (i < 64 && s_lr[i] && s_lr[i] != lr) i++;
+    if (i == 64 || s_lines > 3000) return;
+    if (!s_lr[i]) { s_lr[i] = lr; s_x[i] = (float)x + 1e9f; }
+    s_n[i]++;
+    if (fabsf((float)x - s_x[i]) > 0.01f * fabsf(s_x[i]) + 1e-6f) {
+        s_x[i] = (float)x; s_lines++;
+        fprintf(stderr, "[fov] tanf lr 0x%08X x %.5f (%.3f deg) -> %.5f (call %u)\n", lr, x, x * 57.29578, ctx->fpr[1], s_n[i]);
+    }
+}
+[[maybe_unused]] static void kz2_fov_cam(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t C = (uint32_t)ctx->gpr[3], R = (uint32_t)ctx->gpr[4], lr = (uint32_t)ctx->lr;
+    lifted(ctx);
+    static unsigned s_lines;
+    if (kz2_fov_log_on() && s_lines++ < 300)
+        fprintf(stderr, "[fov] camera writer lr 0x%08X C 0x%08X R 0x%08X: fov %.4f aspect %.4f zoom %.4f adjust %u\n", lr, C, R,
+                kz2_gp_f32(C + 0x74), kz2_gp_f32(C + 0x78), kz2_gp_f32(C + 0x80), (unsigned)(vm_read32(C + 0x84) >> 24));
+}
+#ifdef PPU_OVERRIDE_007D0818
+void func_007D0818(ppu_context* ctx) { kz2_fov_tanf(ctx, func_007D0818__lifted); }   // @0x007D0818 tanf (1.29)
+#endif
+#ifdef PPU_OVERRIDE_0066F3C0
+void func_0066F3C0(ppu_context* ctx) { kz2_fov_cam(ctx, func_0066F3C0__lifted); }   // @0x0066F3C0 Camera FOV writer (1.29)
+#endif
+/* Frustum perspective setter @0x003D9640(frustum r3, r4..r6 vectors, f1 near, f2 far, f3 FOV in degrees, f4 aspect;
+ * @0x003D96FC: top = near * tan(FOV/2), right = top * aspect, so the FOV is vertical). Five callers (lr 0x00143160,
+ * 0x001ABA74, 0x0027661C, 0x0030D688, 0x0066F638). KZ2_FOV_LOG=1 prints each new (lr, frustum, FOV).
+ *
+ * Field of view setting (ENHANCEMENT; display.ini fov / KZ2_FOV / the Display page's FIELD OF VIEW row,
+ * kz2_port_settings.cpp): the vertical FOV of the first-person view. The world view is built by the Camera's frustum
+ * method 0x66F530 (lr 0x66F638; Camera r31: NearPlane +0x6C, FarPlane +0x70, FieldOfView +0x74; RTTI 0xF3AC1C, vtable
+ * 0xFBA480). The same Camera object draws the level's in-engine scenes: runs kz2-r67-fovown/-fovown2 (Corinth Sands)
+ * show one Camera for the dropship-crash scene and for play, and only its near plane tells them apart:
+ *   first-person play   45 deg, near 0.25 (CameraEntityResource FirstPersonNearPlane), far 4096; the sight zoom
+ *                       narrows the FOV with the near plane kept (an earlier change run kz2-r65-keys-*)
+ *   in-engine scene     near 0.01, far 4096, FOV animated (40.7 -> 30.1 deg over the crash scene)
+ *   front end / loading near 1.0 far 2000 (40 deg; menus, CamOrbit 0xFBA534) and near 0.1 far 512 (50.6 deg)
+ * The weapon view model has its own frustum (lr 0x27661C, 33.75 deg, near 0.01) and is never touched. So the rule is
+ * the game's own first-person marker: lr 0x66F638 and near == the first-person near plane (0.25). There tan(FOV/2) is
+ * multiplied by tan(T/2) / tan(22.5 deg) (T = the setting), which keeps every zoom step relative to the view (the
+ * approach of KZ3 patch 2109, port/kz3/main.cpp, read in the KZ3 snapshot, adapted; no code taken).
+ * ASSUMPTION: every first-person view of the campaign uses the 0.25 near plane (one FirstPersonCameraEntityResource);
+ * a view that does not keeps the game's own FOV. One "[fov]" line names each other near plane seen at the site while
+ * the setting is on (0.005 apart, at most 16) and each new whole degree of the first-person FOV (zoom steps, at most 12), so a level where that assumption fails shows in the log. */
+static volatile double s_fov_k = 1.0;    /* factor on tan(FOV/2); 1 = the game's own view */
+static volatile double s_fov_deg = 45.0;
+extern "C" void kz2_fov_set(double deg)
+{
+    if (!(deg >= 30.0 && deg <= 120.0)) deg = 45.0;
+    s_fov_deg = deg;
+    s_fov_k = tan(deg * 0.5 * 0.017453292519943295) / tan(22.5 * 0.017453292519943295);
+    fprintf(stderr, "[fov] first-person view %.0f deg vertical (game 45; factor %.4f on tan(FOV/2)); in-engine scenes, menus and the "
+                    "weapon model unchanged\n", deg, (double)s_fov_k);
+}
+[[maybe_unused]] static void kz2_fov_frustum(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t lr = (uint32_t)ctx->lr, F = (uint32_t)ctx->gpr[3];
+    const double fov0 = ctx->fpr[3], near0 = ctx->fpr[1];
+    const double k = s_fov_k;
+    if (lr == 0x0066F638u && k != 1.0 && fov0 > 1.0 && fov0 < 170.0) {
+        if (fabs(near0 - 0.25) < 1e-4) {
+            ctx->fpr[3] = 2.0 * atan(tan(fov0 * 0.5 * 0.017453292519943295) * k) * 57.29577951308232;
+            static int s_fv[12]; static unsigned s_nf;   /* each new whole degree of the game's FOV (zoom steps), at most 12 */
+            const int d = (int)floor(fov0 + 0.5);
+            unsigned i = 0;
+            while (i < s_nf && s_fv[i] != d) i++;
+            if (i == s_nf && s_nf < 12) {
+                s_fv[s_nf++] = d;
+                fprintf(stderr, "[fov] first-person %.3f -> %.3f deg (near %.4f)\n", fov0, ctx->fpr[3], near0);
+            }
+        } else {
+            static float s_near[16]; static unsigned s_nn;
+            unsigned i = 0;
+            while (i < s_nn && fabsf(s_near[i] - (float)near0) > 0.005f) i++;
+            if (i == s_nn && s_nn < 16) {
+                s_near[s_nn++] = (float)near0;
+                fprintf(stderr, "[fov] not first-person (near %.4f far %.1f fov %.3f): the game's own FOV\n", near0, ctx->fpr[2], fov0);
+            }
+        }
+    }
+    if (kz2_fov_log_on()) {
+        static uint32_t s_lr[200], s_f[200]; static float s_v[200]; static unsigned s_n;
+        int i = 0;
+        while (i < (int)s_n && !(s_lr[i] == lr && s_f[i] == F && fabsf(s_v[i] - (float)fov0) < 0.01f)) i++;
+        if (i == (int)s_n && s_n < 200) {
+            s_lr[s_n] = lr; s_f[s_n] = F; s_v[s_n] = (float)fov0; s_n++;
+            fprintf(stderr, "[fov] frustum lr 0x%08X F 0x%08X fov %.3f -> %.3f aspect %.4f near %.4f far %.1f\n", lr, F, fov0,
+                    ctx->fpr[3], ctx->fpr[4], ctx->fpr[1], ctx->fpr[2]);
+        }
+    }
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_003D9640
+void func_003D9640(ppu_context* ctx) { kz2_fov_frustum(ctx, func_003D9640__lifted); }   // @0x003D9640 frustum setter (1.29)
 #endif

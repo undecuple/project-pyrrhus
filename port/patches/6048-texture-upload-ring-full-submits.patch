@@ -1,0 +1,183 @@
+KZ2 patch 6048: a texture level that does not fit in the upload ring submits the list first instead of being skipped.
+
+Root cause of the green sky in Corinth River (public KNOWN_ISSUES "green sky"). create_texture_mipped staged each
+level in the per-frame upload ring (UPLOAD_SIZE, 64 MB) and, when the level did not fit in what was left, hit
+`break`: the copy was never recorded, the new D3D12 resource kept its initial zeros, the cache entry still pointed at
+it and the guest bytes' hash never changed, so the texture was never uploaded again. Killzone 2's first level frame
+decodes thousands of textures (the cache goes from 32 to 8192 entries within one 32-frame window) and the sky
+panorama (0x092A0000, DXT5 2048x512, 1 MB) came after the ring had filled: it sampled 0 in R, G and A, the sky
+shader's YCoCg decode turned that into (0, 3, 0)/255, and post made it green. create_texture_cube and
+create_texture_3d had the same check (returning NULL, so the texture bound white for good).
+
+Fix: libs/video/rsx_upload_ring.h (pure, host test tools/runtime/test_upload_ring.sh) decides fit / submit first /
+too big; ld_upload_take submits the list (new flush reason LD_FLUSH_UPLOAD_RING, "upring" in [perf-flush]) and
+stages at 0, as ld_gv_upload_rows and the retire queue already do. Textures are resolved before the draw sets its
+render targets, pipeline and root signature (texture_srv_slot), and a flush invalidates the state memo, so the
+draw re-records its state on the new list. One [tex-upload] line per submit (first 32, then every 256th) names the
+guest texture; a level larger than the whole ring is still not uploaded but is now reported.
+Also an upstream candidate (the check is in ps3recomp's live draw).
+
+diff -ruN a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c	2026-11-02 14:16:14.761729022 -0600
++++ b/libs/video/cellGcmSys.c	2026-11-02 14:17:09.059646357 -0600
+@@ -2508,11 +2508,12 @@
+                         d[RSX_PERF_W_NV3089_GPU_T] * tk, d[RSX_PERF_W_NV3089_COPY_T] * tk, d[RSX_PERF_W_NV3089_ROWS_N],
+                         (double)d[RSX_PERF_W_NV3089_BYTES] / 1048576.0);
+             if (d[RSX_PERF_W_ON]) {   /* patch 2045: flushes by reason (n/ms) and the texture upload half */
+-                static const char* const rn[11] = { "present", "ref", "vring", "cbring", "retire", "movie",
+-                                                    "mpresent", "readback", "pscbring", "descring", "shutdown" };
++                static const char* const rn[12] = { "present", "ref", "vring", "cbring", "retire", "movie",
++                                                    "mpresent", "readback", "pscbring", "descring", "shutdown",
++                                                    "upring" };   /* patch 6048: upring */
+                 char fl[512]; int fo = snprintf(fl, sizeof fl, "[perf-flush] t=%.0fs tex-up %.1fms |", tnow,
+                                                 d[RSX_PERF_W_TEX_UP_T] * tk);
+-                for (int r = 0; r < 11 && fo < (int)sizeof fl - 40; r++)
++                for (int r = 0; r < 12 && fo < (int)sizeof fl - 40; r++)
+                     if (d[RSX_PERF_W_FLUSH_N0 + r])
+                         fo += snprintf(fl + fo, sizeof fl - (size_t)fo, " %s %lld/%.1fms", rn[r],
+                                        d[RSX_PERF_W_FLUSH_N0 + r], d[RSX_PERF_W_FLUSH_T0 + r] * tk);
+diff -ruN a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c	2026-11-02 14:16:14.756728911 -0600
++++ b/libs/video/rsx_live_draw.c	2026-11-02 14:17:00.986757910 -0600
+@@ -213,6 +213,7 @@
+ /* patch 2048: asynchronous PSO build bookkeeping */
+ #include "rsx_pso_template.h"   /* patch 2071 */
+ #include "rsx_pso_keys_hdr.h"   /* patch 6047: key file header with the translator id */
++#include "rsx_upload_ring.h"   /* patch 6048: a texture level that does not fit submits the list first */
+ #include "rsx_pace.h"           /* patch 2072 */
+ #include "rsx_tex_lru.h"        /* patch 2075 */
+ #include "rsx_gpupass.h"        /* patch 2086 */
+@@ -1349,6 +1350,7 @@
+     LD_FLUSH_PIXEL_CONSTANT_RING,
+     LD_FLUSH_DESCRIPTOR_RING,
+     LD_FLUSH_SHUTDOWN,
++    LD_FLUSH_UPLOAD_RING,   /* patch 6048 */
+     LD_FLUSH_REASON_COUNT
+ } ld_flush_reason;
+ 
+@@ -3287,6 +3289,33 @@
+     return on;
+ }
+ 
++/* patch 6048: stage `bytes` in the upload ring at *start; when the ring is too full, submit the list first (the
++ * old code skipped the level silently and the texture kept zeros for good: the Corinth sky). 0 = the level alone is
++ * larger than the ring. src = the guest texture being decoded (for the log). */
++static u32 g_ld_up_src_loc, g_ld_up_src_off;
++static unsigned long long g_ld_up_flush_n, g_ld_up_toobig_n;
++static int ld_upload_take(u64 bytes, u32 w, u32 h, u32* start)
++{
++    u64 s = 0;
++    const int k = rsx_upload_place(g.upload_used, bytes, UPLOAD_SIZE, &s);
++    if (k == RSX_UP_FIT) { *start = (u32)s; return 1; }
++    if (k == RSX_UP_FLUSH) {
++        g_ld_up_flush_n++;
++        if (g_ld_up_flush_n <= 32 || (g_ld_up_flush_n & 255u) == 0)
++            fprintf(stderr, "[tex-upload] ring full (%u of %u KB): list submitted before a %ux%u level (%llu bytes) "
++                            "of src=%u:0x%08X frame=%u n=%llu\n", g.upload_used >> 10, UPLOAD_SIZE >> 10, w, h,
++                    (unsigned long long)bytes, g_ld_up_src_loc, g_ld_up_src_off, g_ld_frames, g_ld_up_flush_n);
++        ld_flush(LD_FLUSH_UPLOAD_RING);
++        *start = 0;
++        return 1;
++    }
++    g_ld_up_toobig_n++;
++    fprintf(stderr, "[tex-upload] level %ux%u (%llu bytes) of src=%u:0x%08X is larger than the upload ring (%u KB): "
++                    "not uploaded n=%llu\n", w, h, (unsigned long long)bytes, g_ld_up_src_loc, g_ld_up_src_off,
++            UPLOAD_SIZE >> 10, g_ld_up_toobig_n);
++    return 0;
++}
++
+ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t* lv, u32 n)
+ {
+     if (n == 0) return NULL;
+@@ -3319,8 +3348,8 @@
+         return NULL;
+     for (u32 m = 0; m < n; m++) {
+         const u32 pitch = (lv[m].row_bytes + 255) & ~255u;
+-        const u32 start = (g.upload_used + 511) & ~511u;
+-        if ((u64)start + (u64)pitch * lv[m].rows > UPLOAD_SIZE) break;
++        u32 start;
++        if (!ld_upload_take((u64)pitch * lv[m].rows, lv[m].w, lv[m].h, &start)) break;   /* patch 6048 */
+         for (u32 y = 0; y < lv[m].rows; y++)
+             memcpy(g.upload_mapped + start + (size_t)y * pitch,
+                    lv[m].data + (size_t)y * lv[m].row_bytes, lv[m].row_bytes);
+@@ -3373,8 +3402,8 @@
+         for (u32 mip = 0; mip < n_mips; mip++) {
+             const tex_level_t* level = &lv[face * n_mips + mip];
+             const u32 pitch = (level->row_bytes + 255) & ~255u;
+-            const u32 start = (g.upload_used + 511) & ~511u;
+-            if ((u64)start + (u64)pitch * level->rows > UPLOAD_SIZE) {
++            u32 start;
++            if (!ld_upload_take((u64)pitch * level->rows, level->w, level->h, &start)) {   /* patch 6048 */
+                 tex->lpVtbl->Release(tex);
+                 return NULL;
+             }
+@@ -4050,8 +4079,8 @@
+     rd.Width = w; rd.Height = h; rd.DepthOrArraySize = (u16)d;
+     rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+     const u32 pitch = (w * 4 + 255) & ~255u;
+-    const u32 start = (g.upload_used + 511) & ~511u;
+-    if ((u64)start + (u64)pitch * h * d > UPLOAD_SIZE) return NULL;
++    u32 start;
++    if (!ld_upload_take((u64)pitch * h * d, w, h * d, &start)) return NULL;   /* patch 6048 */
+     ID3D12Resource* tex = NULL;
+     if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+@@ -4601,6 +4630,7 @@
+     g_ld_profile.total.texture_decode_calls++;
+ #endif
+     LDW_T0(dec_t0);
++    g_ld_up_src_loc = texture->location; g_ld_up_src_off = texture->offset;   /* patch 6048: for [tex-upload] */
+     ID3D12Resource* result = decode_guest_texture(texture, remap);
+     if (dec_t0) { LDW_ADD(RSX_PERF_W_TEX_NEW_T, dec_t0); rsx_perf_add(RSX_PERF_W_TEX_NEW_N, 1); }
+ #if defined(YZ_PERF_PROFILE)
+diff -ruN a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+--- a/libs/video/rsx_live_draw.h	2026-11-02 14:16:14.759728978 -0600
++++ b/libs/video/rsx_live_draw.h	2026-11-02 14:17:09.060281736 -0600
+@@ -263,7 +263,7 @@
+     RSX_PERF_W_D_BAR_T, RSX_PERF_W_D_BAR_N, RSX_PERF_W_D_OMRT_T, RSX_PERF_W_D_SM_HIT_N,
+     RSX_PERF_W_TEX_UP_T,   /* the upload half (barriers + CopyTextureRegion) of TEX_NEW_T */
+     RSX_PERF_W_D_UNIT_SKIP_N,   /* enabled units not bound: the FP never samples them */
+-    RSX_PERF_W_FLUSH_N0, RSX_PERF_W_FLUSH_N_END = RSX_PERF_W_FLUSH_N0 + 11,   /* ld_flush by reason (11 reasons) */
++    RSX_PERF_W_FLUSH_N0, RSX_PERF_W_FLUSH_N_END = RSX_PERF_W_FLUSH_N0 + 11,   /* ld_flush by reason (12 reasons, N0..N_END; 6048: upring) */
+     RSX_PERF_W_FLUSH_T0, RSX_PERF_W_FLUSH_T_END = RSX_PERF_W_FLUSH_T0 + 11,
+     /* patch 2080: NV3089 blits: count, whole-method ticks, GPU mirror ticks, guest copy ticks, row-copied blits,
+      * guest bytes written */
+diff -ruN a/libs/video/rsx_upload_ring.h b/libs/video/rsx_upload_ring.h
+--- a/libs/video/rsx_upload_ring.h	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/video/rsx_upload_ring.h	2026-11-02 14:16:25.070958488 -0600
+@@ -0,0 +1,35 @@
++/* KZ2 patch 6048: where a texture upload goes in the per-frame upload ring (live draw, UPLOAD_SIZE = 64 MB).
++ *
++ * Texture texels are staged in the upload ring and copied into the texture by CopyTextureRegion. The ring is
++ * emptied only when the command list is submitted. Before this patch a texture level that did not fit in what was
++ * left of the ring was skipped silently ("break"): the D3D12 resource stayed as created (zeros), the cache entry
++ * still held it, and its hash never changed, so the texture was never uploaded again. Killzone 2's first level frame
++ * uploads over 8,000 textures (cache 32 -> 8192 within one 32-frame window), more than 64 MB, and the Corinth sky
++ * panorama (DXT5 2048x512, 1 MB) was one of the textures past the end: it sampled 0 in every channel and the sky
++ * came out green after post.
++ *
++ * Now a level that does not fit submits the list first (the GPU then has the earlier copies, and the ring starts
++ * again at 0), the same as the guest-surface upload (ld_gv_upload_rows) and the retire queue already do. Only a
++ * single level larger than the whole ring cannot be staged; that is reported, never silent.
++ * Pure C (host test tools/runtime/test_upload_ring.sh). */
++#ifndef RSX_UPLOAD_RING_H
++#define RSX_UPLOAD_RING_H
++#include <stdint.h>
++
++#define RSX_UP_ALIGN 512u   /* D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT */
++
++enum { RSX_UP_FIT = 0, RSX_UP_FLUSH = 1, RSX_UP_TOO_BIG = 2 };
++
++/* used = bytes of the ring taken this list, bytes = the level's staged size (row pitch x rows), size = the ring.
++ * FIT: *start is the aligned offset after `used`. FLUSH: submit the list, then stage at *start = 0.
++ * TOO_BIG: the level alone exceeds the ring. An empty ring never asks for a flush. */
++static inline int rsx_upload_place(uint64_t used, uint64_t bytes, uint64_t size, uint64_t* start)
++{
++    *start = 0;
++    if (bytes > size) return RSX_UP_TOO_BIG;
++    const uint64_t s = (used + (RSX_UP_ALIGN - 1u)) & ~(uint64_t)(RSX_UP_ALIGN - 1u);
++    if (s <= size && bytes <= size - s) { *start = s; return RSX_UP_FIT; }
++    return RSX_UP_FLUSH;
++}
++
++#endif

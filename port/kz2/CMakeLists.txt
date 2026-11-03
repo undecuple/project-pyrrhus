@@ -247,6 +247,7 @@ add_executable(${PROJECT_NAME}
     kz2_pad_layout.c    # KZ2_PAD_LAYOUT=original|modern: Modern pad preset through the profile map
     kz2_gameplay.c      # aim_assist / crouch_toggle / cover_toggle settings and latch logic
     kz2_prompts.cpp     # prompt glyph source for patches 2091-2093: keys, label fonts
+    kz2_port_settings.cpp  # the Display page's port rows (fov, upscale, sharpness) and display.ini
     kz2_menu_pages.cpp  # EXIT TO DESKTOP and the Keyboard page in the game's menus
     kz2_session_log.c   # KZ2_CONSOLE, logs/kz2-<date>-<time>.log, the EBOOT beside the exe (kz2_session_log.h)
     kz2_edge_zlib.c     # patch 6039: the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)

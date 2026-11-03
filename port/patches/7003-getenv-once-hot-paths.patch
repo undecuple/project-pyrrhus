@@ -11,6 +11,7 @@ via KZ3 (spurs_job, spu_lifted_job); the rest is a candidate on its own.
 
 Rebased on ps3recomp v0.18.0 (hand-merged): cellGcmSys takes upstream (it already reads these once); ppu_fs keeps upstream with PS3_GETENV_ONCE substituted
 
+(The spu_workload.c include hunk's context follows KZ3 patch 1136's include line.)
 diff --git a/include/ps3emu/env_once.h b/include/ps3emu/env_once.h
 new file mode 100644
 index 0000000..8cf38aa
@@ -585,8 +586,8 @@ index 53d4988..80727c1 100644
   */
 +#include "ps3emu/env_once.h"
  #include "spu_workload.h"
+ #include "kz3_spu_sched.h"   /* KZ3 patch 1136 */
  #include "spu_lifted_job.h"   /* spu_run_lifted_job */
- #include "../ps3_log.h"      /* ps3_log_verbose */
 @@ -826,7 +827,7 @@ static void spu_async_run(spu_async_job* j)
               * the policy module (libsre @0x30021480 -> LS 0xA00) and write the
               * task descriptor {0xFFFFFFFF, 0x400, 0x2700, 0x3000} at 0x2FB0, then

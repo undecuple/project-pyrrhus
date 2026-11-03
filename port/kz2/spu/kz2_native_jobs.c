@@ -51,22 +51,20 @@ static int rec_skip(spu_context* ctx, const kz2_native_entry* e)
     return 1;
 }
 
-static int rec(spu_context* ctx, int slot)
+/* Spu an earlier change: KZ2_NATIVE_REC_SLOT=<slot>:<every>:<n>[,...] gives a slot its own spacing and count (VertexJob's
+ * vertex emitter, slot 79, runs ~4 times per particle: every 7th call records one frame's vertices);
+ * KZ2_NATIVE_REC_VJFLUSH=<n> also records up to n of its calls whose vertex fills the ring buffer (the fill offset
+ * at LS 0x27B84 within 32 bytes of 16 KB: the DMA put and the tag wait), as s79_fNNN.kz2nj. */
+static long s_rec_slot_every[KZ2_NATIVE_SLOTS], s_rec_slot_n[KZ2_NATIVE_SLOTS];
+static long s_rec_vjflush;
+static volatile long s_rec_fl_done;
+
+static void rec_write(spu_context* ctx, int slot, const char* path, long n, long c)
 {
-    kz2_native_count(slot);
-    if (rec_skip(ctx, s_ent[slot])) return 0;
-    if (difftime(time(NULL), s_t0) < s_rec_after) return 0;
-    /* calls counted from the first one after KZ2_NATIVE_REC_AFTER: that one is recorded (a rare gate gets one) */
-    const long c = __atomic_fetch_add(&s_rec_calls[slot], 1, __ATOMIC_RELAXED);
-    if (c % s_rec_every) return 0;
-    const long n = __atomic_fetch_add(&s_rec_done[slot], 1, __ATOMIC_RELAXED);
-    if (n >= s_rec_n) return 0;
-    char path[1024];
-    snprintf(path, sizeof path, "%s/s%02d_%03ld.kz2nj", s_rec_dir, slot, n);
     FILE* f = fopen(path, "wb");
     if (!f) {
         if (n == 0) fprintf(stderr, "[native] record: cannot write %s\n", path);
-        return 0;
+        return;
     }
     uint32_t hdr[4] = { (uint32_t)slot, s_ent[slot] ? s_ent[slot]->addr : 0u, (uint32_t)ctx->image_id,
                         (uint32_t)ctx->resident_ovl };
@@ -76,6 +74,34 @@ static int rec(spu_context* ctx, int slot)
     fwrite(ctx->ls, 1, SPU_LS_SIZE, f);
     fclose(f);
     fprintf(stderr, "[native] recorded slot %d #%ld (call %ld) -> %s\n", slot, n, c, path);
+}
+
+static int rec(spu_context* ctx, int slot)
+{
+    kz2_native_count(slot);
+    if (rec_skip(ctx, s_ent[slot])) return 0;
+    if (difftime(time(NULL), s_t0) < s_rec_after) return 0;
+    char path[1024];
+    if (s_rec_vjflush && s_ent[slot] && !strcmp(s_ent[slot]->kind, "vj_vertex")) {
+        const uint8_t* q = ctx->ls + 0x27B84;
+        const uint32_t fill = (uint32_t)q[0] << 24 | (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3];
+        if (fill >= 0x4000u - 32u && fill <= 0x4000u) {
+            const long m = __atomic_fetch_add(&s_rec_fl_done, 1, __ATOMIC_RELAXED);
+            if (m < s_rec_vjflush) {
+                snprintf(path, sizeof path, "%s/s%02d_f%03ld.kz2nj", s_rec_dir, slot, m);
+                rec_write(ctx, slot, path, m, -1);
+            }
+        }
+    }
+    const long every = s_rec_slot_every[slot] ? s_rec_slot_every[slot] : s_rec_every;
+    const long nmax = s_rec_slot_n[slot] ? s_rec_slot_n[slot] : s_rec_n;
+    /* calls counted from the first one after KZ2_NATIVE_REC_AFTER: that one is recorded (a rare gate gets one) */
+    const long c = __atomic_fetch_add(&s_rec_calls[slot], 1, __ATOMIC_RELAXED);
+    if (c % every) return 0;
+    const long n = __atomic_fetch_add(&s_rec_done[slot], 1, __ATOMIC_RELAXED);
+    if (n >= nmax) return 0;
+    snprintf(path, sizeof path, "%s/s%02d_%03ld.kz2nj", s_rec_dir, slot, n);
+    rec_write(ctx, slot, path, n, c);
     return 0;   /* the lifted body runs */
 }
 
@@ -182,6 +208,20 @@ __attribute__((constructor)) static void kz2_native_jobs_init(void)
         if (s_rec_every < 1) s_rec_every = 1;
         s_rec_after = (double)env_long("KZ2_NATIVE_REC_AFTER", 120);
         s_rec_blur = (int)env_long("KZ2_NATIVE_REC_DOF_BLUR", 0);
+        s_rec_vjflush = env_long("KZ2_NATIVE_REC_VJFLUSH", 0);
+        for (const char* p = getenv("KZ2_NATIVE_REC_SLOT"); p && *p;) {   /* slot:every:n[,...] */
+            char* q;
+            const long sl = strtol(p, &q, 0);
+            long ev = 0, nn = 0;
+            if (*q == ':') ev = strtol(q + 1, &q, 0);
+            if (*q == ':') nn = strtol(q + 1, &q, 0);
+            if (sl >= 0 && sl < KZ2_NATIVE_SLOTS && ev > 0) {
+                s_rec_slot_every[sl] = ev;
+                s_rec_slot_n[sl] = nn > 0 ? nn : s_rec_n;
+            }
+            p = strchr(q, ',');
+            if (p) p++;
+        }
         fprintf(stderr, "[native] recording gate inputs to %s (%ld per slot, every %ld calls, after %.0f s)\n", d,
                 s_rec_n, s_rec_every, s_rec_after);
     }

@@ -23,6 +23,9 @@
  *    0xE7AB78; no page and no `bl` calls them) are re-registered the same way, as Project Helghast port/kz3/main.cpp does
  *    (its "Keyboard page" bridge, copied and adapted): a "kb:<cmd>" string goes to pad_kb_ui_cmd (cellPad.c, patch
  *    2038), the reply is what the next GetTimeZone() returns; anything else runs the original bodies.
+ * 3b. An earlier change: the DISPLAY list of the three options pages gets the port rows of kz2_port_rows.h (FIELD OF VIEW,
+ *    UPSCALING, SHARPNESS) and their script, which sends "pc:<cmd>" through the same bridge to kz2_port_settings_cmd
+ *    (applied live, saved to display.ini). Only with the bridge hooked (else the rows' script would read the time zone).
  * 4. The version line: the served main menu also gets one text line in its lower right corner, "Project Pyrrhus
  *    <version>" and the newer release the launcher's check found, from version.ini (kz2_version_line.h has the rules;
  *    KZ2_VERSION_LINE=0: none).
@@ -45,6 +48,7 @@
 
 #include "ppu_recomp.h"
 #include "kz2_menu_text.h"
+#include "kz2_port_rows.h"   /* the Display page's port rows */
 #include "kz2_version_line.h"
 #include "ps3emu/split_file.h"   /* patch 6034: data_ps3.psarc or its FAT32 parts .66600, .66601, ... */
 
@@ -54,6 +58,7 @@ extern uint32_t ppu_hle_inject_base;
 extern const char* ppu_vfs_root;
 void ppu_register_function(uint64_t addr, void (*fn)(ppu_context*));
 int  pad_kb_ui_cmd(const char* cmd, char* out, size_t n);                       /* cellPad.c (patch 2038) */
+int  kz2_port_settings_cmd(const char* cmd, char* out, size_t n);               /* kz2_port_settings.cpp */
 int  stbi_zlib_decode_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);   /* stb_image (cellPngDec.c) */
 const char* kz2_update_dir(void);                                                /* main.cpp: <..>/dev_hdd0/game/BCUS98116/USRDIR */
 void ps3_indirect_call(ppu_context* ctx);
@@ -71,6 +76,7 @@ std::mutex g_mu;
 int g_on = -1;
 uint32_t g_heap = 0, g_heap_end = 0;
 uint32_t g_reply = 0;
+bool g_bridge = false;   /* SetTimeZone/GetTimeZone re-registered: the port rows' script can reach the host */
 
 bool on(void)
 {
@@ -374,6 +380,10 @@ uint32_t edit_page(const std::string& path, const std::string& page, const char*
         rows++;
     } catch (const kz2mt::Anchor& e) { fail += std::string(" exit row: ") + e.what() + ";"; }
     try { t = kz2mt::patch_options(t); rows++; } catch (const kz2mt::Anchor& e) { fail += std::string(" keyboard row: ") + e.what() + ";"; }
+    bool prow = false;
+    if (g_bridge) {   /* FIELD OF VIEW, UPSCALING, SHARPNESS on the DISPLAY list (kz2_port_rows.h) */
+        try { t = kz2rows::display_rows(t, code); prow = true; } catch (const kz2mt::Anchor& e) { fail += std::string(" port rows: ") + e.what() + ";"; }
+    } else fail += " port rows: no SetTimeZone/GetTimeZone bridge;";
     bool vline = false;
     if (!strcmp(kind, "main") && !g_version_line.empty()) {
         const std::string v = kz2_vl_page(t, g_version_line);
@@ -381,11 +391,11 @@ uint32_t edit_page(const std::string& path, const std::string& page, const char*
         else fail += " version line: no single ButtonLegend anchor;";
     }
     const std::vector<std::string> bad = kz2mt::check(t);
-    const uint32_t ea = ((rows || vline) && bad.empty()) ? guest_copy(t) : 0;
-    fprintf(stderr, "[kz2-menu] %s (%s, %s, %zu -> %zu bytes): %s%s%s%s\n", path.c_str(), kind, why.c_str(), text.size(), t.size(),
-            !(rows || vline) ? "unchanged" : !bad.empty() ? "edit fails the tag check, unchanged" : !ea ? "no guest memory left, unchanged" :
+    const uint32_t ea = ((rows || vline || prow) && bad.empty()) ? guest_copy(t) : 0;
+    fprintf(stderr, "[kz2-menu] %s (%s, %s, %zu -> %zu bytes): %s%s%s%s%s\n", path.c_str(), kind, why.c_str(), text.size(), t.size(),
+            !(rows || vline || prow) ? "unchanged" : !bad.empty() ? "edit fails the tag check, unchanged" : !ea ? "no guest memory left, unchanged" :
             rows == 2 ? "EXIT TO DESKTOP and KEYBOARD rows added" : rows == 1 ? "one row added" : "no row added",
-            vline && ea ? ", version line added" : "", fail.empty() ? "" : " |", fail.c_str());
+            prow && ea ? ", Display port rows added" : "", vline && ea ? ", version line added" : "", fail.empty() ? "" : " |", fail.c_str());
     return ea;
 }
 
@@ -440,6 +450,16 @@ void kz2_exit_all(ppu_context* ctx)
 void kz2_kb_set(ppu_context* ctx)
 {
     const uint32_t ea = (uint32_t)ctx->gpr[4];
+    if (ea >= 0x10000u && ea < 0xF0000000u && !memcmp(vm_base + ea, "pc:", 3)) {   /* the Display page's port rows */
+        const std::string cmd = guest_string(ea + 3, 127);
+        std::lock_guard<std::mutex> lk(g_mu);
+        kz2_port_settings_cmd(cmd.c_str(), s_kb_reply, sizeof s_kb_reply);
+        s_kb_pending = 1;
+        static int n = 0;
+        if (n++ < 40 || (cmd.compare(0, 3, "get") && cmd.compare(0, 4, "show")))
+            fprintf(stderr, "[port-rows] page '%s' -> '%s'\n", cmd.c_str(), s_kb_reply);
+        return;
+    }
     if (ea >= 0x10000u && ea < 0xF0000000u && !memcmp(vm_base + ea, "kb:", 3)) {
         const std::string cmd = guest_string(ea + 3, 127);
         std::lock_guard<std::mutex> lk(g_mu);
@@ -547,7 +567,7 @@ extern "C" void kz2_menu_install(void)
     s_set_orig = kb_ok ? lifted_fn(set_ea) : nullptr;
     s_get_orig = kb_ok ? lifted_fn(get_ea) : nullptr;
     if (s_exit_orig) ppu_register_function(exit_ea, kz2_exit_all);
-    if (s_set_orig && s_get_orig) { ppu_register_function(set_ea, kz2_kb_set); ppu_register_function(get_ea, kz2_kb_get); }
+    if (s_set_orig && s_get_orig) { ppu_register_function(set_ea, kz2_kb_set); ppu_register_function(get_ea, kz2_kb_get); g_bridge = true; }
     fprintf(stderr, "[kz2-menu] on: pages served by the file fetch 0x0049EA38; ExitAll 0x%08X %s; Keyboard page bridge "
                     "SetTimeZone 0x%08X / GetTimeZone 0x%08X %s; guest buffers 0x%08X..0x%08X\n",
             exit_ea, s_exit_orig ? "hooked" : "NOT hooked (unknown EBOOT)", set_ea, get_ea,

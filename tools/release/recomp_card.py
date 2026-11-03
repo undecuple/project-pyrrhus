@@ -10,7 +10,7 @@ Checks (each failure is one line; exit 1 if any):
   C1 the card parses and holds only schema v1 fields (private extensions start with "x-"), no version number;
   C2 "wikidata", when present, matches ^Q[1-9][0-9]*$;
   C3 every maintainers[].link and links[].url starts with https://;
-  C4 "status" is a schema value and agrees with the README status badge and docs/RELEASE-CRITERIA.md ("released"
+  C4 "status" is a schema value and agrees with the README status (badge or a Status: line) and docs/RELEASE-CRITERIA.md ("released"
      only when the criteria file no longer says there is no playable release; pre-releases stay in-progress or playable);
   C5 every link into this repository (https://github.com/<owner>/<repo>/blob|tree/<branch>/PATH) names a file that
      exists, in this repository (pages under public/) and in the public repository (pages at the root); docs/FEATURES.md
@@ -59,9 +59,15 @@ def setup_values(repo):
 
 def badge_status(readme):
     m = re.search(r"img\.shields\.io/badge/status-([^-\s)]+)-", readme)
-    if not m:
-        return None
-    return BADGES.get(m.group(1).replace("%20", " ").lower())
+    if m:
+        return BADGES.get(m.group(1).replace("%20", " ").lower())
+    # The README skeleton keeps the status as text: a "**Status:** ..." line with one of the badge phrases.
+    m = re.search(r"^\*\*Status:\*\*(.*)$", readme, re.M)
+    if m:
+        for phrase in sorted(BADGES, key=len, reverse=True):
+            if phrase in m.group(1).lower():
+                return BADGES[phrase]
+    return None
 
 
 def criteria_says_unreleased(text):

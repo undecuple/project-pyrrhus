@@ -52,7 +52,11 @@ def main():
     ap.add_argument("--job", required=True)
     ap.add_argument("--pm", required=True)
     ap.add_argument("--call", action="append", required=True, type=parse_pc)
-    ap.add_argument("--leaf", required=True, help="LO-HI of the leaf's code (its writes start U)")
+    ap.add_argument("--leaf", required=True, help="LO-HI[,LO-HI...] of the leaf's code with its callees (their "
+                                                    "writes start U; an earlier change: several ranges)")
+    ap.add_argument("--keep", default="", metavar="REGS",
+                    help="registers the native code leaves as the SPU code does (restored callee-saved ones, a "
+                         "result): not in U; a list of N or N-M (3,80-90)")
     ap.add_argument("--edge", action="append", default=[])
     ap.add_argument("--bisl", action="append", default=[])
     ap.add_argument("--ret", action="append", default=[])
@@ -78,14 +82,19 @@ def main():
         ins = pk.load(path)
         img[name] = (ins, {x[0]: i for i, x in enumerate(ins)})
 
-    lo, hi = (int(x, 16) for x in a.leaf.split("-"))
+    ranges = [tuple(int(x, 16) for x in r.split("-")) for r in a.leaf.split(",")]
+    lo, hi = ranges[0]
+    keep = {0, 1, 3}
+    for k in filter(None, a.keep.split(",")):
+        x, _, y = k.partition("-")
+        keep |= set(range(int(x), int(y or x) + 1))
     U0 = set()
     for adr, _, mn, op in img["job"][0]:
-        if lo <= adr < hi:
+        if any(l <= adr < h for l, h in ranges):
             rs = pk.regs(op)
             if rs and mn not in pk.ALL_SRC and mn not in ("bisl", "bi"):
                 U0.add(rs[0])
-    U0 = frozenset(U0 - {0, 1, 3})
+    U0 = frozenset(U0 - keep)
 
     edges = {key_pc(k): [(key_pc(k)[0], int(t, 16)) for t in v.split(",")]
              for k, v in (e.split("=") for e in a.edge)}
@@ -277,7 +286,8 @@ def main():
             work.append((n, st, (u2, c2, sp2), k))
 
     pcs = {(n, p) for n, p, _ in seen}
-    print(f"leaf {lo:X}-{hi:X} writes {len(U0)} registers: " + " ".join(f"r{r}" for r in sorted(U0)))
+    print(f"leaf {','.join(f'{l:X}-{h:X}' for l, h in ranges)} writes {len(U0)} registers (kept: "
+          f"{' '.join(f'r{r}' for r in sorted(keep))}): " + " ".join(f"r{r}" for r in sorted(U0)))
     print(f"visited {len(pcs)} instructions ({sum(1 for k in pcs if k[0] == 'pm')} in the job manager), "
           f"{len(seen)} contexts, {steps} steps")
     for (name, pc, L) in sorted(fallback):
