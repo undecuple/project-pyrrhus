@@ -49,13 +49,18 @@ struct Row {
 
 static const char* const UPSCALE_INI[2] = { "off", "fsr1" };
 static const char* const UPSCALE_SHOWN[2] = { "OFF", "FSR 1" };
+static const char* const VSYNC_INI[2] = { "off", "on" };
+static const char* const VSYNC_SHOWN[2] = { "OFF", "ON" };
 
 /* fov: vertical degrees of the first-person view without zoom; the game's own value is 45 (frustum setter 0x3D9640,
- * the Camera's FieldOfView; kz2_ppu_overrides.cpp). upscale + sharpness: rsx_upscale (patch 6051, KZ3 2145). */
+ * the Camera's FieldOfView; kz2_ppu_overrides.cpp). upscale + sharpness: rsx_upscale (patch 6051, KZ3 2145).
+ * vsync: the host Present's interval (patch 6054, KZ3 2103: off = interval 0 with tearing where DXGI allows it; on =
+ * the old vsync present, the default). */
 static const Row kz2_port_rows[] = {
     { "fov", "PcFov", "FIELD OF VIEW", RANGE, 45.0, 75.0, 1.0, 45.0, 0, nullptr, nullptr, 0, "display.ini", "display", "fov" },
     { "upscale", "PcUpscale", "UPSCALING", CHOICE, 0.0, 1.0, 1.0, 0.0, 0, UPSCALE_INI, UPSCALE_SHOWN, 2, "display.ini", "display", "upscale" },
     { "sharpness", "PcSharpness", "SHARPNESS", RANGE, 0.0, 2.0, 0.1, 0.2, 1, nullptr, nullptr, 0, "display.ini", "display", "sharpness" },
+    { "vsync", "PcVsync", "VSYNC", CHOICE, 0.0, 1.0, 1.0, 1.0, 0, VSYNC_INI, VSYNC_SHOWN, 2, "display.ini", "display", "vsync" },
 };
 static const int NROWS = (int)(sizeof kz2_port_rows / sizeof kz2_port_rows[0]);
 

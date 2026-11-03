@@ -21,14 +21,14 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 | 🔧 | **Motion-control sections** (valves, charges) without motion sensors: the right stick now drives the game's valve and charge code (`motion = auto|on|off`); host-tested, not yet played through in the game |
 | 📋 | **The whole campaign, start to finish:** only the first level has been played so far |
 | 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.7](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7)<!-- /version -->) |
-| 📋 | **Install without the link** to your game files (next version): today the launcher links them into the install folder, or uses a folder under `%LOCALAPPDATA%` where it cannot |
+| ✅ | **Install without the link** to your game files: done for 0.1.8 (the game folder is read in place; an update keeps the caches where they are) |
 
 ## 2. PC display and settings  🔧
 
 - 🔧 Windowed, borderless and exclusive fullscreen, chosen in the installer or the launcher, and Alt+Enter (tried under Proton only)
 - ✅ Motion blur off by default while the port runs below 30 frames/s, with a switch to turn it back on
 - ✅ Field of view (45-75), FSR 1 upscaling and its sharpness as rows on the game's own Display page (checked under Proton: field of view in play, FSR 1 in the menu only)
-- 📋 FSR 1 without the HUD (next version)
+- ✅ FSR 1 without the HUD (next version)
 - 📋 Motion blur strength and bloom as settings on the same page
 - 📋 Widescreen and ultrawide: the view follows the window's shape, the HUD, menus and movies stay 16:9 and centred
 - 📋 60 frames/s as an option (some of the game's timing breaks above 30)

@@ -1,6 +1,8 @@
 /* native_particles.c -- Particles.VertexJob (job_00cd7180, image 201) native code: the .bss clear (on by default,
  * KZ2_NATIVE_JOB_VJCLEAR=0 turns it off) and the memcpy (on by default since an earlier change, KZ2_NATIVE_JOB_VJCOPY=0 turns it off)
- * and the vertex emitter (on by default since an earlier change, KZ2_NATIVE_JOB_VJVERT=0 turns it off).
+ * and the vertex emitter (on by default since an earlier change, KZ2_NATIVE_JOB_VJVERT=0 turns it off), and the same emitter
+ * with its relight and packing in SSE (slot 81, an earlier change; on by default since an earlier changea, KZ2_NATIVE_JOB_VJLIGHT=0
+ * turns it off and slot 79 runs, KZ2_NATIVE_JOB_VJVERT=0 turns both forms off and the lifted emitter runs).
  *
  * The job's crt0 .bss clear, the first "continue at" gate (re/spu/native_gates.tsv column 7): the WWS job crt0 that
  * 26 of the 36 job images share zeroes its .bss at every job start (@0x406C ila r3 = start, @0x4070 ila r4 = end,
@@ -102,13 +104,19 @@ static int vj_memcpy_7F00(spu_context* ctx)   // @0x00007F00 (job_00cd7180)
  *      the EA advances by 16 KB, the other buffer is waited for (MFC_WrTagMask = 1 << its tag, WrTagUpdate 2,
  *      RdTagStat) and the rest of the vertex is copied to its start;
  *   5. epilogue: r0 and r80-r90 reloaded from the stack, r1 restored.
- * The native code computes every float with the runtime's own SPU helpers (spu_fm, spu_fma, spu_fcgt, spu_cflts,
+ * Slot 79's native code computes every float with the runtime's own SPU helpers (spu_fm, spu_fma, spu_fcgt, spu_cflts,
  * spu_frsqest, spu_fi, ... on full quadwords, as the lifted code calls them), so each value has the lifted code's
  * bits; it reads the constants from the local store as the SPU code does (LS 0x8800-0x8890 and the 0x1BA00
  * coefficients are written by the job at run time) except the three word-rotate shuffle patterns at LS 0x8400-0x8430,
  * which it applies as word moves (the pool: their hash), and it does the other shuffles (splats, cwd/cbd inserts with
  * the aligned stack pointer, the 11:11:10 merge) as the word and byte moves they select. It issues the same MFC channel writes and read with the
  * same values in the same order through spu_wrch / spu_rdch, and leaves int_enable as bie leaves it.
+ * Slot 81 is the same code with the relight (vjf_light_52C0, vjf_lerp_48E0), the packing (vjf_pack) and the
+ * colour and texture-coordinate floats through native_simd.h's wrappers, which return the helpers' bits for every
+ * input (tools/spu/test_vjlight.c); its gate on 0x50F8 comes before slot 79's, so with both on slot 81 runs and with
+ * slot 81 toggled off slot 79 does (the same-run A/B compares the two forms). Slot 81's flags are VJLIGHT|VJVERT
+ * (an earlier changea): with slot 81 on by default, VJVERT=0 alone still means "the lifted emitter" (both gates off), VJLIGHT=0
+ * means slot 79, and an explicit 1 of either turns slot 81 on (native_flags.h rule 2).
  * ASSUMPTION (bounded): an SPU interrupt that the lifted code could take at the hops after the two bie
  * (0x58F4, 0x5960) is taken at the gate's return instead: the SPU itself delivers interrupts asynchronously, so a
  * later point inside the same enabled window is a timing the hardware allows; the job's interrupt handler (WWS
@@ -332,6 +340,186 @@ static u128 vj_light_52C0(const spu_context* c, u128 r4, u128 a6, u128 a7, u128 
     return spu_selb(zero, spu_fm(r73e, r74e), r88ce);
 }
 
+/* the relight in SSE (slot 81, KZ2_NATIVE_JOB_VJLIGHT, on by default since an earlier changea). The same steps as vj_lerp_48E0 and
+ * vj_light_52C0 above, in the same order, each helper call replaced by native_simd.h's wrapper of it (fm_, fa_, fs_,
+ * fma_, fms_, fnms_, fcgt_: the helper's own SSE fast path inline, the helper itself for any vector it treats
+ * specially, so every lane has the helper's bits) and fi(frsqest) by rsq_ (an earlier changeb's sk_rsq, equal to the helpers
+ * on all 2^32 inputs). selb with a full-lane mask (fcgt, fsmbi 0xF / 0xFFF0, fsm of a word mask) is blendv/and; the
+ * splats and word rotates are shuffles. frest + fi (the falloff mode) and the grid's cflts / csflt stay the helpers.
+ * Host (the recorded relit calls, one core): about 61 -> 44 ns per relight (tools/spu/test_vjlight.c rec):
+ * the relight is a chain of dependent float steps, so the saving is the helpers' call and conversion overhead. */
+static inline __m128 LF(const spu_context* c, uint32_t a) { return F(ldq(c->ls, a)); }
+static inline __m128 vsel(__m128 a, __m128 b, __m128 m) { return _mm_blendv_ps(a, b, m); }   /* selb, m full lanes */
+#define VSPL(x, k) _mm_shuffle_ps((x), (x), (k) * 0x55)
+#define VROT(x, n) _mm_shuffle_ps((x), (x), _MM_SHUFFLE(((n) + 3) & 3, ((n) + 2) & 3, ((n) + 1) & 3, (n) & 3))
+static inline uint32_t w0(__m128 x) { return (uint32_t)_mm_cvtsi128_si32(_mm_castps_si128(x)); }
+
+static inline __m128 vjf_lerp_48E0(const spu_context* c, __m128 r3, __m128 r4, __m128 r5)   // @0x000048E0
+{
+    const __m128 r33 = LF(c, 0x83F0);
+    const __m128 r10 = VSPL(r5, 0), r28 = VSPL(r5, 2), r16 = VSPL(r5, 1);
+    const __m128 r27 = fs_(r33, r5);
+    const __m128 r23 = fm_(r4, r28);
+    const __m128 r9 = VSPL(r27, 0), r24 = VSPL(r27, 2), r7 = VSPL(r27, 1);
+    const __m128 r21 = fma_(r3, r24, r23);
+    const __m128 r11 = VSPL(r21, 0), r17 = VSPL(r21, 3), r15 = VSPL(r21, 2), r13 = VSPL(r21, 1);
+    const __m128 r14 = fm_(r17, r16), r6 = fm_(r15, r16);
+    const __m128 r12 = fma_(r13, r7, r14), r5b = fma_(r11, r7, r6);
+    const __m128 r4b = VSPL(r12, 0), r3b = VSPL(r5b, 0);
+    const __m128 r2 = fm_(r4b, r10);
+    return fma_(r3b, r9, r2);
+}
+
+static u128 vjf_light_52C0(const spu_context* c, u128 r4u, u128 a6u, u128 a7u, u128 a8u)   // @0x000052C0
+{
+    const __m128 a6 = F(a6u), a7 = F(a7u), a8 = F(a8u);
+    const uint32_t r4w = r4u._u32[0], r88w = r4w + 16;   /* ai r88, r4, 16 */
+    const __m128 r19 = fbits(0x3F800000u), r87 = _mm_setzero_ps(), zero = _mm_setzero_ps();
+    const __m128 r73 = VSPL(a7, 0), r55 = VSPL(a7, 1), r67 = VSPL(a7, 2);
+    const __m128 r72 = fm_(LF(c, 0x8800), r73);
+    const __m128 r52 = LF(c, 0x1BA00), r51 = LF(c, 0x1BA10), r45 = LF(c, 0x1BA20), r60 = LF(c, 0x1BA40);
+    const __m128 r66 = fma_(LF(c, 0x8810), r55, r72);
+    const __m128 r37 = LF(c, 0x1BA30), r30 = LF(c, 0x1BA60), r58 = LF(c, 0x1BB60);
+    const __m128 r24a = fa_(r52, r51);
+    const __m128 r50 = LF(c, 0x1BA50), r70 = LF(c, r88w + 0x9F0);
+    const __m128 r57 = fma_(LF(c, 0x8820), r67, r66);   /* the direction through the matrix */
+    const __m128 r17 = LF(c, 0x1BA80), r59 = LF(c, 0x1BA70);
+    const u128 r23 = ldq(c->ls, r4w + 0x9F0);
+    const __m128 r69 = fma_(r30, fbits(0xBF800000u), r24a);
+    const __m128 half = fbits(0x3F000000u);
+    const u128 r27 = ldq(c->ls, 0x84B0);
+    const __m128 r25 = VROT(r70, 2);   /* rotqbyi 8 */
+    const __m128 r47 = fm_(r57, r58);
+    const __m128 r39 = VSPL(r57, 0), r35 = VSPL(r57, 1), r29 = VSPL(r57, 2);
+    const __m128 r61 = fs_(r69, r17);
+    const __m128 r62 = VSPL(r25, 0);
+    const __m128 r68 = fcgt_(r25, r87);
+    const __m128 r33 = fm_(r60, r39);
+    const __m128 r48 = VROT(r47, 1);
+    const __m128 r28 = fm_(r59, r39);
+    const __m128 r42 = VROT(r47, 2);
+    const __m128 r46 = fma_(r51, r35, r52);
+    const __m128 r31 = fm_(r50, r35);
+    const __m128 r44 = fm_(r29, fbits(0x40400000u));
+    const __m128 r41 = fa_(r47, r48);
+    const __m128 r43 = fm_(r35, r35);
+    const __m128 r56 = fm_(r61, r62);
+    const __m128 r38 = fma_(r45, r29, r46);
+    /* ceqi r63, r68, 0 + fsm r20, r63: every lane = (word 0 of r68 == 0) */
+    const __m128 r20 = w0(r68) == 0 ? _mm_castsi128_ps(_mm_set1_epi32(-1)) : zero;
+    const __m128 r8 = fms_(r44, r29, r19);     /* 3 z^2 - 1 */
+    const __m128 r40 = fa_(r41, r42);
+    const __m128 r10 = fms_(r39, r39, r43);    /* x^2 - y^2 */
+    const __m128 r12 = fma_(r55, r56, r56);
+    const __m128 r34 = fma_(r37, r39, r38);
+    const __m128 r36 = VSPL(r40, 0);
+    const __m128 r11 = fma_(r33, r35, r34);
+    const __m128 r15 = fma_(r36, half, half);
+    const __m128 r9 = fma_(r31, r29, r11);
+    const __m128 r14 = vsel(r15, r19, fcgt_(r15, r19));
+    const __m128 r16 = fma_(r30, r8, r9);
+    __m128 r85 = vsel(zero, r14, fcgt_(r14, zero));
+    const __m128 r13 = fma_(r28, r29, r16);
+    __m128 r82 = fma_(r17, r10, r13);
+    r82 = vsel(fa_(r82, r12), r82, r20);
+    if (r23._u32[0] != 0) {
+        __m128 r7;
+        if (r23._u32[0] == 1) {   /* @0x59A8: distance falloff */
+            const uint32_t p = r27._u32[0];
+            const __m128 r52b = LF(c, p + 0x40), r50b = LF(c, p + 0x30);
+            const __m128 r51b = _mm_castsi128_ps(_mm_setr_epi32(0, 0, 0, -1));      /* fsmbi 0xF */
+            const __m128 r43b = _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0));    /* fsmbi 0xFFF0 */
+            const __m128 r37b = LF(c, 0x8880);
+            const __m128 r53 = VROT(F(r23), 1);   /* rotqbyi 4 */
+            const __m128 r49 = vsel(r52b, r19, r51b);
+            const __m128 r47b = fs_(r52b, r50b);
+            const __m128 r48b = vsel(r50b, r19, r51b);
+            const __m128 r7a = fm_(r53, fbits(0x40800000u));
+            const __m128 r46b = fa_(r48b, r49);
+            const __m128 r44b = fm_(r47b, r47b);
+            const __m128 r12b = VSPL(r7a, 0);
+            const __m128 r42b = fm_(r46b, half);
+            const __m128 r45b = VROT(r44b, 1), r40b = VROT(r44b, 2);
+            const __m128 r41b = _mm_and_ps(r42b, r43b);
+            const __m128 r39b = fa_(r44b, r45b);
+            const __m128 r36b = fs_(a6, r41b);
+            const __m128 r38b = fa_(r39b, r40b);
+            const __m128 r33b = fm_(r36b, r37b);
+            const __m128 r29b = VSPL(r38b, 0);
+            const __m128 r34b = VROT(r33b, 1), r9b = VROT(r33b, 2);
+            const __m128 r28b = fcgt_(r29b, fbits(0x00800000u));
+            const __m128 r14b = rsq_(r29b);   /* fi(frsqest) */
+            const __m128 r32b = fa_(r33b, r34b);
+            const __m128 r15b = fa_(r32b, r9b);
+            const __m128 r11b = fm_(r14b, r14b);
+            const __m128 r31b = fm_(r14b, half);
+            const __m128 r4b = VSPL(r15b, 0);
+            const __m128 r30b = fnms_(r29b, r11b, r19);
+            const __m128 r16b = fma_(r30b, r31b, r14b);
+            const __m128 r17b = fm_(r16b, r29b);
+            const __m128 r13b = vsel(zero, r17b, r28b);
+            const u128 r13u = U(r13b);
+            const __m128 r3b = F(spu_fi(r13u, spu_frest(r13u)));
+            const __m128 r6b = fnms_(r3b, r13b, r19);
+            const __m128 r5b = fma_(r6b, r3b, r3b);
+            const __m128 r2b = fma_(r5b, r12b, zero);
+            const __m128 r79 = fm_(r4b, r2b);
+            const __m128 r77 = fma_(r79, half, half);
+            const __m128 r23b = vsel(r77, r19, fcgt_(r77, r19));
+            const __m128 r18b = vsel(r23b, r87, fcgt_(r87, r23b));
+            r7 = fnms_(r18b, r18b, r19);
+        } else {   /* @0x5410: the 8x8x8 grid at LS 0x19B00, trilinear */
+            const __m128 r69g = fm_(fs_(a6, LF(c, 0x1BB40)), LF(c, 0x1BB50));
+            const u128 ci = spu_cflts(U(r69g), 173);   /* lane-wise: lanes 0-2 are the splatted x, y, z of the SPU code */
+            int32_t ix = (int32_t)ci._u32[0], iy = (int32_t)ci._u32[1], iz = (int32_t)ci._u32[2];
+            ix = ix > 7 ? 7 : ix; iy = iy > 7 ? 7 : iy; iz = iz > 7 ? 7 : iz;   /* cgti 7 + selb */
+            ix = ix > -1 ? ix : 0; iy = iy > -1 ? iy : 0; iz = iz > -1 ? iz : 0;   /* cgti -1 + and */
+            const uint32_t i0 = (uint32_t)(ix + 8 * (iy + 8 * iz));
+            const uint32_t dx = ix != 7, dy = iy != 7 ? 8 : 0, dz = iz != 7 ? 64 : 0;   /* the far corner, clamped */
+            const uint8_t* ls = c->ls;
+#define G(i) ((int)rdw(ls, 0x19B00u + 4u * (i)))   /* lqx + rotqby: the word at that byte address */
+            const __m128 r3c = _mm_castsi128_ps(_mm_setr_epi32(G(i0), G(i0 + dx), G(i0 + dy), G(i0 + dx + dy)));
+            const __m128 r4c = _mm_castsi128_ps(_mm_setr_epi32(G(i0 + dz), G(i0 + dx + dz), G(i0 + dy + dz),
+                                                               G(i0 + dx + dy + dz)));
+#undef G
+            u128 fi;   /* csflt of the indices (lanes 0-2), lane 3 = 0 (the shufb with the zero register) */
+            {
+                u128 ii;
+                ii._u32[0] = (uint32_t)ix; ii._u32[1] = (uint32_t)iy; ii._u32[2] = (uint32_t)iz; ii._u32[3] = 0;
+                fi = spu_csflt(ii, 155);
+                fi._u32[3] = 0;
+            }
+            const __m128 r5f = fs_(r69g, F(fi));   /* the fractions */
+            const __m128 g = vjf_lerp_48E0(c, r3c, r4c, r5f);
+            const __m128 one = fbits(0x3F800000u);
+            r7 = fs_(one, g);
+            if (w0(fcgt_(r87, r7)) != 0) r7 = r87;   /* @0x5A84 */
+            else r7 = vsel(r7, one, fcgt_(r7, one));
+        }
+        /* @0x55BC */
+        const __m128 r58b = fma_(r85, fbits(0x3F4CCCCCu), fbits(0x3E4CCCCCu));
+        r85 = fm_(r58b, VSPL(r7, 0));
+    }
+    /* @0x55E0 */
+    const __m128 r12ae = fm_(a8, a8);
+    const __m128 r37e = LF(c, r88w + 0x9F0);
+    const __m128 r3e = fma_(LF(c, 0x8890), r85, r82);
+    const __m128 r33e = fm_(r3e, LF(c, 0x8450));
+    const __m128 r28e = VSPL(r37e, 1);
+    const __m128 r34e = VROT(r33e, 1), r32e = VROT(r33e, 2), r4ce = VROT(r33e, 3);
+    const __m128 r6e = fa_(fa_(fa_(r33e, r34e), r32e), r4ce);
+    const __m128 r17ce = VSPL(r6e, 0);
+    const __m128 r10ce = fma_(fs_(r3e, r17ce), r28e, r17ce);
+    const __m128 r13ce = vsel(zero, r10ce, fcgt_(r10ce, zero));
+    const __m128 r74e = fm_(fm_(r13ce, r13ce), r12ae);
+    const __m128 r88ce = fcgt_(r74e, fbits(0x00800000u));
+    const __m128 r76e = rsq_(r74e);
+    const __m128 r23ce = fm_(r76e, r76e), r22e = fm_(r76e, half);
+    const __m128 r75e = fnms_(r74e, r23ce, r19);
+    const __m128 r73e = fma_(r75e, r22e, r76e);
+    return U(vsel(zero, fm_(r73e, r74e), r88ce));
+}
+
 /* @0x5850 / @0x57F8: the 11:11:10 packing (cflts 2^31, rotm by the shifts at LS 0x8470, two shuffles, selb) */
 static inline u128 vj_pack(const spu_context* c, u128 v)
 {
@@ -341,7 +529,17 @@ static inline u128 vj_pack(const spu_context* c, u128 v)
     return sp((lo & ~0x003FF800u) | (r62._u32[1] & 0x003FF800u));
 }
 
-static int vj_vertex_50F8(spu_context* ctx)   // @0x000050F8 (job_00cd7180)
+/* vj_pack with fm_ and cflts142_ (each lane-wise with the helpers' bits) */
+static inline u128 vjf_pack(const spu_context* c, u128 v)
+{
+    const u128 r62 = spu_rotm(cflts142_(fm_(F(v), LF(c, 0x8460))), L(c, 0x8470));
+    const uint32_t lo = (r62._u32[2] & 0xFFFF0000u) | (r62._u32[0] & 0xFFFFu);
+    return sp((lo & ~0x003FF800u) | (r62._u32[1] & 0x003FF800u));
+}
+
+/* fast = 1 (slot 81): the relight through vjf_light_52C0 and the packing, colour and texture-coordinate floats through
+ * native_simd.h's wrappers; 0 (slot 79): every float through the helpers */
+static inline __attribute__((always_inline)) int vj_vertex_impl(spu_context* ctx, const int fast)   // @0x000050F8
 {
     spu_context* const c = ctx;
     const uint32_t sp1 = c->gpr[1]._u32[0];
@@ -367,7 +565,8 @@ static int vj_vertex_50F8(spu_context* ctx)   // @0x000050F8 (job_00cd7180)
     u128 r12 = a8;
     {
         /* rotqbyi 9 + ceqbi 0 + xsbh + brhz: relight when byte 12 of the quadword is nonzero */
-        if (c->ls[LSQ(r4._u32[0] + 0x9E0) + 12] != 0) r12 = vj_light_52C0(c, r4, a6, a7, a8, r1);
+        if (c->ls[LSQ(r4._u32[0] + 0x9E0) + 12] != 0)
+            r12 = fast ? vjf_light_52C0(c, r4, a6, a7, a8) : vj_light_52C0(c, r4, a6, a7, a8, r1);
     }
     /* @0x5170: the position and the format bits */
     const u128 one = sp(0x3F800000u), zero = sp(0);
@@ -377,24 +576,36 @@ static int vj_vertex_50F8(spu_context* ctx)   // @0x000050F8 (job_00cd7180)
     q._u32[2] = a6._u32[2];
     const u128 r19 = q;
     const u128 r16 = spu_rotqbyi(L(c, a3._u32[0]), 8);
-    const u128 r47 = spu_selb(r12, one, spu_fcgt(r12, one));
-    const u128 r81 = spu_selb(zero, r47, spu_fcgt(r47, zero));
-    const u128 r9 = spu_selb(r81, SPL(a8, 3), spu_fsmbi(0xF));
+    u128 r9;
+    if (fast) {   /* clamp_ = the fcgt + selb pairs; selb with fsmbi 0xF = word 3 from the splatted a8 word 3 */
+        r9 = setw(U(clamp_(F(r12), F(one))), 3, a8._u32[3]);
+    } else {
+        const u128 r47 = spu_selb(r12, one, spu_fcgt(r12, one));
+        const u128 r81 = spu_selb(zero, r47, spu_fcgt(r47, zero));
+        r9 = spu_selb(r81, SPL(a8, 3), spu_fsmbi(0xF));
+    }
     stq(c->ls, f + 0x20, r19);
     uint32_t r15 = f + 44;
     if (spu_and(r16, sp(512))._u32[0]) {   /* @0x5850: r11 packed into the position quadword's last word */
-        stq(c->ls, f + 0x20, setw(r19, 3, vj_pack(c, a11)._u32[0]));
+        stq(c->ls, f + 0x20, setw(r19, 3, (fast ? vjf_pack(c, a11) : vj_pack(c, a11))._u32[0]));
         r15 = f + 48;
     }
     if (spu_andi(r16, 32)._u32[0]) {   /* @0x57F8: the direction packed */
-        put_word(c, r15, vj_pack(c, a7));
+        put_word(c, r15, fast ? vjf_pack(c, a7) : vj_pack(c, a7));
         r15 += 4;
     }
     if (spu_andi(r16, 16)._u32[0]) {   /* @0x5748: the colour bytes, stored in the order 2, 1, 0, 3 */
-        const u128 m = spu_selb(r9, one, spu_fcgt(r9, one));
-        const u128 r5 = spu_fm(spu_selb(zero, m, spu_fcgt(m, zero)), sp(0x437F0000u));
-        const u128 b0 = spu_cfltu(SPL(r5, 0), 173), b1 = spu_cfltu(SPL(r5, 1), 173), b2 = spu_cfltu(SPL(r5, 2), 173),
-                   b3 = spu_cfltu(SPL(r5, 3), 173);
+        u128 b0, b1, b2, b3;
+        if (fast) {   /* clamp_ is the fcgt + selb pair twice; cfltu_ is lane-wise, so one call gives the four bytes */
+            const __m128i b = cfltu_(fm_(clamp_(F(r9), F(one)), fbits(0x437F0000u)), 173);
+            b0 = sp((uint32_t)_mm_cvtsi128_si32(b)); b1 = sp((uint32_t)_mm_extract_epi32(b, 1));
+            b2 = sp((uint32_t)_mm_extract_epi32(b, 2)); b3 = sp((uint32_t)_mm_extract_epi32(b, 3));
+        } else {
+            const u128 m = spu_selb(r9, one, spu_fcgt(r9, one));
+            const u128 r5 = spu_fm(spu_selb(zero, m, spu_fcgt(m, zero)), sp(0x437F0000u));
+            b0 = spu_cfltu(SPL(r5, 0), 173); b1 = spu_cfltu(SPL(r5, 1), 173); b2 = spu_cfltu(SPL(r5, 2), 173);
+            b3 = spu_cfltu(SPL(r5, 3), 173);
+        }
         put_byte(c, r15 + 2, b2);
         put_byte(c, r15 + 1, b1);
         put_byte(c, r15, b0);
@@ -412,7 +623,16 @@ static int vj_vertex_50F8(spu_context* ctx)   // @0x000050F8 (job_00cd7180)
     }
     if (spu_ceqi(spu_andi(r16, 7), 1)._u32[0]) {   /* @0x56F8: two texture-coordinate bytes (no clamp) */
         const u128 t255 = sp(0x437F0000u);
-        const u128 r65 = spu_cfltu(spu_fm(SPL(a9, 0), t255), 173), r61 = spu_cfltu(spu_fm(SPL(a9, 1), t255), 173);
+        u128 r65, r61;
+        if (fast) {   /* lanes 0 and 1 of a9 (lane-wise: the splats' bits) */
+            const __m128 a9f = F(a9);
+            const __m128i t = cfltu_(fm_(_mm_unpacklo_ps(a9f, a9f), F(t255)), 173);
+            r65 = sp((uint32_t)_mm_cvtsi128_si32(t));
+            r61 = sp((uint32_t)_mm_extract_epi32(t, 2));
+        } else {
+            r65 = spu_cfltu(spu_fm(SPL(a9, 0), t255), 173);
+            r61 = spu_cfltu(spu_fm(SPL(a9, 1), t255), 173);
+        }
         put_byte(c, r15, r65);
         put_byte(c, r15 + 1, r61);   /* lqx/stqx at r15 + r10, r10 = format & 7 = 1 */
         r15 += 2;
@@ -472,6 +692,10 @@ static int vj_vertex_50F8(spu_context* ctx)   // @0x000050F8 (job_00cd7180)
     return 1;
 }
 
+static int vj_vertex_50F8(spu_context* ctx) { return vj_vertex_impl(ctx, 0); }   // @0x000050F8 (job_00cd7180)
+/* slot 81: the same emitter with the relight in SSE */
+static int vj_vertex_light(spu_context* ctx) { return vj_vertex_impl(ctx, 1); }   // @0x000050F8 (job_00cd7180)
+
 const kz2_native_entry kz2_native_particles[] = {
     { 77, "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", "job_00cd7180", 0x411Cu, vj_bss_411C, "bss_clear", 0, 0, 0,
       0x407Cu },
@@ -479,5 +703,7 @@ const kz2_native_entry kz2_native_particles[] = {
       0x8680u, 0x2a2ecd46ad5ff165ull, 0 },
     { 79, "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", "job_00cd7180", 0x50F8u, vj_vertex_50F8, "vj_vertex", 0x8400u,
       0x8430u, 0x061a2e8839fdd9d5ull, 0 },
+    { 81, "KZ2_NATIVE_JOB_VJLIGHT|KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", "job_00cd7180", 0x50F8u,
+      vj_vertex_light, "vj_light", 0x8400u, 0x8430u, 0x061a2e8839fdd9d5ull, 0 },
 };
 const unsigned kz2_native_particles_n = sizeof kz2_native_particles / sizeof kz2_native_particles[0];

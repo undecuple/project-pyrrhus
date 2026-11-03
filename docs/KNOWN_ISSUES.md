@@ -90,8 +90,7 @@ and the newest log file).
   reported to freeze the picture after the switch on a flip-model swap chain; the port now resizes the swap chain after
   every switch and keeps drawing (borderless) if a present fails, but this is only tried under Proton, not on real
   Windows.
-- **FSR 1 also upscales the HUD** (Options > Display > Upscaling): the game draws the HUD into the same image. With
-  a wide field of view the view widens at the very end of a cutscene's hand-over, not during it.
+- **With a wide field of view** the view widens at the very end of a cutscene's hand-over, not during it.
 - **Laptops with two graphics chips:** the game now asks Windows for the high-performance GPU first and logs every
   adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop; if the game still runs on
   the integrated chip, set `kz2.exe` to High performance in Windows' graphics settings and tell us in #13.
@@ -134,9 +133,9 @@ and the newest log file).
   minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. 16 GB of RAM or more
   is advised (8 GB works with 2 jobs; see [requirements.md](requirements.md)).
 - macOS and native Windows builds are untested ([BUILDING.md](BUILDING.md)). Cross builds from a Linux host outside our Nix shell: the toolchain fixes (#34) are checked with a test project and our own build, not on a real Fedora, Debian or Arch host.
-- **Install folder on an NTFS drive.** The launcher links your game folder into the install folder's `vfs` folder,
-  and the game writes its caches there. A drive that cannot hold such a link (FAT32 or exFAT, common on USB drives
-  and SD cards) gets a folder of its own under `%LOCALAPPDATA%\Project Pyrrhus` (`vfs-` and six letters and digits,
-  one per install folder) instead, and the game keeps using that folder from then on; uninstalling removes it. With a
-  disc ISO, a FAT32 install drive is refused before the copy, because FAT32 cannot hold the game's 6.5 GiB archive.
-  Tested with host tests; not yet confirmed on Windows.
+- **Install folder.** From 0.1.8 the game reads your game folder where it is and writes its caches under the install
+  folder's `vfs` folder; nothing is linked, so any drive that can hold the install works. With a disc ISO, a FAT32
+  install drive is still refused before the copy, because FAT32 cannot hold the game's 6.5 GiB archive. An install made
+  with 0.1.7 or earlier on a drive without links keeps using its folder under `%LOCALAPPDATA%\Project Pyrrhus`
+  (`vfs-` and six letters and digits) for the caches, so nothing is rebuilt; uninstalling removes it. Tested with host
+  tests; not yet confirmed on Windows.

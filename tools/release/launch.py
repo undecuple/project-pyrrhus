@@ -320,22 +320,32 @@ def link_free(root, build=None):
     return bool(stamp.get("cache_root"))
 
 
-def drop_link(root):
-    """Link-free start: remove the PS3_GAME link an older start left in <root>/vfs (the link only, never its target;
-    a real folder is left alone) and its record. -> error text or ""."""
-    v = vfs_root(root)
-    link = os.path.join(v, "PS3_GAME")
-    if _is_dir_link(link):
-        try:
+def cache_root(root, alt=""):
+    """The writable cache root of a link-free start: the alternative folder recorded in kz2-install.ini [vfs] alt while
+    it exists (an install whose <root>/vfs could not hold the link kept its FIOS cache, trophies and /dev_hdd1 files
+    there; the same path means the cache is found again and nothing is copied or deleted), else <root>/vfs."""
+    return alt if alt and os.path.isdir(alt) else vfs_root(root)
+
+
+def drop_link(root, alt=""):
+    """Link-free start: remove the PS3_GAME link an older start left in <root>/vfs and in the recorded alternative
+    folder (the link only, never its target; a real folder is left alone) and its link.json record. The folders and
+    everything the game wrote in them stay. -> error text or ""."""
+    for v in (vfs_root(root), alt if alt and os.path.isdir(alt) else ""):
+        if not v:
+            continue
+        link = os.path.join(v, "PS3_GAME")
+        if _is_dir_link(link):
             try:
-                os.unlink(link)
-            except OSError:
-                os.rmdir(link)
-        except OSError as e:
-            return f"Could not remove the old link {link} ({e})"
-        with contextlib.suppress(OSError):
-            os.remove(os.path.join(v, VFS_LINK))
-    os.makedirs(v, exist_ok=True)
+                try:
+                    os.unlink(link)
+                except OSError:
+                    os.rmdir(link)
+            except OSError as e:
+                return f"Could not remove the old link {link} ({e})"
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(v, VFS_LINK))
+    os.makedirs(cache_root(root, alt), exist_ok=True)
     return ""
 
 
@@ -532,8 +542,8 @@ def ensure_vfs(root, dump, alt="", fs_of=None):
     return v, link_help([v], err, (fs_of or drive_systems)(root, dump))
 
 
-def game_env(root, paths, portable, environ, appdata=None, layout="original", prompts="auto", display=None):
-    """-> (argv, cwd, env, added): the game command for the recorded paths."""
+def game_env(root, paths, portable, environ, appdata=None, layout="original", prompts="auto", display=None, vfs_alt=""):
+    """-> (argv, cwd, env, added): the game command for the recorded paths (vfs_alt: kz2-install.ini [vfs] alt)."""
     cwd = data_dir(root, portable, environ, appdata)
     # KZ2_PAD_LAYOUT: read by the runtime's SetFunctionButton hook (until the hook is in, no effect)
     added = {"KZ2_PAD_LAYOUT": fr.pad_layout(layout)[0],
@@ -543,9 +553,9 @@ def game_env(root, paths, portable, environ, appdata=None, layout="original", pr
              # place. Native Windows has no vkd3d and ignores the variable. Not a stable vkd3d-proton API: if a later
              # Proton drops it, the cache lands in the working folder (also per user) as before.
              "VKD3D_SHADER_CACHE_PATH": os.path.join(cwd, VKD3D_CACHE)}
-    if link_free(root) and paths.get("dump"):   # the dump read in place, every write under <root>/vfs (no link)
+    if link_free(root) and paths.get("dump"):   # the dump read in place, every write under the cache root (no link)
         added["PS3_VFS_ROOT"] = paths["dump"]
-        added["KZ2_CACHE_ROOT"] = vfs_root(root)
+        added["KZ2_CACHE_ROOT"] = cache_root(root, vfs_alt)
     ps = fr.prompt_set(prompts)[0]
     if ps != "auto":   # patch 4011: ps3|ps4|xbox|keyboard win over keybinds.ini [prompts]; auto leaves the variable unset
         added["KZ2_PROMPTS"] = ps
@@ -971,7 +981,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                "display": ini["display"], "version_check_due": check_due(ini, today)}
         if action == "run":
             gargv, cwd, _, added = game_env(root, paths, ini["portable"], environ, layout=ini["layout"], prompts=ini["prompts"],
-                                            display=ini["display"] if ini["display_set"] else None)
+                                            display=ini["display"] if ini["display_set"] else None, vfs_alt=ini["vfs_alt"])
             rep.update(argv=gargv + extra, cwd=cwd, env=added)
         else:
             rep["build"] = firstrun_cmd(root, action, paths, ini["portable"], console_python())
@@ -1048,7 +1058,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
             return 1
 
     gargv, cwd, env, added = game_env(root, paths, ini["portable"], environ, layout=ini["layout"], prompts=ini["prompts"],
-                                            display=ini["display"] if ini["display_set"] else None)
+                                            display=ini["display"] if ini["display_set"] else None, vfs_alt=ini["vfs_alt"])
     up = update_problem(paths)
     if up:
         note(root, f"update: {up}")
@@ -1056,8 +1066,8 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         return 1
     try:
         if link_free(root):
-            err = drop_link(root)
-            note(root, f"vfs: {err or 'no link (game folder read in place, writes under ' + vfs_root(root) + ')'}")
+            err = drop_link(root, ini["vfs_alt"])
+            note(root, f"vfs: {err or 'no link (game folder read in place, writes under ' + cache_root(root, ini['vfs_alt']) + ')'}")
         else:
             v, err = ensure_vfs(root, paths["dump"], alt_vfs_root(environ, root))
             note(root, f"vfs: {err or 'ok (' + v + ')'}")

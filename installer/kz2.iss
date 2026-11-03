@@ -274,7 +274,8 @@ Filename: "{#SiteURL}"; Description: "Open the project page ({#SiteText})"; Flag
 ; The generated derivative goes with the port; the player's dump, update and RPCS3 folder are never touched.
 Type: filesandordirs; Name: "{app}\build"
 Type: filesandordirs; Name: "{app}\logs"
-; The game's writable VFS root (launch.py ensure_vfs): vfs\PS3_GAME is a directory junction to the
+; The game's writable VFS root (launch.py ensure_vfs; from 0.1.8 the cache root, launch.py cache_root, and link-free: an update
+; drops the link, the folder with the player's caches stays, the recorded alt folder too). Before: vfs\PS3_GAME is a directory junction to the
 ; player's dump and is removed as a link by CurUninstallStepChanged(usUninstall) before this list runs; nothing
 ; here recurses into vfs itself, so the dump is never reached even when the junction could not be removed.
 ; RemoveVfsFolders (CurUninstallStepChanged) deletes each VFS folder whole once its links are gone; these lines are

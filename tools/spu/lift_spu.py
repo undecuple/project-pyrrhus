@@ -462,8 +462,15 @@ def main():
 
     with ProcessPoolExecutor(max_workers=a.j) as ex:
         results = list(ex.map(lift_one, jobs))
+    lj = os.path.join(out, "spu_lift.json")
+    n_now = len(results)
+    if a.only and os.path.exists(lj):
+        # an earlier changeb: --only re-lifts some images; the others' rows stay (gen_spu_register.py registers every
+        # image in spu_lift.json: replacing the file with the selected rows unregistered the rest)
+        mine = {r["name"] for r in results}
+        results += [r for r in json.load(open(lj)) if r["name"] not in mine]
     results.sort(key=lambda r: (r["kind"], r["file_offset"]))
-    json.dump(results, open(os.path.join(out, "spu_lift.json"), "w"), indent=1)
+    json.dump(results, open(lj, "w"), indent=1)
     open(os.path.join(out, "eboot_ver"), "w").write(kz2ver.VER + "\n")
     bad = [r["name"] for r in results if not r["ok"]]
     tot_f = sum(r.get("functions", 0) for r in results)
@@ -472,7 +479,7 @@ def main():
         for k, v in r.get("unsupported", {}).items():
             tot_u[k] = tot_u.get(k, 0) + v
     print(f"coverage seeds: {sum(len(v) for v in cov.values())} rows, dropped (outside code) {dropped}")
-    print(f"images {len(results)}  failed {len(bad)} {bad}")
+    print(f"images {len(results)} ({n_now} lifted now)  failed {len(bad)} {bad}")
     print(f"functions {tot_f}  instructions {sum(r.get('insns', 0) for r in results)}")
     print("unsupported:", ", ".join(f"{k} {v}" for k, v in sorted(tot_u.items(), key=lambda kv: -kv[1])) or "none")
     return 1 if bad else 0

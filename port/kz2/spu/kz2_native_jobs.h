@@ -69,6 +69,8 @@ extern const kz2_native_entry kz2_native_edgeanim[];   /* native_edgeanim.c */
 extern const unsigned kz2_native_edgeanim_n;
 extern const kz2_native_entry kz2_native_particles[];  /* native_particles.c */
 extern const unsigned kz2_native_particles_n;
+extern const kz2_native_entry kz2_native_skinning[];   /* native_skinning.c */
+extern const unsigned kz2_native_skinning_n;
 
 /* native_common.c: the entry of a slot (NULL: none), and one gated call (count, debug gate, pool, kernel; counts a
  * fallback when it returns 0). */

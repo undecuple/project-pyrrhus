@@ -38,7 +38,7 @@ Layout (big-endian). Evidence and open points: the RE notes. ASSUMPTION marks gu
   PhysicsResource descendants (Havok), AIWaypointGrid, GameScript (Lua bytecode), Music/ControlledSound resources keep the rest of the object as
   an opaque blob (stored length minus fields). Objects without a stored length are checked by the next object's header.
 """
-import argparse, json, os, struct, sys
+import argparse, hashlib, json, os, struct, sys
 
 
 class DecodeError(Exception):
@@ -379,6 +379,77 @@ def object_id_display(h):
     resolve to an object id of some core this way; none matches the plain hex. The function is its own inverse."""
     b = bytes.fromhex(h)
     return b"".join(b[i:i + 4][::-1] for i in range(0, 16, 4)).hex()
+
+
+def walk_refs(v, path=""):
+    """Yield (path, ref dict) for every object reference inside a decoded field value (nested structs and arrays)."""
+    if isinstance(v, dict):
+        if "ref" in v and "flag" in v:
+            yield path, v
+            return
+        for k, x in v.items():
+            yield from walk_refs(x, f"{path}.{k}")
+    elif isinstance(v, list):
+        for i, x in enumerate(v):
+            yield from walk_refs(x, f"{path}[{i}]")
+
+
+class CoreIndex:
+    """Cross-core resolver. Indexes the object ids in the headers of many .core files (no field decode) and
+    resolves external references (`ref == "external"`, 32 hex digits = object id with each 4-byte group reversed, see
+    object_id_display) to (file, object index, class). A reference names its target only by id: the file name is not
+    stored, so the index must contain the candidate files (a lump, or the whole disc). An id found in several files
+    (the same object copied into more than one lump) yields every match in the order the files were added.
+    resolve_core() decodes the referencing core's fields and resolves each external reference it holds."""
+
+    def __init__(self, schema):
+        self.s = schema
+        self.by_ref = {}   # ref-form id -> [(path, object index, class)]
+        self.paths = []
+        self.copies = {}   # path of an indexed file -> paths of byte-identical files that were skipped (Lumps/lumps)
+        self._seen = {}    # sha1 of the file bytes -> path
+
+    def add(self, path, data):
+        c = Core(data, self.s)
+        key = hashlib.sha1(data).digest()
+        if key in self._seen:  # the disc lists some lumps twice with different case: index the bytes once
+            self.copies.setdefault(self._seen[key], []).append(path)
+            return c
+        self._seen[key] = path
+        self.paths.append(path)
+        for i, (h, _) in enumerate(c.hashes):
+            if h == "00" * 16:  # no id stored (objects of old-format cores)
+                continue
+            self.by_ref.setdefault(object_id_display(h), []).append((path, i, c.types[c.roots[i]]))
+        return c
+
+    def add_dir(self, root, ext=".core"):
+        n = 0
+        for dp, _, fs in os.walk(root):
+            for f in sorted(fs):
+                if f.lower().endswith(ext):
+                    p = os.path.join(dp, f)
+                    try:
+                        self.add(p, open(p, "rb").read())
+                        n += 1
+                    except DecodeError:
+                        pass  # header not readable: file not indexed
+        return n
+
+    def resolve(self, ref):
+        """ref: the 32-digit hash of an external reference. Returns the list of (path, index, class), empty if unknown."""
+        return list(self.by_ref.get(ref.lower(), []))
+
+    def resolve_core(self, core):
+        """core: a Core with decoded objects. Returns a list of dicts (object, field path, hash, targets), one per
+        external reference; internal references (ref = object number) are not listed."""
+        out = []
+        for o in core.objects:
+            for owner, name, _t, _pos, v in o["fields"]:
+                for p, r in walk_refs(v, f"{owner}.{name}"):
+                    if r["ref"] == "external":
+                        out.append(dict(object=o["index"], field=p, hash=r["hash"], targets=self.resolve(r["hash"])))
+        return out
 
 
 class Core:

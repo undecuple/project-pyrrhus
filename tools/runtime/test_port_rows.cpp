@@ -64,6 +64,13 @@ int main()
     ok(command(&s, "show upscale", &ch) == "OFF" && command(&s, "cycle upscale", &ch) == "FSR 1" && ch.size() == 1, "cycle upscale");
     ok(command(&s, "cycle upscale", &ch) == "OFF", "cycle wraps");
     ok(command(&s, "get upscale", &ch) == "0" && command(&s, "get sharpness", &ch) == "0.2", "get index / decimals");
+    /* the VSYNC row (patch 6054) */
+    ok(command(&s, "show vsync", &ch) == "ON" && command(&s, "get vsync", &ch) == "1" && ch.empty(), "vsync on by default");
+    ok(command(&s, "cycle vsync", &ch) == "OFF" && ch.size() == 1 && ini_value(kz2_port_rows[find("vsync")], s.v[find("vsync")]) == "off",
+       "cycle vsync -> off, ini value off");
+    { double d = -1; ok(parse(kz2_port_rows[find("vsync")], "on", &d) && d == 1.0 && !parse(kz2_port_rows[find("vsync")], "maybe", &d),
+                        "vsync ini parse"); }
+    ok(command(&s, "cycle vsync", &ch) == "ON", "vsync cycles back");
     ok(command(&s, "cycle fov", &ch) == "?" && command(&s, "set nope 1", &ch) == "?" && command(&s, "", &ch) == "?", "bad commands");
     command(&s, "cycle upscale", &ch);
     ok(command(&s, "reset", &ch) == "ok" && ch.size() == 2 && s.v[find("fov")] == 45.0 && s.v[find("upscale")] == 0.0, "reset");
@@ -88,17 +95,20 @@ int main()
        "slider ranges");
     ok(e.find("<_i name=\"itemPcUpscale\" c=\"_Medium\" p=\",174,620,29\" g=\"5\" h=\"static://script.optionsmenuscript.PcCycle_upscale\"") !=
            std::string::npos, "UPSCALING row cycles");
-    ok(e.find("<_i name=\"itemResetDisplaySettings\" c=\"_Medium\" p=\",261,620,29\" g=\"7\"") != std::string::npos &&
-           e.find("<_i: name=\"!\" g=\"7\" /> <_l: name=\"!\" g=\"1\" />") != std::string::npos, "SET TO DEFAULT moves down to y 261, g 7");
-    ok(e.find("<_l name=\"listDisplaySettings\" c=\"_Normal\" p=\"16,14,620,290\"") != std::string::npos, "list grows to 290");
-    ok(e.find("<_l name=\"listControlSettings\" c=\"_Normal\" p=\"16,14,620,203\" g=\"8\"") != std::string::npos, "later ids move by 3");
+    ok(e.find("<_i name=\"itemResetDisplaySettings\" c=\"_Medium\" p=\",290,620,29\" g=\"8\"") != std::string::npos &&
+           e.find("<_i: name=\"!\" g=\"8\" /> <_l: name=\"!\" g=\"1\" />") != std::string::npos, "SET TO DEFAULT moves down to y 290, g 8");
+    ok(e.find("<_l name=\"listDisplaySettings\" c=\"_Normal\" p=\"16,14,620,319\"") != std::string::npos, "list grows to 319");
+    ok(e.find("<_l name=\"listControlSettings\" c=\"_Normal\" p=\"16,14,620,203\" g=\"9\"") != std::string::npos, "later ids move by 4");
     ok(e.find("UpdateVolume(sliderMusicVolume)\")\r\ngBrowser:GetTagByName(\"sliderPcFov\"):SetOnChange(\"optionsmenuscript.PcSet_fov\")\r\n") !=
            std::string::npos, "slider change applies live");
     ok(e.find("function InitOptionSettings()\r\nPcInit()\r\n") != std::string::npos &&
            e.find("function ResetDisplaySettings()\r\nPcReset()\r\n") != std::string::npos, "init and reset hooks");
     ok(e.find("function Pc(cmd)\r\ngPlayerProfile:SetTimeZone(\"pc:\" .. cmd)\r\n") != std::string::npos &&
            e.find("function PcSet_sharpness()") != std::string::npos && e.find("function PcCycle_upscale()") != std::string::npos &&
-           e.find("function PcCycle_upscale()") < e.find("function ToggleCheckBox"), "script functions before ToggleCheckBox");
+           e.find("function PcCycle_upscale()") < e.find("function ToggleCheckBox") &&
+           e.find("function PcCycle_vsync()") != std::string::npos, "script functions before ToggleCheckBox");
+    ok(e.find("<_i name=\"itemPcVsync\" c=\"_Medium\" p=\",232,620,29\" g=\"7\" h=\"static://script.optionsmenuscript.PcCycle_vsync\"") !=
+           std::string::npos, "VSYNC row cycles, below SHARPNESS");
     bool threw = false;
     try { display_rows(e); } catch (const kz2mt::Anchor&) { threw = true; }
     ok(threw, "a second edit is refused");

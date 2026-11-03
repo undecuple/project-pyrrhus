@@ -2,7 +2,7 @@
 """Lifted vs native (vs interpreted) check of KZ2's native SPU gates.
 
   tools/spu/native_diff.py synth [--slot N ...] [--trials T] [--seed S] [--interp]
-  tools/spu/native_diff.py rec FILE_OR_DIR ... [--interp]
+  tools/spu/native_diff.py rec FILE_OR_DIR ... [--interp] [--as-slot N]
 
 Builds tools/spu/native_diff_harness.c with the image's lifted spu_recomp.c ($KZ2_OUT/spu/lift/<image>: work/spu/lift
 in the main checkout, KZ2_OUT=work/spu in the SPU), the patched runtime's spu_drain.c and spu_interp.c
@@ -80,8 +80,11 @@ def main():
     ap.add_argument("--build", default=os.path.join(OUT, "spu", "native_diff"))
     ap.add_argument("-v", action="store_true", help="print every case")
     ap.add_argument("--bench", type=int, default=0, help="also time each side: best of N runs per case")
+    ap.add_argument("--as-slot", type=int, help="rec: replay the states through this slot (same function address)")
     a = ap.parse_args()
     env = dict(os.environ, HARNESS_INTERP="1" if a.interp else "0", HARNESS_BENCH=str(a.bench))
+    if a.as_slot is not None:
+        env["HARNESS_AS_SLOT"] = str(a.as_slot)
     gs = gates()
     fails = 0
     totals = []
@@ -109,7 +112,7 @@ def main():
             slot, = struct.unpack_from("<I", open(f, "rb").read(12), 8)
             by.setdefault(slot, []).append(f)
         for slot, fl in sorted(by.items()):
-            g = next(x for x in gs if x["slot"] == slot)
+            g = next(x for x in gs if x["slot"] == (slot if a.as_slot is None else a.as_slot))
             exe = build(g["image"], a.build)
             img, base = image_bin(g["image"], a.build)
             r = subprocess.run([exe, img, hex(base), "rec", *fl], env=env, capture_output=True, text=True)

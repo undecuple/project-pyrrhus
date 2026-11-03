@@ -4,6 +4,19 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Fixed
+- If the window's back buffer cannot be fetched, the present skips its copy and resizes the window at the next present instead of using an empty buffer (this case was not reached in our runs).
+
+### Changed
+- Character skinning on the SPU side runs as native code: about twice as fast per batch, the same output bit for bit (on by default; KZ2_NATIVE_JOB_SKIN=0 turns it off).
+- Options > Display has a VSync row (on by default; off allows tearing), and a frame that the screen is not ready for is skipped instead of holding up the game.
+- The texture cache size is a setting; the default stays at 8,192 entries.
+- The particle vertex relight and packing run as native SSE code by default, the same output bit for bit and about 5 % less SPU time for that job (KZ2_NATIVE_JOB_VJLIGHT=0 goes back to the previous native form, KZ2_NATIVE_JOB_VJVERT=0 to the recompiled SPU code).
+- FSR 1 now runs before the HUD: the HUD, crosshair and subtitles are drawn at the window's resolution, not upscaled.
+- The game folder can be read in place: with a new install the launcher makes no folder link (writes go to the install's vfs folder; saves and settings stay where they are).
+
 ## [0.1.7] - 2026-11-02 (pre-release)
 
 ### Added

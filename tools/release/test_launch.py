@@ -85,6 +85,10 @@ def record(root, dump, update, eboot):
     return c
 
 
+def local_data(root, environ):
+    return la.data_dir(root, False, environ)
+
+
 def stamp(c):
     write(c.b("obj", "kz2.exe"), "MZ")
     write(c.b("obj", "at3_standalone.dll"), "at3")
@@ -349,10 +353,47 @@ def link_tests(tmp):
         ui = FakeUI([])
         rc = la.main(["--root", root], ui=ui, run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
         e = calls[0][1]["env"] if calls else {}
-        check(rc == 0 and e.get("PS3_VFS_ROOT") == dump and e.get("KZ2_CACHE_ROOT") == os.path.join(root, "vfs")
-              and not os.path.lexists(vl) and os.path.isfile(os.path.join(dump, "PS3_GAME", "PARAM.SFO")),
-              f"12b link-free run: dump read in place, writes under vfs, old link dropped {rc} {ui.infos} "
+        # an install whose VFS root was the alternative place (recorded in [vfs] alt): the update keeps using it as the
+        # cache root (the FIOS cache stays at the same path, nothing copied or deleted), the link in it is dropped
+        al = os.path.join(alt, "PS3_GAME")
+        fios = os.path.join(alt, "cache", "BCUS98116", "fios", "cache.idx")
+        write(fios, "fios")
+        la.create_junction, la.make_symlink = junction, symlink
+        la.ensure_vfs(root, dump, alt)                     # the alt place holds the old link (as before the update)
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        calls = []
+        ui = FakeUI([])
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
+        e = calls[0][1]["env"] if calls else {}
+        check(rc == 0 and e.get("PS3_VFS_ROOT") == dump and e.get("KZ2_CACHE_ROOT") == alt
+              and not os.path.lexists(al) and not os.path.lexists(vl) and la.read_ini(root)["vfs_alt"] == alt
+              and open(fios).read() == "fios" and os.path.isfile(os.path.join(dump, "PS3_GAME", "PARAM.SFO")),
+              f"12b alt update: dump read in place, cache root = recorded alt, cache kept, links dropped {rc} {ui.infos} "
               f"{ {k: e.get(k) for k in ('PS3_VFS_ROOT', 'KZ2_CACHE_ROOT')} }")
+        check(la.read_ini(root)["vfs_alt"] == alt, "12b the alt record stays for the uninstaller")
+        # the record names a folder that is gone: <root>/vfs
+        saved = alt + ".gone"
+        os.rename(alt, saved)
+        calls = []
+        rc = la.main(["--root", root], ui=FakeUI([]), run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
+        e = calls[0][1]["env"] if calls else {}
+        check(rc == 0 and e.get("KZ2_CACHE_ROOT") == os.path.join(root, "vfs") and not os.path.lexists(alt),
+              f"12b alt record without its folder: <root>/vfs, nothing made in alt {rc} {e.get('KZ2_CACHE_ROOT')}")
+        os.rename(saved, alt)
+        # an ordinary junction install (no record): <root>/vfs, link dropped, the cache at the same path
+        la.write_ini(root, "vfs", "alt", "")
+        write(os.path.join(root, "vfs", "cache", "BCUS98116", "fios", "cache.idx"), "fios")
+        write(os.path.join(local_data(root, envl), "gamedata", "dev_hdd0", "save.dat"), "save")
+        la.create_junction, la.make_symlink = junction, symlink
+        la._link_in(os.path.join(root, "vfs"), os.path.join(dump, "PS3_GAME"))
+        la.create_junction, la.make_symlink = half_junction, no_symlink
+        calls = []
+        rc = la.main(["--root", root], ui=FakeUI([]), run=lambda a, **k: calls.append((a, k)) or 0, environ=envl)
+        e = calls[0][1]["env"] if calls else {}
+        check(rc == 0 and e.get("KZ2_CACHE_ROOT") == os.path.join(root, "vfs") and not os.path.lexists(vl)
+              and open(os.path.join(root, "vfs", "cache", "BCUS98116", "fios", "cache.idx")).read() == "fios"
+              and open(os.path.join(local_data(root, envl), "gamedata", "dev_hdd0", "save.dat")).read() == "save",
+              f"12b junction install update: cache at the same path, saves in the working folder {rc} {e.get('KZ2_CACHE_ROOT')}")
         os.remove(os.path.join(root, "build", "build-stamp.json"))
         ui, runs = FakeUI([False]), []
         la.main(["--root", root], ui=ui, run=lambda a, **k: runs.append(a) or 0, environ={"PATH": "/bin"})

@@ -13,8 +13,8 @@ fsr1_embed.h generated from them), taken unchanged. Adapted in Killzone 2:
   RSX_UPSCALE/RSX_UPSCALE_SHARPNESS for one run); the context is made on the first frame it is on and kept;
 - RSX_PERF_GPU=2 gets a timestamp kind "upscale" ([perf-gt]): the passes' GPU time per frame.
 Default off: no pass, no copy, no context; the present is as before.
-Pre-HUD tap: none. Killzone 2 draws its HUD into the same display buffer after resolve and post, and the present
-receives only that buffer (one image per flip), so the HUD is upscaled with the scene, as in Killzone 3.
+Pre-HUD tap: patch 6052 (the HUD draws are a later run of draws into the display buffer; this patch alone upscales
+the composed image, HUD included, as in Killzone 3).
 FidelityFX FSR 1: https://github.com/GPUOpen-Effects/FidelityFX-FSR commit a21ffb8f6c13233ba336352bdff293894c706575,
 MIT, Copyright (c) 2021 Advanced Micro Devices, Inc.; ffx_a.h also carries an MIT notice "Copyright (c) 2014 Michal
 Drobot" (for the concepts used in its FLOAT APPROXIMATIONS). Both notices are kept in the files.

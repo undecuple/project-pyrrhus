@@ -22,7 +22,7 @@ checks = [
   ("gcm: guest flip request", re.search(r"PS3_FT_FLIP_REQ.*?\n\s*ps3_lat_flip_req\(!in_fifo\);", gcm, re.S) is not None),
   ("gcm: FIFO flip marker", re.search(r"s_flip_request_count\+\+;\n\s*ps3_lat_flip_fifo\(\);", gcm) is not None),
   ("live draw: present start", re.search(r"void rsx_live_draw_present\(u32 buffer_id\)\n\{\n\s*ps3_lat_present\(PS3_LAT_PRES\);", ld) is not None),
-  ("live draw: Present bracketed", re.search(r"ps3_lat_present\(PS3_LAT_CALL\);.*?->Present\(g\.swap.*?ps3_lat_present\(PS3_LAT_RET\);", ld, re.S) is not None),
+  ("live draw: Present bracketed", re.search(r"ps3_lat_present\(PS3_LAT_CALL\);.*?(->Present\(g\.swap|ld_present_swap\(\)).*?ps3_lat_present\(PS3_LAT_RET\);", ld, re.S) is not None),
 ]
 bad = 0
 for name, ok in checks:

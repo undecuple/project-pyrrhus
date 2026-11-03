@@ -881,6 +881,69 @@ static void synth_vjvert(spu_context* c, uint64_t seed)
     }
 }
 
+/* Anim.Skinning 0x54C0 (slot 80): the skinning loop. The game's layout (positions at 0x6100, normals
+ * at 0x7100, just past the image) or streams anywhere; records (20 bytes, the window at r6 + 6) with random weight,
+ * bone and byte-vector bytes (bones 0-255, or few bones), two palettes of 256 matrices (rows of floats, translation
+ * row larger; lane 3 0/1 or random), counts 1-200; odd floats a quarter of the trials (NaN, infinity, denormals
+ * through every multiply); the zero vector for the unit steps now and then (frsqest of 0). 1 in 16 declined on
+ * purpose (an overlap with the output, an unaligned output). */
+static void synth_skin(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    g_dirty = rnd() % 4 == 0;
+    const uint32_t n = 1 + rnd() % 200;
+    const int game = rnd() % 2;
+    const uint32_t r4 = game ? 0x6100 : 0x8000 + 16 * (rnd() % 64), r5 = game ? 0x7100 : 0x9000 + 16 * (rnd() % 64);
+    const uint32_t r6 = 0xA000 + rnd() % 256, out = 0xC000 + 16 * (rnd() % 64);
+    const uint32_t m7 = 0x30000 + 16 * (rnd() % 16), m8 = 0x35000 + 16 * (rnd() % 16);
+    const int few = rnd() % 3 == 0;
+    for (uint32_t k = 0; k <= n; k++) {
+        uint8_t* w = c->ls + r6 + 6 + 20 * k;
+        for (int i = 0; i < 20; i++) w[i] = (uint8_t)rnd();
+        if (rnd() % 4 == 0) { w[0] = 255; w[1] = 0; }
+        if (rnd() % 8 == 0) { w[0] = (uint8_t)(128 + rnd() % 128); w[1] = (uint8_t)(rnd() % 128); }
+        if (few) for (int j = 5; j < 8; j++) w[j] = (uint8_t)(rnd() % 4);
+        if (rnd() % 16 == 0) w[8] = w[9] = w[10] = 0;
+        if (rnd() % 16 == 0) w[11] = w[12] = w[13] = 0x80;
+        fls(c, r4 + 16 * k, 16, -50.0f, 50.0f);
+        fls(c, r5 + 16 * k, 16, -1.0f, 1.0f);
+        if (rnd() % 16 == 0) memset(c->ls + r5 + 16 * k, 0, 12);
+    }
+    for (int pal = 0; pal < 2; pal++) {
+        const uint32_t b = pal ? m8 : m7;
+        for (uint32_t j = 0; j < 256; j++) {
+            fls(c, b + 64 * j, 48, -1.0f, 1.0f);
+            fls(c, b + 64 * j + 48, 16, -100.0f, 100.0f);
+            if (rnd() % 2)
+                for (int r = 0; r < 4; r++) be32w(c->ls + b + 64 * j + 16 * r + 12, r == 3 ? 0x3F800000u : 0);
+        }
+    }
+    if (rnd() % 4 == 0) {   /* an earlier changeb: random lane-3 words (NaN, infinity, huge; the fast form ignores lane 3) */
+        for (uint32_t k = 0; k <= n; k++) {
+            be32w(c->ls + r4 + 16 * k + 12, rnd());
+            be32w(c->ls + r5 + 16 * k + 12, rnd() % 2 ? rnd() : 0x7F800000u | rnd());
+        }
+        for (int pal = 0; pal < 2; pal++)
+            for (uint32_t j = 0; j < 256 * 4; j++)
+                if (rnd() % 2) be32w(c->ls + (pal ? m8 : m7) + 16 * j + 12, rnd() % 2 ? rnd() : 0x7F800000u | rnd());
+    }
+    setreg(c, 3, out);
+    setreg(c, 4, r4);
+    setreg(c, 5, r5);
+    setreg(c, 6, r6);
+    setreg(c, 7, m7 + (rnd() % 4 ? 0 : rnd() % 16));
+    setreg(c, 8, m8);
+    setreg(c, 9, n);
+    if (rnd() % 16 == 0) {   /* the declined cases */
+        switch (rnd() % 4) {
+        case 0: setreg(c, 3, m7 + 64 * (rnd() % 200)); break;   /* the output over a palette */
+        case 1: setreg(c, 4, out + 16 * (rnd() % 4)); break;   /* the positions under the output */
+        case 2: setreg(c, 3, out + 4); break;
+        default: setreg(c, 3, r6 - 16); break;   /* over the records */
+        }
+    }
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -895,7 +958,8 @@ static const struct {
     {"zero", synth_zero},             {"ilr", synth_ilr},
     {"ea_13100", synth_ea13100},      {"ea_12438", synth_ea12438},
     {"bss_clear", synth_bss},         {"vj_memcpy", synth_vjcopy},
-    {"vj_vertex", synth_vjvert},
+    {"vj_vertex", synth_vjvert},     {"sk_skin", synth_skin},
+    {"vj_light", synth_vjvert},   /* slot 81, the emitter with the SSE relight */
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
@@ -905,7 +969,10 @@ static long n_case, n_match, n_mis, n_fb, n_imis, n_bad, n_puts;
 
 /* gates whose r3 is a result (VertexJob's vertex emitter leaves its last memcpy's destination there, as
  * the SPU code does) */
-static int kind_r3(const kz2_native_entry* e) { return e->kind && !strcmp(e->kind, "vj_vertex"); }
+static int kind_r3(const kz2_native_entry* e)
+{
+    return e->kind && (!strcmp(e->kind, "vj_vertex") || !strcmp(e->kind, "vj_light"));   /* slots 79, 81 */
+}
 
 /* HARNESS_MFC_MUTATE=ea|data|tag|drop|order (the harness's own test, test_native_vjvert.sh): change the native side's
  * log after its run, so the compare must catch it. */
@@ -1048,15 +1115,22 @@ static void one(const char* name, int slot, uint32_t entry)
         n_imis += ib;
     }
     if (bad) n_mis++; else n_match++;
-    /* HARNESS_BENCH=R: the best of R runs of each side from the case's registers (the kernels are idempotent on
-     * their local store: they read their inputs and rewrite their outputs; no state reset needed between runs). */
+    /* HARNESS_BENCH=R: the best of R runs of each side from the case's registers and local store. An earlier changeb: the
+     * local store is restored before every run (outside the timing): not every gate is idempotent on it. ILR (slot
+     * 68) keeps its row counter in its stack frame ([r1 + 0x30], incremented per row until it equals [r1 + 0x50]):
+     * a second run from the same registers started past the end, so the lifted loop ran ~2^32 rows (the "hang"
+     * with --bench) and the native code declined (rows = 0). */
     static int bench = -1;
     if (bench < 0) bench = getenv("HARNESS_BENCH") ? atoi(getenv("HARNESS_BENCH")) : 0;
-    if (bench > 0 && !bad && !hmfc_puts(&LA)) {   /* cases with a put time the harness's MFC model */
+    static int bench_any = -1;   /* HARNESS_BENCH_ANY=1: time mismatching cases too (ablations, timing only) */
+    if (bench_any < 0) bench_any = getenv("HARNESS_BENCH_ANY") && atoi(getenv("HARNESS_BENCH_ANY"));
+    if (bench > 0 && (!bad || bench_any) && !hmfc_puts(&LA)) {   /* cases with a put time the harness's MFC model */
         uint64_t bl = ~0ull, bn = ~0ull;
         g_no_arm = 1;
         for (int r = 0; r < bench; r++) {
             memcpy(A.gpr, S.gpr, sizeof S.gpr);
+            memcpy(A.ls, S.ls, SPU_LS_SIZE);
+            memcpy(B.ls, S.ls, SPU_LS_SIZE);
             if (kind_r3(e)) {   /* the vertex emitter advances its ring state (LS 0x27B80): restore it */
                 memcpy(A.ls + 0x27B80, S.ls + 0x27B80, 32);
                 memcpy(B.ls + 0x27B80, S.ls + 0x27B80, 32);
@@ -1155,6 +1229,12 @@ int main(int argc, char** argv)
                 continue;
             }
             const char* nm = strrchr(argv[i], '/');
+            {   /* HARNESS_AS_SLOT=N replays a state recorded at another slot of the same function (slot
+                 * 79's recordings through slot 81, the same emitter with the SSE relight) */
+                const char* as = getenv("HARNESS_AS_SLOT");
+                const kz2_native_entry* ea = (as && *as) ? kz2_native_find(atoi(as)) : NULL;
+                if (ea && ea->addr == addr) slot = ea->slot;
+            }
             if (slot == 68 && addr == 0x4A20) {   /* an earlier change's recording build: Gfx.Post.ILR's pass entry */
                 if (!prestate(68, 0x4A20)) {
                     printf("C %s could not bring the state forward to 0x4E20\n", argv[i]);

@@ -1,0 +1,196 @@
+KZ2 patch 6058: the texture cache's size is a run-time setting (LD_TEX_CACHE_ENTRIES, 1024..32768; default 8,192 as
+before), and [tex-hash] says why textures are new: entries in use / size, local video memory, new entries, re-adds of
+evicted keys and the guest-write scans that walk every entry (Fable frame plan 2026-11-03 step 1a).
+
+Fable's step 1a: in Corinth Sands' heavy outdoor view the 8,192-entry cache was full and its LRU recycled ~365
+textures per frame ([tex-hash] evict=93.6k per 256 frames, 8,298 new decodes/s), so make it 32,768. Measured here
+(3 rotated pairs of the same exe, LD_TEX_CACHE_ENTRIES=8192 against 32768, LD_NO_PRESENT=1, the RE notes
+"An earlier change"): 32,768 entries also fill up and keep evicting (~6,000 a second in the heavy view), new decodes fall ~20 %
+while their time does not (the textures' content is new: in-place refreshes rise as evictions fall), and the frame
+gets slower (heavy view 19.4/19.0/27.5 -> 15.0/14.2/24.3 fps). So the default stays 8,192. What changed:
+- MAX_TEXTURES (the arrays: g.textures, the LRU links, the hash index, the CPU SRV heap's texture slots) is 32,768;
+  the cache is full at g_ld_tex_cap (LD_TEX_CACHE_ENTRIES=N, default LD_TEX_CACHE_DEFAULT 8,192). Host memory ~4 MB.
+- [tex-hash] adds entries=N/cap, vram= (IDXGIAdapter3::QueryVideoMemoryInfo, local segment CurrentUsage, MB), new=
+  (new entries) and readd= (new entries whose key had been evicted: a direct-mapped table of evicted key hashes,
+  64 Ki slots; re-adds near new= mean the cache is too small, few mean the keys are new and no size helps), and
+  gvmark=N/Sk (rsx_live_draw_note_guest_write and ld_gv_mark calls and the entries they walked: both walk every entry,
+  which is why a larger cache costs time).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index ba0f26c..a19f4d1 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -245,8 +245,9 @@ extern volatile unsigned long long g_yz_auto_start_tick;
+ 
+ #define LD_SWAP_BUFFERS  2
+ #define MAX_SURFACES     64
+-#define MAX_TEXTURES     8192   /* patch 2033: was 1024; the level binds ~2,500 distinct textures a frame and the
+-                                 * LRU evicted ~243 of them per frame, each decoded again */
++#define MAX_TEXTURES     32768  /* patch 2033: was 1024; the level binds ~2,500 distinct textures a frame and the
++                                 * LRU evicted ~243 of them per frame, each decoded again. KZ2 patch 6058: the arrays hold
++                                 * 32768 (LD_TEX_CACHE_ENTRIES up to that); the run-time size g_ld_tex_cap stays 8192 */
+ #define TEX_INDEX_SIZE   (4u * MAX_TEXTURES)   /* patch 2033: hash index over g.textures, power of two */
+ #define LD_TEX_HASH_SPAN_DEFAULT 4   /* patch 2033: LD_TEX_HASH_SPAN default (frames; 0 = hash every frame); patch 2046:
+                                       * 4, tiered by LD_TEX_HASH_BIG (was 0 = every frame) */
+@@ -3285,6 +3286,27 @@ static unsigned long long g_ld_tex_inplace_n;
+ static unsigned long long g_ld_b8_direct_n;   /* patch 2036 */
+ static unsigned long long g_ld_argb_direct_n;   /* patch 2046 */
+ static unsigned long long g_ld_tex_evict_n, g_ld_tex_recycle_n;   /* patch 2075: per [tex-hash] window */
++static u32 ld_tex_cap(void);   /* patch 6058 */
++/* patch 6058: is the cache too small, or are the new keys new? Every evicted key's hash goes into a direct-mapped
++ * table (64 Ki slots); a new entry whose key is found there is a re-add (the LRU threw it out and the game bound it
++ * again). [tex-hash] prints new= (new entries) and readd= per window. A re-add rate near new= means the cache is too
++ * small; a low one means the new keys are keys the game never bound before (more slots cannot help). */
++static u32 g_ld_tex_evk[65536];
++static unsigned long long g_ld_tex_new_n, g_ld_tex_readd_n;
++/* patch 6058: the texture scans whose cost grows with the cache: rsx_live_draw_note_guest_write (every noted guest
++ * write, e.g. an NV0039 copy into guest memory) and ld_gv_mark (patch 2017: such a write over a surface, and every SPU
++ * put drained from the guest-write ring at a bind) walk all entries. gvmark=N/S in
++ * [tex-hash]: calls and entries walked (thousands) per window. */
++static unsigned long long g_ld_gvm_n, g_ld_gvm_scan;
++/* patch 6058: the process's local (device) video memory use, MB (IDXGIAdapter3::QueryVideoMemoryInfo; 0 = unknown) */
++static IDXGIAdapter3* g_ld_vram_ad;
++static unsigned long long ld_vram_used_mb(void)
++{
++    DXGI_QUERY_VIDEO_MEMORY_INFO mi;
++    if (!g_ld_vram_ad || FAILED(g_ld_vram_ad->lpVtbl->QueryVideoMemoryInfo(g_ld_vram_ad, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mi)))
++        return 0;
++    return (unsigned long long)(mi.CurrentUsage >> 20);
++}
+ static u32 g_ld_tex_raw;   /* patch 2046: what the last decode_guest_texture made (1 = raw A,R,G,B bytes) */
+ static int ld_tex_inplace_on(void)
+ {
+@@ -3899,15 +3921,18 @@ static void ld_td_flip(void)
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) {
+         fprintf(stderr, "[tex-hash] span=%d big=%u frame=%u hashes=%llu skipped=%llu bytes=%.1fMB changes=%llu tracked=%llu"
+                         " untracked=%llu flip-flags=%llu wr-unchanged=%llu dyn-forced=%llu inplace=%llu b8-direct=%llu"
+-                        " argb-direct=%llu evict=%llu recycle=%llu entries=%u\n",
++                        " argb-direct=%llu evict=%llu recycle=%llu entries=%u/%u vram=%lluMB new=%llu readd=%llu"
++                        " gvmark=%llu/%lluk\n",
+                 ld_tex_hash_span(), ld_tex_hash_big(), g_ld_frames, (unsigned long long)g_ld_th.hashes,
+                 (unsigned long long)g_ld_th.skipped, (double)g_ld_th.hashed_bytes / 1048576.0,
+                 (unsigned long long)g_ld_th.changes, (unsigned long long)g_ld_th.tracked,
+                 (unsigned long long)g_ld_th.untracked, (unsigned long long)g_ld_th.flip_flags,
+                 (unsigned long long)g_ld_th.wr_unchanged, (unsigned long long)g_ld_th.dyn_forced, g_ld_tex_inplace_n,
+-                g_ld_b8_direct_n, g_ld_argb_direct_n, g_ld_tex_evict_n, g_ld_tex_recycle_n, g.n_textures);
++                g_ld_b8_direct_n, g_ld_argb_direct_n, g_ld_tex_evict_n, g_ld_tex_recycle_n, g.n_textures, ld_tex_cap(),
++                ld_vram_used_mb(), g_ld_tex_new_n, g_ld_tex_readd_n, g_ld_gvm_n, g_ld_gvm_scan / 1000u);   /* patch 6058 */
+         memset(&g_ld_th, 0, sizeof g_ld_th);
+         g_ld_tex_evict_n = g_ld_tex_recycle_n = 0;   /* patch 2075 */
++        g_ld_tex_new_n = g_ld_tex_readd_n = g_ld_gvm_n = g_ld_gvm_scan = 0;   /* patch 6058 */
+         g_ld_tex_inplace_n = 0;
+         g_ld_b8_direct_n = 0;
+         g_ld_argb_direct_n = 0;
+@@ -5372,6 +5397,28 @@ static u32 ld_tex_index_find(const rsx_dsp_texture* t, u32 remap)
+  * (create_texture_mipped reuses it when the description matches: barrier, upload copy, barrier). Draws recorded
+  * before the copy read the old texels, as with a 2035 refresh. Counted in [tex-hash] as evict=N recycle=N. */
+ static rsx_tex_lru g_ld_tex_lru = { RSX_TEX_LRU_NIL, RSX_TEX_LRU_NIL };
++/* KZ2 patch 6058 (Fable frame plan step 1a, measured): the texture cache's size. 8,192 entries recycled ~365 textures per frame
++ * in Corinth Sands' heavy outdoor view ([tex-hash] evict=93.6k per 256 frames, 8,298 new decodes/s), each decoded,
++ * uploaded and given a new SRV again. LD_TEX_CACHE_ENTRIES=N (1024..MAX_TEXTURES) sets it for one run; the default is
++ * LD_TEX_CACHE_DEFAULT. A recycled slot reuses its resource (patch 2075), so the cache's VRAM is bounded by the entry
++ * count; [tex-hash] prints the process's local video memory use (vram=) to keep that in check. */
++/* An earlier change measured (3 rotated pairs, Corinth Sands, LD_NO_PRESENT=1): 32,768 entries filled up and still evicted
++ * ~6,000 a second in the heavy view; new decodes fell ~20 % but their ms did not, and the frame got slower (the
++ * guest-write scans walk every entry). So the default stays 8,192; LD_TEX_CACHE_ENTRIES remains for measurements. */
++#define LD_TEX_CACHE_DEFAULT 8192u
++static u32 g_ld_tex_cap;
++static u32 ld_tex_cap(void)
++{
++    if (!g_ld_tex_cap) {
++        const char* e = getenv("LD_TEX_CACHE_ENTRIES");
++        u32 v = e && *e ? (u32)strtoul(e, NULL, 0) : LD_TEX_CACHE_DEFAULT;
++        if (v < 1024u) v = 1024u;
++        if (v > MAX_TEXTURES) v = MAX_TEXTURES;
++        g_ld_tex_cap = v;
++        fprintf(stderr, "[texture-cache] %u entries (%s; patch 6058)\n", v, e && *e ? "LD_TEX_CACHE_ENTRIES" : "default");
++    }
++    return g_ld_tex_cap;
++}
+ static rsx_tex_lru_link g_ld_tex_lru_link[MAX_TEXTURES];
+ static int ld_tex_recycle_on(void)
+ {
+@@ -5509,7 +5556,13 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+ 
+     u32 index;
+     ID3D12Resource* evicted = NULL;
+-    const int cache_was_full = g.n_textures >= MAX_TEXTURES;
++    const int cache_was_full = g.n_textures >= ld_tex_cap();   /* patch 6058 */
++    {   /* patch 6058: new entry; a re-add when its key was evicted before */
++        const u32 kh = ld_tex_key_hash(t->location, t->offset, t->format, t->width, t->height, t->pitch, remap, t->cubemap,
++                                       t->dimension, t->depth) | 1u;
++        g_ld_tex_new_n++;
++        if (g_ld_tex_evk[kh >> 16] == kh) { g_ld_tex_readd_n++; g_ld_tex_evk[kh >> 16] = 0; }
++    }
+     const int recycle = ld_tex_recycle_on();   /* patch 2075 */
+     if (!cache_was_full) {
+         index = g.n_textures++;
+@@ -5518,12 +5571,13 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+         g_ld_texture_cache_full++;
+         index = rsx_tex_lru_victim(&g_ld_tex_lru);
+         evicted = g.textures[index].tex;
++        { const u32 kh = ld_tex_entry_hash(&g.textures[index]) | 1u; g_ld_tex_evk[kh >> 16] = kh; }   /* patch 6058 */
+         ld_tex_index_remove(index);
+         g_ld_texture_cache_evictions++;
+         g_ld_tex_evict_n++;
+         if (g_ld_texture_cache_full <= 16 ||
+             (g_ld_texture_cache_full & (g_ld_texture_cache_full - 1)) == 0)
+-            fprintf(stderr, "[texture-cache] FULL cap=%u lru-evictions=%llu (list)\n", MAX_TEXTURES,
++            fprintf(stderr, "[texture-cache] FULL cap=%u lru-evictions=%llu (list)\n", ld_tex_cap(),
+                     (unsigned long long)g_ld_texture_cache_evictions);
+     } else {
+         /*
+@@ -5542,6 +5596,7 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+                 g.textures[index].last_use_serial)
+                 index = i;
+         evicted = g.textures[index].tex;
++        { const u32 kh = ld_tex_entry_hash(&g.textures[index]) | 1u; g_ld_tex_evk[kh >> 16] = kh; }   /* patch 6058 */
+         ld_tex_index_remove(index);   /* patch 2033: the slot gets a new key below */
+         g_ld_texture_cache_evictions++;
+         g_ld_tex_evict_n++;   /* patch 2075 */
+@@ -5549,7 +5604,7 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+             (g_ld_texture_cache_full & (g_ld_texture_cache_full - 1)) == 0)
+             fprintf(stderr,
+                     "[texture-cache] FULL cap=%u lru-evictions=%llu\n",
+-                    MAX_TEXTURES,
++                    ld_tex_cap(),
+                     (unsigned long long)g_ld_texture_cache_evictions);
+     }
+ 
+@@ -15925,6 +15980,11 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+             (void**)&g_ld_profile.adapter);
+     }
+ #endif
++    {   /* patch 6058: the adapter for ld_vram_used_mb */
++        LUID luid = {0};
++        g.dev->lpVtbl->GetAdapterLuid(g.dev, &luid);   /* MinGW's C binding: the struct return is an out pointer */
++        if (FAILED(factory->lpVtbl->EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter3, (void**)&g_ld_vram_ad))) g_ld_vram_ad = NULL;
++    }
+     ld_open_info_queue();
+     D3D12_COMMAND_QUEUE_DESC qd = {0};
+     g.dev->lpVtbl->CreateCommandQueue(g.dev, &qd, &IID_ID3D12CommandQueue, (void**)&g.queue);
+@@ -16376,6 +16436,7 @@ static void ld_gv_mark(u32 location, u32 offset, u32 size)
+     if (!size) return;
+     const u64 b0 = offset, b1 = b0 + size;
+     const u32 stale = g_ld_frames - 1u;
++    g_ld_gvm_n++; g_ld_gvm_scan += g.n_textures;   /* patch 6058 */
+     for (u32 i = 0; i < g.n_textures; i++) {
+         texcache_t* e = &g.textures[i];
+         if (e->tex && ld_range_overlaps(e->location, e->offset, e->span, location, b0, b1)) {
+@@ -16421,6 +16482,7 @@ u32 rsx_live_draw_note_guest_write(u32 location, u32 offset, u32 size)
+     const u64 b0 = offset, b1 = b0 + size;
+     const u32 stale = g_ld_frames - 1u;   /* any value != g_ld_frames forces a re-hash */
+     u32 marked = 0;
++    g_ld_gvm_n++; g_ld_gvm_scan += g.n_textures;   /* patch 6058 */
+     for (u32 i = 0; i < g.n_textures; i++) {
+         texcache_t* e = &g.textures[i];
+         if (e->tex && ld_range_overlaps(e->location, e->offset, e->span, location, b0, b1)) {
+@@ -18596,7 +18658,7 @@ static void ld_present_body(u32 buffer_id)
+                 g_ld_stats.group_drop_ring, g_ld_stats.group_drop_surface,
+                 g_ld_stats.clears, g_ld_stats.clear_drop_surface,
+                 g_ld_stats.implicit_depth_clears,
+-                g.n_textures, MAX_TEXTURES,
++                g.n_textures, ld_tex_cap(),   /* patch 6058 */
+                 (unsigned long long)g_ld_texture_cache_full,
+                 (unsigned long long)g_ld_texture_decode_fail,
+                 (unsigned long long)g_ld_zdepth_srv_binds,

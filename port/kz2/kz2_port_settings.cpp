@@ -6,8 +6,9 @@
  *   fov        -> kz2_fov_set (kz2_ppu_overrides.cpp: the first-person frustum's FOV at the Camera site 0x66F638)
  *   upscale,
  *   sharpness  -> rsx_upscale_live_set (patch 6051, from KZ3 patch 2145: FSR 1 at present, off = no pass)
+ *   vsync      -> rsx_live_draw_set_vsync (patch 6054, from KZ3 patch 2103: the Present interval, tearing when off)
  * Environment, for one run (never saved by itself; a change on the page still saves): KZ2_FOV=<vertical degrees>,
- * RSX_UPSCALE=fsr1|none, RSX_UPSCALE_SHARPNESS=0..2.
+ * RSX_UPSCALE=fsr1|none, RSX_UPSCALE_SHARPNESS=0..2, KZ2_VSYNC=on|off.
  * The page talks to it through kz2_menu_pages.cpp's bridge ("pc:<cmd>", kz2_port_settings_cmd); without the menu
  * feature (KZ2_MENU_PAGES=0) the values still load and apply. */
 #include <mutex>
@@ -19,6 +20,7 @@
 extern "C" {
 void kz2_fov_set(double deg);                              /* kz2_ppu_overrides.cpp */
 void rsx_upscale_live_set(int backend, float sharpness);   /* libs/video/rsx_upscale.c (patch 6051) */
+void rsx_live_draw_set_vsync(int on);                      /* libs/video/rsx_live_draw.c (patch 6054) */
 #ifdef _WIN32
 int pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);   /* cellPad.c (patch 2095) */
 const char* kz2_log_path_w(const wchar_t* path, char* out, size_t n);   /* kz2_session_log.c */
@@ -37,6 +39,7 @@ void apply(int i)
 {
     const std::string id = kz2rows::kz2_port_rows[i].id;
     if (id == "fov") kz2_fov_set(g_st.v[i]);
+    else if (id == "vsync") rsx_live_draw_set_vsync(g_st.v[i] >= 0.5 ? 1 : 0);
     else rsx_upscale_live_set(g_st.v[row("upscale")] >= 0.5 ? 1 : 0, (float)g_st.v[row("sharpness")]);   /* 1 = RSX_UPSCALE_FSR1 */
 }
 
@@ -90,7 +93,8 @@ void load_locked(void)
         if (kz2rows::ini_get(ini, r.section, r.key, &v)) { if (kz2rows::parse(r, v, &d)) g_st.v[i] = d; else bad++; }
     }
     std::string env;
-    struct { const char* var; const char* id; } envs[] = { { "KZ2_FOV", "fov" }, { "RSX_UPSCALE", "upscale" }, { "RSX_UPSCALE_SHARPNESS", "sharpness" } };
+    struct { const char* var; const char* id; } envs[] = { { "KZ2_FOV", "fov" }, { "RSX_UPSCALE", "upscale" }, { "RSX_UPSCALE_SHARPNESS", "sharpness" },
+                                                    { "KZ2_VSYNC", "vsync" } };
     for (auto& e : envs) {
         const char* s = getenv(e.var);
         if (!s || !*s) continue;
@@ -150,10 +154,11 @@ extern "C" int kz2_display_ini_set3(const char* mode, const char* scaling, const
     std::string shown;
     std::string t = read_file("display.ini", &shown);
     if (t.empty())
-        t = "# Project Pyrrhus display settings (Alt+Enter toggles the mode; the Display page's port rows set fov, upscale, sharpness).\n"
+        t = "# Project Pyrrhus display settings (Alt+Enter toggles the mode; the Display page's port rows set fov, upscale, sharpness, vsync).\n"
             "# mode = windowed | borderless | fullscreen, scaling = fit | stretch, filter = bilinear | nearest, fov = 45..75 (vertical\n"
-            "# degrees, 45 = the game's own), upscale = off | fsr1, sharpness = 0..2. KZ2_DISPLAY, KZ2_DISPLAY_SCALING,\n"
-            "# KZ2_DISPLAY_FILTER, KZ2_FOV, RSX_UPSCALE, RSX_UPSCALE_SHARPNESS override them for one run.\n";
+            "# degrees, 45 = the game's own), upscale = off | fsr1, sharpness = 0..2, vsync = on | off. KZ2_DISPLAY,\n"
+            "# KZ2_DISPLAY_SCALING, KZ2_DISPLAY_FILTER, KZ2_FOV, RSX_UPSCALE, RSX_UPSCALE_SHARPNESS, KZ2_VSYNC override them for\n"
+            "# one run.\n";
     t = kz2rows::ini_set(t, "display", "mode", mode);
     t = kz2rows::ini_set(t, "display", "scaling", scaling);
     t = kz2rows::ini_set(t, "display", "filter", filter);

@@ -49,7 +49,7 @@ run() {   # EXPECT(clean|read|unresolved) NAME [READ-AT]; LEAF and KEEP override
   local out
   out=$(python3 "$ROOT/tools/spu/live_proof.py" --job "$O/job.dis" --pm "$O/pm.dis" --call 0x4004 \
         --leaf "${LEAF:-0x4100-0x4108}" --keep "${KEEP:-}" \
-        --bisl job:0x400C=pm:0x100 --spill pm:0x200,0x210 --pm-jobcall 0x0 2>&1)
+        --bisl job:0x400C=pm:0x100 --spill pm:0x200,0x210 --pm-jobcall 0x0 ${EXTRA:-} 2>&1)
   local res; res=$(grep '^RESULT' <<<"$out")
   case "$1" in
     clean) [[ "$res" == *clean* ]] ;;
@@ -69,5 +69,23 @@ LEAF=0x4100-0x4104 run clean "r6 outside the one range given"
 LEAF=0x4100-0x4104,0x4104-0x4108 run read "r6 written in the second range" "job:0x4008"
 KEEP=6 run clean "r6 kept (the native code leaves it as the SPU code does)"
 KEEP=2-5,7 run read "a kept list without r6" "job:0x4008"
-[[ $fail == 0 ]] && echo "PASS test_live_proof (10 cases)"
+# an earlier changeb: the interrupt enable idiom, then a read of r6 past it (job:0x4014); --stop at the job manager's entry
+idiom() {
+  mk "$O/job.dis" \
+    "0x4000 il \$r9, 0" \
+    "0x4004 brsl \$r0, 0x4100" \
+    "0x4008 brsl \$r2, 0x400C" \
+    "0x400C ai \$r2, \$r2, 8" \
+    "0x4010 bi \$r2" \
+    "0x4014 $1" \
+    "0x4018 stop 0x0" \
+    "0x4100 il \$r5, 1" \
+    "0x4104 il \$r6, 2" \
+    "0x4108 bi \$r0"
+}
+idiom "a \$r3, \$r6, \$r6"; run read "a read past the brsl/ai/bi idiom" "job:0x4014"
+idiom "il \$r6, 0"; run clean "the idiom, r6 rewritten past it"
+job "il \$r6, 7";  pm "nop" "a \$r8, \$r5, \$r5"
+EXTRA="--stop pm:0x100" run clean "--stop at the job manager: its read of r5 not walked"
+[[ $fail == 0 ]] && echo "PASS test_live_proof (13 cases)"
 exit $fail

@@ -2,7 +2,8 @@
  * every Gfx.Post flag on by default for the slots recorded in play, a flag's own 0 turns its job off (also
  * under KZ2_NATIVE_JOB_POST=1), KZ2_NATIVE_JOB_POST=0 turns everything off, slots without a recorded-in-play
  * equality (the shared kernels' copies in the other post images, three blur variants) off unless asked for. An earlier change:
- * EdgeAnim (75, 76) and VertexJob's .bss clear (77) on by default, VertexJob's memcpy (78) off. No game data. */
+ * EdgeAnim (75, 76) and VertexJob's .bss clear (77) on by default, VertexJob's memcpy (78) off. Later rounds: 78 (23),
+ * 79 (26), 80 (27) and 81 (28a, flags VJLIGHT|VJVERT) on by default. No game data. */
 #include "native_flags.h"
 
 #include <stdio.h>
@@ -107,6 +108,8 @@ int main(void)
     expect("VJCLEAR on by default", "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", 77, "KZ2_NATIVE_JOB_VJCLEAR default");
     expect("VJCOPY on by default", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY default");
     expect("VJVERT on by default", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT default");
+    expect("SKIN on by default", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, "KZ2_NATIVE_JOB_SKIN default");
+    expect("SKIN on an unrecorded slot: off", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 82, NULL);
     expect("EdgeAnim on an unrecorded slot: off", EA, "Anim.EdgeAnim", 99, NULL);
     setenv_(0, "KZ2_NATIVE_JOB_POST", "0");
     expect("POST=0 leaves EdgeAnim on", EA, "Anim.EdgeAnim", 75, "KZ2_NATIVE_JOB_EDGEANIM default");
@@ -116,6 +119,7 @@ int main(void)
            "KZ2_NATIVE_JOB_VJCOPY default");
     expect("POST=1 leaves VJVERT default", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79,
            "KZ2_NATIVE_JOB_VJVERT default");
+    expect("POST=1 leaves SKIN default", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, "KZ2_NATIVE_JOB_SKIN default");
     setenv_(0, EA, "0");
     expect("EDGEANIM=0 off", EA, "Anim.EdgeAnim", 75, NULL);
     expect("EDGEANIM=0 turns the keys off", EK, "Anim.EdgeAnim", 76, NULL);
@@ -134,12 +138,47 @@ int main(void)
            "KZ2_NATIVE_JOB_VJCLEAR default");
     setenv_(0, "KZ2_NATIVE_JOB_VJVERT", "1");
     expect("VJVERT=1 on", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT=1");
+    expect("VJVERT=1 leaves SKIN default", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, "KZ2_NATIVE_JOB_SKIN default");
+    setenv_(0, "KZ2_NATIVE_JOB_SKIN", "0");
+    expect("SKIN=0 off", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, NULL);
+    expect("SKIN=0 leaves VJVERT on", "KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", 79, "KZ2_NATIVE_JOB_VJVERT default");
+    setenv_(0, "KZ2_NATIVE_JOB_SKIN", "1");
+    expect("SKIN=1 on", "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", 80, "KZ2_NATIVE_JOB_SKIN=1");
+    /* an earlier changea: slot 81 (the emitter with its relight in SSE, a gate on 0x50F8 checked before slot 79's) on by default;
+     * its flags are VJLIGHT|VJVERT, so VJLIGHT=0 leaves slot 79 to run, VJVERT=0 turns both forms off (the lifted
+     * emitter), and an explicit 1 of either turns it on */
+    const char* VL = "KZ2_NATIVE_JOB_VJLIGHT|KZ2_NATIVE_JOB_VJVERT";
+    const char* VV = "KZ2_NATIVE_JOB_VJVERT";
+    const char* VJ = "Particles.VertexJob";
+    clear();
+    expect("VJLIGHT on by default", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT default");
+    expect("VJLIGHT on an unrecorded slot: off", VL, VJ, 82, NULL);
+    setenv_(0, "KZ2_NATIVE_JOB_POST", "0");
+    expect("POST=0 leaves VJLIGHT on", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT default");
+    setenv_(0, "KZ2_NATIVE_JOB_POST", "1");
+    expect("POST=1 leaves VJLIGHT default", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT default");
+    setenv_(0, "KZ2_NATIVE_JOB_SKIN", "0");
+    expect("SKIN=0 leaves VJLIGHT on", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJLIGHT", "0");
+    expect("VJLIGHT=0 off", VL, VJ, 81, NULL);
+    expect("VJLIGHT=0 leaves VJVERT (slot 79) on", VV, VJ, 79, "KZ2_NATIVE_JOB_VJVERT default");
+    setenv_(0, "KZ2_NATIVE_JOB_VJLIGHT", "1");
+    expect("VJLIGHT=1 on", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT=1");
+    setenv_(0, VV, "0");
+    expect("VJVERT=0 turns slot 81 off too", VL, VJ, 81, NULL);
+    expect("VJVERT=0: slot 79 off (the lifted emitter runs)", VV, VJ, 79, NULL);
+    setenv_(0, VV, "0"); setenv_(1, "KZ2_NATIVE_JOB_VJLIGHT", "1");
+    expect("VJVERT=0 VJLIGHT=1: an explicit 1 wins, slot 81 on", VL, VJ, 81, "KZ2_NATIVE_JOB_VJLIGHT=1");
+    setenv_(0, VV, "1");
+    expect("VJVERT=1: slot 81 on (it runs before 79)", VL, VJ, 81, "KZ2_NATIVE_JOB_VJVERT=1");
+    setenv_(0, "KZ2_NATIVE_JOB_VJLIGHT", "0"); setenv_(1, VV, "1");
+    expect("VJLIGHT=0 VJVERT=1: the explicit 1 wins, slot 81 on", VL, VJ, 81, "KZ2_NATIVE_JOB_VJVERT=1");
     setenv_(0, "KZ2_NATIVE_JOB_VJCOPY", "1");
     expect("VJCOPY=1 on", "KZ2_NATIVE_JOB_VJCOPY", "Particles.VertexJob", 78, "KZ2_NATIVE_JOB_VJCOPY=1");
     /* the default list is exactly k_def's flags */
     const size_t n = sizeof kz2_native_default_on / sizeof kz2_native_default_on[0];
-    if (n != NDEF + 4) {   /* + EDGEANIM, VJCLEAR, VJCOPY, VJVERT */
-        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 4);
+    if (n != NDEF + 6) {   /* + EDGEANIM, VJCLEAR (22), VJCOPY (23), VJVERT (26), SKIN (27), VJLIGHT (28a) */
+        printf("FAIL the default-on list has %zu flags, the test %zu\n", n, NDEF + 6);
         fails++;
     }
     for (size_t i = 0; i < NDEF; i++)

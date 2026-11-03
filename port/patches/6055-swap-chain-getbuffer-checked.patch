@@ -1,0 +1,79 @@
+KZ2 patch 6055: the swap chain's GetBuffer result is checked after ResizeBuffers.
+
+From Killzone 3 port patch 2133 (KZ3 an earlier change, Project Helghast port/patches/2133-fullscreen-getbuffer-checked.patch;
+the Killzone 3 PC port "Project Helghast", same author, MIT). In KZ3 a GetBuffer failure after a fullscreen resize left
+a null back buffer, a null RTV, and a crash in the next present's draws. KZ2's ld_dm_get_buffers had the same unchecked
+call. 2133's second hunk (the guard before GetDesc on a failed ResizeBuffers) is already in KZ2 (patch 6040). KZ2 adds
+what 2133 leaves out: the present paths (the scaled blit, the game's flip copy, the movie copy) skip their barriers and
+copies when the back buffer is NULL instead of recording them on a null resource, and the failure asks for a resize at
+the next present (patch 6040's g_dm_force_resize), so a transient failure recovers. Logged as "[display] GetBuffer(i)
+after ResizeBuffers failed hr=..." (16 lines at most).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 8ad87bf..3441c1e 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -15466,7 +15466,19 @@ static void ld_dm_client(u32* w, u32* h)
+ static void ld_dm_get_buffers(void)
+ {
+     for (u32 i = 0; i < LD_SWAP_BUFFERS; i++) {
+-        g.swap->lpVtbl->GetBuffer(g.swap, i, &IID_ID3D12Resource, (void**)&g.backbuf[i]);
++        /* KZ2 patch 6055 (from KZ3 patch 2133): GetBuffer's result is checked. A null back buffer got a null RTV and
++         * the present paths then recorded barriers and copies on a null resource. Now it stays NULL, the presents
++         * skip their copy into it (the frame is not shown) and the next present retries the resize. */
++        const HRESULT gb = g.swap->lpVtbl->GetBuffer(g.swap, i, &IID_ID3D12Resource, (void**)&g.backbuf[i]);
++        if (FAILED(gb) || !g.backbuf[i]) {
++            static unsigned nlog;
++            g.backbuf[i] = NULL;
++            InterlockedExchange(&g_dm_force_resize, 1);
++            if (nlog++ < 16)
++                fprintf(stderr, "[display] GetBuffer(%u) after ResizeBuffers failed hr=0x%08lX: resize retried at the next present\n",
++                        i, (unsigned long)gb);
++            continue;
++        }
+         LD_SM_INVALIDATE(), g.dev->lpVtbl->CreateRenderTargetView(g.dev, g.backbuf[i], NULL, rtv_handle(i));
+     }
+ }
+@@ -15619,6 +15631,7 @@ static int ld_dm_blit(ID3D12Resource* src, D3D12_RESOURCE_STATES src_state, u32
+     D3D12_RESOURCE_DESC sd;
+     src->lpVtbl->GetDesc(src, &sd);
+     ID3D12Resource* bb = g.backbuf[bbi];
++    if (!bb) return 0;   /* patch 6055: no back buffer (GetBuffer failed) */
+     const rsx_dm_rect r = rsx_dm_rect_for((int)sd.Width, (int)sd.Height, (int)g_dm_bb_w, (int)g_dm_bb_h, g_dm_scaling,
+                                           g_dm_filter);
+     int dm_filter = g_dm_filter;
+@@ -16595,7 +16608,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    if (!dm_tex) g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);   /* patch 2095: dm_tex stays COPY_DEST */
++    if (!dm_tex && bb) g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);   /* patch 2095: dm_tex stays COPY_DEST; 6055: bb */
+ 
+     D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
+     dst.pResource = bb; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
+@@ -16607,13 +16620,13 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     src.PlacedFootprint.Footprint.Height = h;
+     src.PlacedFootprint.Footprint.Depth = 1;
+     src.PlacedFootprint.Footprint.RowPitch = pitch;
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    if (bb) g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);   /* patch 6055 */
+ 
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+     ld_ph_frame_end();   /* patch 6052: a movie frame shows no HUD target; FSR at present */
+-    if (!dm_tex) g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
+-    else if (!ld_dm_blit(dm_tex, D3D12_RESOURCE_STATE_COPY_DEST, bbi)) {   /* patch 2095 */
++    if (!dm_tex) { if (bb) g.list->lpVtbl->ResourceBarrier(g.list, 1, &b); }   /* patch 6055: bb */
++    else if (!ld_dm_blit(dm_tex, D3D12_RESOURCE_STATE_COPY_DEST, bbi) && g.backbuf[bbi]) {   /* patch 2095; 6055 */
+         b.Transition.pResource = g.backbuf[bbi];         /* no scale pass: an empty (black) frame, not a stale one */
+         b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+         b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -18113,7 +18126,7 @@ static void ld_present_body(u32 buffer_id)
+     const int dm_scaled = (g_dm_bb_w != g.width || g_dm_bb_h != g.height) &&
+         ld_dm_blit(gm_copy ? gm_copy : ph_src ? ph_src : srcimg,
+                    gm_copy ? D3D12_RESOURCE_STATE_COPY_SOURCE : ph_state, bbi);
+-    if (!dm_scaled) {
++    if (!dm_scaled && bb) {   /* patch 6055: bb NULL = GetBuffer failed: nothing copied, the resize is retried */
+ 
+     D3D12_RESOURCE_BARRIER bar[2] = {0};
+     bar[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

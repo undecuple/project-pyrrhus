@@ -24,22 +24,27 @@
  * Anim.EdgeAnim's two kernels and Particles.VertexJob's .bss clear since an earlier change (the same-run toggle A/B,
  * KZ2_NATIVE_TOGGLE, tools/spu/toggle_ab.py: the RE notes "An earlier change"); VertexJob's memcpy since an earlier change
  * (its scratch registers proven unread by tools/spu/live_proof.py, and its A/B: the RE notes "An earlier change"); VertexJob's
- * vertex emitter since an earlier change (decided after an earlier change's gate and A/B: the RE notes "An earlier change"). */
+ * vertex emitter since an earlier change (decided after an earlier change's gate and A/B: the RE notes "An earlier change"); Anim.Skinning's
+ * skinning loop since an earlier change (decided after an earlier changeb's gate and A/B: the RE notes "An earlier changeb"); VertexJob's
+ * emitter with its relight and packing in SSE (slot 81) since an earlier changea (after an earlier changeb's gate and A/B:
+ * the RE notes "An earlier changeb"; its gate on 0x50F8 comes before slot 79's, so slot 79 runs only with
+ * KZ2_NATIVE_JOB_VJLIGHT=0, and KZ2_NATIVE_JOB_VJVERT=0 turns both forms off: slot 81's flags are VJLIGHT|VJVERT). */
 static const char* const kz2_native_default_on[] = {
     "KZ2_NATIVE_JOB_DOF",      "KZ2_NATIVE_JOB_UPSAMPLE",     "KZ2_NATIVE_JOB_POSTMIX",   "KZ2_NATIVE_JOB_BLUR",
     "KZ2_NATIVE_JOB_BLOOM",    "KZ2_NATIVE_JOB_MODULATE",     "KZ2_NATIVE_JOB_BLOOMINT",  "KZ2_NATIVE_JOB_ILR",
     "KZ2_NATIVE_JOB_VIGNETTE", "KZ2_NATIVE_JOB_DEPTHTOFUZZY", "KZ2_NATIVE_JOB_DOWNSAMPLE", "KZ2_NATIVE_JOB_ZERO",
     "KZ2_NATIVE_JOB_DOFPASS",  "KZ2_NATIVE_JOB_EDGEANIM",     "KZ2_NATIVE_JOB_VJCLEAR",
-    "KZ2_NATIVE_JOB_VJCOPY",   "KZ2_NATIVE_JOB_VJVERT",
+    "KZ2_NATIVE_JOB_VJCOPY",   "KZ2_NATIVE_JOB_VJVERT",       "KZ2_NATIVE_JOB_SKIN",      "KZ2_NATIVE_JOB_VJLIGHT",
 };
 
 /* Slots with recorded-in-play equality (tools/spu/native_diff.py rec, bit-exact, interpreter agreeing): DOF's kernels
  * and Upsample's (Corinth River), the blur and bloom kernels called in play, and the remaining post passes; all 25
  * again on The New Sun's recording (800/800). The other 34 post slots were never called in a recorded run: off unless
  * their flag is 1 or KZ2_NATIVE_JOB_POST=1. EdgeAnim's kernels (75, 76) and VertexJob's .bss clear (77) and memcpy
- * (78) on the A/B route's recording (464/464 over 29 slots, twice); the vertex emitter (79) on an earlier change's (63/63). */
+ * (78) on the A/B route's recording (464/464 over 29 slots, twice); the vertex emitter (79) on an earlier change's (63/63);
+ * Anim.Skinning's loop (80) on an earlier changeb's (64/64); the SSE emitter (81) on an earlier changeb's (64/64). */
 static const int kz2_native_play_recorded[] = { 0, 1, 2, 3, 4, 8, 23, 39, 52, 53, 55, 58, 59, 61, 64, 65,
-                                                66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79 };
+                                                66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81 };
 
 static inline int kz2_native_is_default_on(const char* flag)
 {

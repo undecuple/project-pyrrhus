@@ -1,0 +1,97 @@
+KZ2 patch 6053: the walker scans a vertex program for branch-bit tests (BRB/CLB) only after it has seen flow in it, and
+[vp-feat] lines count the VP flow cases at PSO misses.
+
+From Killzone 3 port patch 2100 (KZ3 an earlier change, rebased on ps3recomp v0.18.0 in KZ3 an earlier change; the Killzone 3 PC
+port "Project Helghast", same author, MIT; read at Project Helghast port/patches/2100-vp-branch-bits-leaders-544.patch),
+which ports the get_pso hunk of sp00nznet/ps3recomp PR #485 by n0madic (head aa026464, MIT).
+What 2100 fixed in KZ3: VP BRB/CLB fell through instead of testing SET_TRANSFORM_BRANCH_BITS, and programs past slot 511
+lost their tail blocks. Both are in ps3recomp v0.18.0 itself (upstream #544), so KZ2 already has them, and KZ2's
+pipeline key already hashes the branch bits (upstream #485 with KZ2 patch 2120's template records). What is left and
+taken here: ld_pso_key_tail runs per draw, and KZ2's get_pso called rsx_vp_uses_branch_bits (a scan of the whole
+program) on every draw. Now get_pso passes vp_branch_bits_used = -1 and the key tail scans only when 2077's flow test
+changed the key (BRB/CLB are flow ops, so a program without flow cannot use the bits); keys are bit-identical. The
+template record and the prewarm still set the flag explicitly. Plus 2100's [vp-feat] diagnostic (one line per class,
+the first 8 then every 256th: flow, bool = BRB/CLB, long = over 512 instructions, vfail/ffail = translation failed,
+which stores a NULL pipeline and drops the program's draws without any other line).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 799beea..b2aa569 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -8409,7 +8409,8 @@ typedef struct {
+     u32 unnorm_mask; const u32 (*unnorm_dim)[2];
+     u64 gamma_mask; u32 argb_mask; const u16* argb_remap; u32 srgb_out;
+     u32 fp_const_count; u32 fp_alpha_ref;
+-    int vp_branch_bits_used; u32 vp_branch_bits;   /* upstream #485: BRB/CLB outcomes baked into the VP */
++    int vp_branch_bits_used; u32 vp_branch_bits;   /* upstream #485: BRB/CLB outcomes baked into the VP; KZ2 patch 6053:
++                                                    * -1 = not scanned yet (ld_pso_key_tail decides, after the flow test) */
+     int vgpu;                                  /* patch 2076: GPU-fetch vertex shader (packed payload 2) */
+     u32 wpos_aa;                               /* KZ2 patch 2088: aa_sx | aa_sy << 8 of the target, 0 = 1x1 */
+     u32 wpos_flip;                             /* KZ2 patch 2090: window height in pixels when the shader window's
+@@ -8667,10 +8668,16 @@ static u64 ld_pso_key_tail(u64 key, const ld_xl_in* xi, int packed_payload, u64*
+     key = fnv1a(&cube_mask, sizeof(cube_mask), key);
+     key = fnv1a(&vtex_mask, sizeof(vtex_mask), key);
+     /* patch 2077: a branching VP's HLSL depends on the slot it starts at (rsx_vp_set_branch_base in ld_xlate) */
++    const u64 key_pre_vbs = key;   /* KZ2 patch 6053 */
+     key = rsx_vp_key_branch_base(key, xi->vp_uc, xi->vp_instrs * 16u, xi->vp_start);
+-    /* Upstream #485: BRB/CLB outcomes are baked into the program (rsx_vp_set_branch_bits). */
+-    if (xi->vp_branch_bits_used)
+-        key = fnv1a(&xi->vp_branch_bits, sizeof(xi->vp_branch_bits), key);
++    /* Upstream #485: BRB/CLB outcomes are baked into the program (rsx_vp_set_branch_bits), so the branch bits are
++     * identity only for a program that tests them. KZ2 patch 6053 (from KZ3 patch 2100, which ports the get_pso hunk
++     * of sp00nznet/ps3recomp PR #485 by n0madic, MIT): this runs per draw, and the walker scanned every program for
++     * BRB/CLB on every draw; now the scan is made only for a program 2077 found flow in (BRB/CLB are flow, and the
++     * flow test changed the key), so a branch-free program pays one compare. Keys are unchanged. */
++    {   int bbu = xi->vp_branch_bits_used;
++        if (bbu < 0) bbu = key != key_pre_vbs && rsx_vp_uses_branch_bits(xi->vp_uc, xi->vp_instrs * 16u);
++        if (bbu) key = fnv1a(&xi->vp_branch_bits, sizeof(xi->vp_branch_bits), key); }
+     if (gamma_mask) key = fnv1a(&gamma_mask, sizeof(gamma_mask), key);
+     if (srgb_out) key = fnv1a(&srgb_out, sizeof(srgb_out), key);   /* patch 2055 */
+     { static int s2a = -1;   /* patch 2057: the SRC2 abs switch changes shader text, so it changes the key */
+@@ -8782,7 +8789,8 @@ static void ld_pt_note(u64 key, const ld_xl_in* xi, int packed, int depth)
+     r->rs_words = (u32)(sizeof(render_state_t) / 4u);
+     memcpy(r->rs, xi->rs, sizeof(render_state_t));
+     r->wpos_flip = xi->wpos_flip;                                        /* KZ2 patch 2120 */
+-    r->vp_branch_bits = xi->vp_branch_bits_used ? xi->vp_branch_bits : 0u;
++    r->vp_branch_bits = (xi->vp_branch_bits_used < 0 ? rsx_vp_uses_branch_bits(xi->vp_uc, xi->vp_instrs * 16u)
++                                                      : xi->vp_branch_bits_used) ? xi->vp_branch_bits : 0u;   /* 6053 */
+     memcpy(r->shadow_zfunc, xi->shadow_zfunc, 16);
+     memcpy(r->argb_remap, xi->argb_remap, sizeof r->argb_remap);
+     memcpy(r->unnorm_dim, xi->unnorm_dim, sizeof r->unnorm_dim);
+@@ -10073,8 +10081,8 @@ static ID3D12PipelineState* get_pso(
+     xi.shadow_mask = shadow_mask; xi.shadow_zfunc = shadow_zfunc; xi.unnorm_mask = unnorm_mask; xi.unnorm_dim = unnorm_dim;
+     xi.gamma_mask = gamma_mask; xi.argb_mask = argb_mask; xi.argb_remap = argb_remap; xi.srgb_out = srgb_out;
+     xi.fp_const_count = g.fp_constants.count; xi.fp_alpha_ref = g.fp_alpha_ref;
+-    xi.vp_branch_bits_used = rsx_vp_uses_branch_bits(vp_uc, vp_instrs * 16);   /* upstream #485 */
+-    xi.vp_branch_bits = xi.vp_branch_bits_used ? rsx_dsp_reg(&g.rsx, 0x1FF8u) : 0;
++    xi.vp_branch_bits_used = -1;   /* upstream #485; KZ2 patch 6053: scanned in ld_pso_key_tail only after flow is seen */
++    xi.vp_branch_bits = rsx_dsp_reg(&g.rsx, 0x1FF8u);   /* hashed only for BRB/CLB programs; the HLSL of others ignores it */
+     xi.vgpu = masked_layout && packed_payload == 2;   /* patch 2076 */
+     xi.wpos_aa = 0;   /* KZ2 patch 2088 */
+     if (ld_wpos_aa_on()) {
+@@ -10178,6 +10186,25 @@ static ID3D12PipelineState* get_pso(
+ #endif
+     int vi, fi;
+     ld_xlate(&xi, vs_hlsl, sizeof(vs_hlsl), ps_hlsl, sizeof(ps_hlsl), &vi, &fi);   /* patch 2071: shared with the prewarm */
++    /* KZ2 patch 6053 (from KZ3 patch 2100): [vp-feat] counts the VP flow cases at PSO misses. A failed translation
++     * stores a NULL pipeline under its key, so every draw of that program is dropped without another word; one line
++     * per class (the first 8 of each, then every 256th) with running counts: flow = any BRA..CLB, bool = BRB/CLB
++     * (branch-bit tests), long = over 512 instructions (leaders past slot 511), vfail/ffail = VP/FP translation failed. */
++    { static LONG n_flow, n_bool, n_long, n_vfail, n_ffail;
++      const int fl = rsx_vp_has_flow(vp_uc, vp_instrs * 16u), bo = fl && rsx_vp_uses_branch_bits(vp_uc, vp_instrs * 16u);
++      const int lo = vp_instrs > 512u;
++      if (fl) InterlockedIncrement(&n_flow);
++      if (bo) InterlockedIncrement(&n_bool);
++      if (lo) InterlockedIncrement(&n_long);
++      if (vi <= 0) InterlockedIncrement(&n_vfail);
++      if (fi <= 0) InterlockedIncrement(&n_ffail);
++      const LONG k = bo ? n_bool : lo ? n_long : vi <= 0 ? n_vfail : fi <= 0 ? n_ffail : fl ? n_flow : 0;
++      if (k && (k <= 8 || !(k & 255)))
++          fprintf(stderr, "[vp-feat] %s key=%016llx start=%u instrs=%u bits=%08x vi=%d fi=%d | flow=%ld bool=%ld long=%ld"
++                          " vfail=%ld ffail=%ld\n",
++                  bo ? "bool" : lo ? "long" : vi <= 0 ? "vfail" : fi <= 0 ? "ffail" : "flow",
++                  (unsigned long long)key, start, vp_instrs, xi.vp_branch_bits, vi, fi,
++                  (long)n_flow, (long)n_bool, (long)n_long, (long)n_vfail, (long)n_ffail); }
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.decompile_qpc +=
+         (u64)(ld_profile_qpc() - decompile_begin);

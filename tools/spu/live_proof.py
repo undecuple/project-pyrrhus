@@ -14,9 +14,14 @@ into the policy module (the job manager, --pm) and the job manager's own code, w
   recent stack entry with link L, dropping the entries above it (tail calls). With no such entry it falls back to
   every `brsl $rL` site + 4 of the image (and, for $r0 in the job manager, to every job `bisl` continuation; for $r0 in the
   job, to the job manager's job-call continuation): an over-approximation, counted as FALLBACK.
-- `ila $rX, A` within five instructions before `bi $rX` resolves to A; --edge IMG:PC=T1,... gives the targets of table
+- `ila $rX, A` within five instructions before `bi $rX` resolves to A; `brsl $rX, L; ai $rX, $rX, k; bi $rX` to L + k
+  (an earlier changeb); --edge IMG:PC=T1,... gives the targets of table
   jumps; --bisl IMG:PC=IMG2:T sends an indirect call into the other image; --kcall models the SPURS kernel's two
   entries (exitToKernel, selectWorkload) as the runtime implements them (runtime/spu/spurs_policy.c).
+- --stop IMG:PC (an earlier changeb): every path ends at PC, printed as STOP (for the job manager's job-call continuation: it
+  runs arbitrary compiled jobs, which may leave anything in r2-r79, so nothing after it can depend on what one left).
+- --abicall IMG:PC=R,... (an earlier changeb): an indirect call into a compiled function (the SPU ABI: it reads only its
+  argument registers of the caller's volatile ones), modelled as reading those and returning to pc + 4.
 - The job manager's job call (`bisl $r0,$r5` at --pm-jobcall) is a call into another job: it reads r3-r10 (the ABI's argument
   registers; a compiled job's entry reads at most those) and returns to pc + 4.
 - `iret` ends a path (the SPU interrupt handler restores what it saved; it is not entered by a branch).
@@ -60,6 +65,12 @@ def main():
     ap.add_argument("--edge", action="append", default=[])
     ap.add_argument("--bisl", action="append", default=[])
     ap.add_argument("--ret", action="append", default=[])
+    ap.add_argument("--stop", action="append", default=[], metavar="IMG:PC",
+                    help="end every path that reaches PC (an earlier changeb; e.g. the job manager's job-call continuation: "
+                         "it calls arbitrary jobs, so it cannot read a volatile register a job left)")
+    ap.add_argument("--abicall", action="append", default=[], metavar="IMG:PC=R,R...",
+                    help="an indirect call into a compiled ABI function: reads the listed argument registers, returns "
+                         "to pc + 4 (an earlier changeb; the callee's own code is not walked)")
     ap.add_argument("--kcall", action="append", default=[])
     ap.add_argument("--setreg", action="append", default=[], metavar="IMG:PC=REG:A1,A2",
                     help="after the instruction at PC, REG holds one of these code addresses (a table load; the path "
@@ -99,6 +110,9 @@ def main():
     edges = {key_pc(k): [(key_pc(k)[0], int(t, 16)) for t in v.split(",")]
              for k, v in (e.split("=") for e in a.edge)}
     bisl = {key_pc(k): key_pc(v) for k, v in (e.split("=") for e in a.bisl)}
+    stops = {key_pc(x) for x in a.stop}
+    stopped = set()
+    abicall = {key_pc(k): [int(r) for r in v.split(",")] for k, v in (e.split("=") for e in a.abicall)}
     rets = {key_pc(k): int(v) for k, v in (e.split("=") for e in a.ret)}
     kcall = {key_pc(k): v for k, v in (e.split("=") for e in a.kcall)}
     setreg = {}
@@ -156,6 +170,9 @@ def main():
     while work:
         loc, stack, state, frm = work.pop()
         name, pc = loc
+        if loc in stops:   # an earlier changeb: --stop, the path ends here (counted)
+            stopped.add(loc)
+            continue
         steps += 1
         k = (name, pc, stack)
         old = seen.get(k)
@@ -207,8 +224,9 @@ def main():
                         if st[j][1] == t:
                             out.append((t, st[:j]))
                             break
-                    else:
-                        out.append((t, st))
+                    else:   # an earlier changeb: the brsl/ai/bi idiom (below) consumes its own brsl's entry, just before t
+                        own = st and st[-1][0] == L and st[-1][1][0] == t[0] and 0 < t[1] - st[-1][1][1] <= 16
+                        out.append((t, st[:-1] if own else st))
                 return out
             for j in range(len(st) - 1, -1, -1):
                 if st[j][0] == L:
@@ -233,7 +251,10 @@ def main():
             st = (stack + ((rs[0], (name, pc + 4)),))[-MAX_STACK:]
             nxt = [((name, int(tgt[0], 16)), st)]
         elif mn == "bisl":
-            if loc in bisl:
+            if loc in abicall:
+                src = src + abicall[loc]
+                nxt = [((name, pc + 4), stack)]
+            elif loc in bisl:
                 st = (stack + ((rs[0], (name, pc + 4)),))[-MAX_STACK:]
                 nxt = [(bisl[loc], st)]
             elif name == "pm" and pc == a.pm_jobcall:
@@ -275,6 +296,13 @@ def main():
             c2[rs[0]] = load_const
         if mn in ("brsl", "bisl") and rs and rs[0] in track:
             c2[rs[0]] = frozenset({(name, pc + 4)})
+        elif mn == "ai" and len(rs) > 1 and rs[0] in track and rs[1] in cmap:
+            # an earlier changeb: `brsl $rX, pc + 4; ai $rX, $rX, k; bi $rX` (the job's interrupt enable/disable idiom: bie/bid
+            # to pc + 12) is a jump to the brsl's continuation + k; was a FALLBACK to every brsl $rX site + 4, which
+            # sent the walk back to the ai and never past the bi
+            v = re.findall(r"(-?0x[0-9A-F]+|-?\d+)\s*$", op)
+            if v:
+                c2[rs[0]] = frozenset((n, (t + int(v[0], 0)) & 0x3FFFF) for n, t in cmap[rs[1]])
         elif mn == "ila" and rs and rs[0] in track:
             v = re.findall(r"(-?0x[0-9A-F]+|-?\d+)\s*$", op)
             if v:
@@ -285,6 +313,8 @@ def main():
         for n, st in nxt:
             work.append((n, st, (u2, c2, sp2), k))
 
+    for n, p in sorted(stopped):
+        print(f"STOP {n}:0x{p:X} reached (the path ends there, --stop)")
     pcs = {(n, p) for n, p, _ in seen}
     print(f"leaf {','.join(f'{l:X}-{h:X}' for l, h in ranges)} writes {len(U0)} registers (kept: "
           f"{' '.join(f'r{r}' for r in sorted(keep))}): " + " ".join(f"r{r}" for r in sorted(U0)))
@@ -297,11 +327,11 @@ def main():
     for (name, pc, mn), rr in sorted(issues.items()):
         print(f"READ {name}:0x{pc:X} {mn} " + " ".join(f"r{r}" for r in sorted(rr)))
     for t in a.trace:
-        ks = [k for k in seen if k[1] == t]
+        ks = sorted((k for k in seen if k[1] == t), key=lambda k: len(k[2]))   # an earlier changeb: shallowest stack first
         if ks:
             k, path = ks[0], []
-            while k in parent and len(path) < 60:
-                path.append(f"{k[0]}:{k[1]:X}")
+            while k in parent and len(path) < int(os.environ.get("LIVE_TRACE_N", "60")):
+                path.append(f"{k[0]}:{k[1]:X}" + (f"/{len(k[2])}" if os.environ.get("LIVE_TRACE_N") else ""))
                 k = parent[k]
             print(f"TRACE 0x{t:X}: " + " <- ".join(path))
     print("RESULT " + ("clean: no register the leaf writes is read on any path"

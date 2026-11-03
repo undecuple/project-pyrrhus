@@ -55,6 +55,7 @@
 #include "kz2_log.h"   /* stdio stand-in for KZ3's file logger */
 #include "ps3emu/split_file.h"   /* patch 6034: ps3_sf_has_parts for the update miss hook */
 #include "kz2_fios_stamp.h"       /* FIOS disk cache stamp (patch 6035 pre-open hook) */
+#include "kz2_cache_root.h"       /* KZ2_CACHE_ROOT: the dump read in place, writes apart (an earlier changeb) */
 #include "ps3emu/input_latency.h" /* patch 6037: input-to-present probe (KZ2_LATENCY=1) */
 
 #ifdef _WIN32
@@ -231,7 +232,7 @@ static const uint8_t* rsx_live_guest_ptr(void*, uint32_t location, uint32_t offs
  * scaling = fit|stretch, filter = bilinear|nearest; rsx_display_mode.h), read here before the window opens and written
  * by the window's thread when Alt+Enter changes the mode. KZ2_DISPLAY, KZ2_DISPLAY_SCALING, KZ2_DISPLAY_FILTER win for
  * one run, and then nothing is saved (rsx_null_backend.c). KZ3's Options rows for these are not ported. An earlier change: the save
- * writes the three keys into the file key by key, so the Display page's port rows (fov, upscale, sharpness) stay. */
+ * writes the three keys into the file key by key, so the Display page's port rows (fov, upscale, sharpness, vsync) stay. */
 #ifdef _WIN32
 #include "rsx_display_mode.h"
 extern "C" int  pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);   /* cellPad.c (patch 2095) */
@@ -244,7 +245,7 @@ static void kz2_display_save(int mode, int scaling, int filter)
 {
     wchar_t p[1100];
     if (!pad_kb_sibling_path(L"display.ini", p, 1100)) return;
-    /* key by key (kz2_port_settings.cpp), so the Display page's port rows (fov, upscale, sharpness) survive */
+    /* key by key (kz2_port_settings.cpp), so the Display page's port rows (fov, upscale, sharpness, vsync) survive */
     const bool ok = kz2_display_ini_set3(rsx_dm_name(mode), rsx_dm_scaling_name(scaling), rsx_dm_filter_name(filter)) != 0;
     char shown[1200];   /* issue #16: %APPDATA%\..., never the user name */
     printf("[display] %s: mode %s, scaling %s, filter %s %s\n", kz2_log_path_w(p, shown, sizeof shown),
@@ -283,7 +284,7 @@ static int kz2_rsx_init(uint32_t w, uint32_t h, const char* title)
 {
 #ifdef _WIN32
     kz2_display_load();   /* patch 2095 */
-    kz2_port_settings_load();   /* fov, upscale, sharpness (display.ini; the Display page's port rows) */
+    kz2_port_settings_load();   /* fov, upscale, sharpness, vsync (display.ini; the Display page's port rows) */
     if (rsx_live_draw_enabled()) {
         if (rsx_null_backend_init(w, h, title) == 0 &&
             rsx_live_draw_init(rsx_null_backend_get_hwnd(), w, h, rsx_live_guest_ptr, nullptr) == 0) {
@@ -705,6 +706,37 @@ static void setup_update_dir(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * KZ2_CACHE_ROOT: the game folder read in place, every write under the cache root (kz2_cache_root.h)
+ * -----------------------------------------------------------------------*/
+static char s_hdd1_env[1200], s_hdd0_env2[1200];
+
+static void kz2_mkdirs(const char* path)   /* mkdir -p; existing parts are fine */
+{
+    char b[1100];
+    snprintf(b, sizeof b, "%s", path);
+    for (char* p = b + 1; *p; p++) {
+        if (*p != '/') continue;
+        if (p[-1] == ':') continue;   /* "C:/" */
+        *p = 0; _mkdir(b); *p = '/';
+    }
+    _mkdir(b);
+}
+
+static void kz2_split_roots(void)   /* after setup_update_dir: an RPCS3 update tree's PS3_HDD0_ROOT wins */
+{
+    const kz2_cache_plan p = kz2_cache_root_plan(getenv(KZ2_CACHE_ROOT_ENV), getenv("PS3_HDD1_ROOT"),
+                                                 getenv("PS3_HDD0_ROOT"), getenv("PS3_GAMEDATA_ROOT"));
+    if (!p.split) return;
+    kz2_mkdirs(p.cache);
+    if (p.hdd1[0]) { snprintf(s_hdd1_env, sizeof s_hdd1_env, "PS3_HDD1_ROOT=%s", p.hdd1); _putenv(s_hdd1_env); }
+    if (p.hdd0[0]) { snprintf(s_hdd0_env2, sizeof s_hdd0_env2, "PS3_HDD0_ROOT=%s", p.hdd0); _putenv(s_hdd0_env2); }
+    const char* h1 = getenv("PS3_HDD1_ROOT");
+    const char* h0 = getenv("PS3_HDD0_ROOT");
+    printf("[boot] cache root (all writes): %s; game folder read in place: %s; /dev_hdd1 -> %s, /dev_hdd0 -> %s\n",
+           p.cache, ppu_vfs_root, h1 ? h1 : "?", h0 ? h0 : "?");
+}
+
+/* ---------------------------------------------------------------------------
  * Guest VM
  * -----------------------------------------------------------------------*/
 #ifdef _WIN32
@@ -1024,6 +1056,7 @@ int main(int argc, char** argv)
     derive_vfs_root(eboot);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
     setup_update_dir();
+    kz2_split_roots();       /* KZ2_CACHE_ROOT (an earlier changeb): unset = today's layout */
 
     ppu_recomp_register();   /* lifted function table -> address map */
     ps3_load_prx_modules();  /* this game's lifted system PRX, if it has any */
