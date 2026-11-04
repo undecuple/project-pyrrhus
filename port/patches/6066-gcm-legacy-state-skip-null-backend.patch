@@ -1,0 +1,74 @@
+KZ2 patch 6066: GCM_LEGACY_STATE_SKIP, the null backend is no consumer of rsx_state under live draw. Default off.
+
+From Killzone 3 port patch 2150 (KZ3 an earlier change; the Killzone 3 PC port "Project Helghast", same author, MIT; read at Project Helghast
+port/patches/2150-gcm-legacy-state-skip-null-backend.patch, snapshot work/kz3-import/2026-11-04-walker). Default off, as in KZ3.
+
+With GCM_LEGACY_STATE_SKIP=1, live draw up and the null backend registered (rsx_null_backend_init sets
+g_gcm_null_backend_active), the FIFO walker hands rsx_process_method only the methods with effects outside rsx_state
+(gcm_legacy_method_has_effect: 0x50, 0x104, 0x180, 0x1A4, 0x1D6C/0x1D70/0x1D74), as it already does with the draw engine
+and no backend. RSX_TRACE still sees every method. Checked in KZ2's tree: every guest-memory write in
+rsx_commands.c's rsx_process_method is under one of those methods; cellGcmSys's s_state has no other reader than
+rsx_process_method and the flip reset; the null backend's callbacks only log (verbose), keep a clear colour for its
+suppressed GDI present and count frames. What disappears with it on: the [RSX null] set_render_target / set_viewport
+lines (verbose log only), the first-20 draw_arrays/draw_indexed lines and that clear colour.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 63322dd..5c42a93 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2838,6 +2838,16 @@ static int gcm_tgt_log_on(void)   /* patch 6065: KZ2_TGT_LOG (patch 6011) needs
+     if (on < 0) { const char* e = getenv("KZ2_TGT_LOG"); on = e && atoi(e) > 0; }
+     return on;
+ }
++/* Patch 6066 (KZ3 2150): GCM_LEGACY_STATE_SKIP=1 (default off): with live draw up, the null backend (a window and a suppressed
++ * present, rsx_null_backend.c sets the flag) is no consumer of rsx_state, so only methods with effects reach it. */
++int g_gcm_null_backend_active;
++void gcm_note_null_backend(int on) { g_gcm_null_backend_active = on; }
++static int gcm_legacy_state_skip(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("GCM_LEGACY_STATE_SKIP"); on = e && *e ? atoi(e) != 0 : 0; }
++    return on;
++}
+ /* GCM_FAST_METHODS=1 (default off): a method header whose data words lie in one 1 MB IO page is walked with one address
+  * translation and a plain word loop, also under live draw, as long as no diagnostic switch is set. */
+ static int gcm_fast_methods(void)
+@@ -2933,8 +2943,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+      * (gcm_legacy_method_has_effect). RSX_TRACE still sees every method. */
+     static int s_rsx_trace = -1;
+     if (s_rsx_trace < 0) s_rsx_trace = getenv("RSX_TRACE") ? 1 : 0;
+-    const int legacy_state_live = rsx_get_backend() != NULL || !rsx_draw_engine_enabled() ||
+-                                  s_rsx_trace;
++    const int legacy_skip = gcm_legacy_state_skip() && g_gcm_null_backend_active && rsx_live_draw_enabled();
++    const int legacy_state_live = s_rsx_trace || (!legacy_skip && (rsx_get_backend() != NULL || !rsx_draw_engine_enabled()));
+ 
+ 
+     /* Walk the FIFO exactly like the RSX: chase the guest-written `put` (an IO
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 4665d20..1151d1b 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -698,6 +698,7 @@ static int null_create_window(u32 width, u32 height, const char* title)
+ 
+     /* Register as the active RSX backend */
+     rsx_set_backend(&s_null_backend);
++    { extern void gcm_note_null_backend(int); gcm_note_null_backend(1); }   /* patch 6066 */
+ 
+     printf("[RSX null] Window created: %ux%u (client %dx%d)\n", width, height, cw, ch);
+     rsx_dm_init_window();   /* patch 2095: borderless now, exclusive once the swap chain exists */
+@@ -783,6 +784,7 @@ void rsx_null_backend_shutdown(void)
+         s_state.hwnd = NULL;
+     }
+     rsx_set_backend(NULL);
++    { extern void gcm_note_null_backend(int); gcm_note_null_backend(0); }   /* patch 6066 */
+     printf("[RSX null] Backend shut down after %llu frames\n",
+            (unsigned long long)s_state.frame_count);
+ }
+@@ -1216,6 +1218,7 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+ void rsx_null_backend_shutdown(void)
+ {
+     rsx_set_backend(NULL);
++    { extern void gcm_note_null_backend(int); gcm_note_null_backend(0); }   /* patch 6066 */
+     free(s_soft.fb);    s_soft.fb    = NULL;
+     free(s_soft.depth); s_soft.depth = NULL;
+     free(s_soft.tex);   s_soft.tex   = NULL;

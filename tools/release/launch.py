@@ -692,7 +692,7 @@ GAMEPLAY_INI = "gameplay.ini"
 # source and compares.
 GAMEPLAY_INI_TEXT = """; Project Pyrrhus gameplay settings. Created with the defaults when this file was missing; the launcher
 ; never overwrites it. The game reads it at start. An environment variable (KZ2_AIM_ASSIST, KZ2_CROUCH_TOGGLE,
-; KZ2_COVER_TOGGLE, KZ2_MOTION, KZ2_MOUSE_*) wins over this file for one run. A wrong value is ignored (the default stays).
+; KZ2_COVER_TOGGLE, KZ2_MOTION, KZ2_DSU_PORT, KZ2_MOUSE_*) wins over this file for one run. A wrong value is ignored (the default stays).
 ; Booleans: 1/0, on/off, true/false, yes/no.
 
 [gameplay]
@@ -704,6 +704,9 @@ crouch_toggle = 0
 cover_toggle = 0
 ; motion = auto | on | off. The motion-controlled actions (valves, charges): auto picks by the input device.
 motion = auto
+; dsu_port = 0 | on | 1024..65535. A DSU (cemuhook) motion server on this computer (DS4Windows, DualSenseX, a Steam Deck
+; or phone DSU app): its gyro tilts the valves and charges as a SIXAXIS does. 0: off. on: 26760, the usual port.
+dsu_port = 0
 
 [mouse]
 ; mouse_look = 0 | 1. 0: the mouse does not drive the look.

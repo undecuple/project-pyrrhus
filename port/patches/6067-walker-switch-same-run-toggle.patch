@@ -1,0 +1,110 @@
+KZ2 patch 6067: KZ2_WALKER_TOGGLE=<s>, the same-run A/B of the walker's switches. Diagnostic; no
+behaviour change unless a switch is set to T.
+
+Written here (the shape of KZ2 patch 7014's KZ2_PARK_WATCH_TOGGLE). gcm_walker_switch(name, default,
+&cache) reads a switch once: unset/empty = the default, "T" = toggled, anything else atoi != 0, and logs
+`[walker-toggle] NAME = on|off|toggled`. A toggled switch follows g_gcm_walker_toggle_phase: KZ2_WALKER_TOGGLE=<s>
+splits the run into phases of <s> seconds of wacct time (patch 1032's clock), even = off, odd = on; the phase moves only
+at the FIFO's flip word (after patch 6011's note), so no frame is split, and each move is printed as
+`[walker-toggle] t=<wacct s> phase=N on|off wall=<host Unix s>`. KZ2_WALKER_TOGGLE_INVERT=1 (or the SPU's
+KZ2_AB_TOGGLE_INVERT=1, patch 7016) starts with an on-phase (numbering from 1, so odd = on still holds): a scripted
+route's scene changes then fall in the other phase, and one normal plus one inverted run are pooled. tools/runtime/perf/walker_ab.py pairs the phases (RSX_PERF lines, wacct
+windows, flips). Users: LD_CB_REUSE (6064), GCM_FAST_METHODS (6065), GCM_LEGACY_STATE_SKIP (6066); every switch keeps
+its own default (all off). A switch that changes mid-run is safe for these three: CB reuse records the slot on every
+copying draw either way, the fast path is chosen per method header, and the legacy rsx_state feeds only the null
+backend's log lines.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 5c42a93..4a7673a 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2812,6 +2812,47 @@ static int gcm_get_eq_put(void)
+  * drain: the walker hands every data word through these checks, a million a
+  * second in God of War HD gameplay, and it used to test each switch on its
+  * own for every word. */
++/* KZ2 patch 6067: KZ2_WALKER_TOGGLE=<s>, the same-run A/B of the walker switches. A switch set to T (LD_CB_REUSE=T,
++ * GCM_FAST_METHODS=T, GCM_LEGACY_STATE_SKIP=T, LD_PSO_KEY_MEMO=T, LD_REC_MEMO=T) follows the phase: off in even phases,
++ * on in odd ones, each phase <s> seconds of wacct time. The phase moves only at a flip word, so a frame is never split;
++ * each switch is printed as `[walker-toggle] t=<wacct s> phase=N on|off` (tools/runtime/perf/walker_ab.py). */
++volatile int g_gcm_walker_toggle_phase;   /* the phase parity the T switches read (0 = off) */
++int gcm_walker_toggle_on(void) { return g_gcm_walker_toggle_phase & 1; }
++/* 1 = off/on value of a switch variable: unset/empty = dflt, "T" = the toggle's phase, else atoi != 0. */
++int gcm_walker_switch(const char* name, int dflt, int* cache)
++{
++    if (*cache < 0) {
++        const char* e = getenv(name);
++        *cache = (e && (e[0] == 'T' || e[0] == 't')) ? 2 : (e && *e) ? (atoi(e) != 0) : dflt;
++        fprintf(stderr, "[walker-toggle] %s = %s\n", name, *cache == 2 ? "toggled" : *cache ? "on" : "off");
++    }
++    return *cache == 2 ? (g_gcm_walker_toggle_phase & 1) : *cache;
++}
++static void gcm_walker_toggle_flip(void)
++{
++    static double per = -1; static uint64_t t0; static long s_ph = -1;
++    extern uint64_t kz3_wacct_now(void); extern uint64_t kz3_wacct_base(void);
++    static long inv;   /* KZ2_WALKER_TOGGLE_INVERT=1 (or the SPU's KZ2_AB_TOGGLE_INVERT=1): start "on" */
++    if (per < 0) { const char* e = getenv("KZ2_WALKER_TOGGLE"); per = (e && *e) ? atof(e) : 0; t0 = kz3_wacct_now();
++                   const char* i1 = getenv("KZ2_WALKER_TOGGLE_INVERT"); const char* i2 = getenv("KZ2_AB_TOGGLE_INVERT");
++                   inv = ((i1 && i1[0] == '1') || (i2 && i2[0] == '1')) ? 1 : 0; }
++    if (per <= 0) return;
++    const uint64_t n = kz3_wacct_now();
++    const long ph = (long)((double)(n - t0) / (per * 1e9)) + inv;   /* inverted: numbering starts at 1 (odd = on) */
++    if (ph == s_ph) return;
++    s_ph = ph;
++    g_gcm_walker_toggle_phase = (int)(ph & 1);
++    const uint64_t b = kz3_wacct_base();
++    double wall;   /* host wall clock (Unix s): pairs the switch with KZ2_VIDEO's frame files (their mtimes) */
++#ifdef _WIN32
++    { FILETIME ft; GetSystemTimeAsFileTime(&ft);
++      wall = (double)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 1e7 - 11644473600.0; }
++#else
++    { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); wall = (double)ts.tv_sec + ts.tv_nsec / 1e9; }
++#endif
++    fprintf(stderr, "[walker-toggle] t=%.3fs phase=%ld %s wall=%.3f\n", b ? (double)(n - b) / 1e9 : (double)n / 1e9, ph,
++            (ph & 1) ? "on" : "off", wall);
++}
+ /* Patch 6065 (KZ3 2149) splits it in two: the diagnostic switches (they log or count per word and keep the per-word path) and the
+  * live consumers (live draw, draw engine: they take every word, but need no per-word checks). */
+ static int gcm_word_diag_only(void)
+@@ -2845,16 +2886,14 @@ void gcm_note_null_backend(int on) { g_gcm_null_backend_active = on; }
+ static int gcm_legacy_state_skip(void)
+ {
+     static int on = -1;
+-    if (on < 0) { const char* e = getenv("GCM_LEGACY_STATE_SKIP"); on = e && *e ? atoi(e) != 0 : 0; }
+-    return on;
++    return gcm_walker_switch("GCM_LEGACY_STATE_SKIP", 0, &on);   /* patch 6067: T = toggled */
+ }
+ /* GCM_FAST_METHODS=1 (default off): a method header whose data words lie in one 1 MB IO page is walked with one address
+  * translation and a plain word loop, also under live draw, as long as no diagnostic switch is set. */
+ static int gcm_fast_methods(void)
+ {
+     static int on = -1;
+-    if (on < 0) { const char* e = getenv("GCM_FAST_METHODS"); on = e && *e ? atoi(e) != 0 : 0; }
+-    return on;
++    return gcm_walker_switch("GCM_FAST_METHODS", 0, &on);   /* patch 6067: T = toggled */
+ }
+ 
+ /* One data word for the 3D engine (subchannel 0, or 1 unless GCM_SUBCH1_2D),
+@@ -3170,6 +3209,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             s_fifo_getoff += 4;
+             gcm_fifo_flip_resets_state(&s_state);
+             kz2_tgt_note(0, 0, 0, 1);   /* patch 6011: one table per KZ2_TGT_LOG flip words */
++            gcm_walker_toggle_flip();   /* patch 6067 */
+             /* Count the flip WORDS the title actually writes into the FIFO,
+              * separately from the presents that result. When a title stops
+              * appearing on screen the first question is which side stopped:
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 34b34ca..b841d92 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -603,8 +603,8 @@ static ld_cbr g_ld_cbr;
+ static int ld_cb_reuse(void)
+ {
+     static int on = -1;
+-    if (on < 0) { const char* e = getenv("LD_CB_REUSE"); on = e && *e ? atoi(e) != 0 : 0; }
+-    return on;
++    extern int gcm_walker_switch(const char* name, int dflt, int* cache);
++    return gcm_walker_switch("LD_CB_REUSE", 0, &on);   /* patch 6067: T = toggled */
+ }
+ 
+ #define LD_VERTEX_HOIST_FETCH       (1u << 0)

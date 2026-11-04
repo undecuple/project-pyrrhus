@@ -1345,6 +1345,327 @@ static float kz2_gp_f32(uint32_t ea) { const uint32_t u = vm_read32(ea); float f
 
 static int kz2_look_is_mouse(void);   /* mouse look, below */
 
+/* KZ2_AIM_LOG=1 (diagnostic, off by default): one "[aim]" summary per 150 look updates (kz2_aim_stats in
+ * kz2_gameplay.h) plus the first 40 updates where the stick was edited or the target search found something. The search
+ * hooks below count only while ApplyInputModifier runs for UpdateLook (kz2_aim_in_mod). */
+static int kz2_aim_log_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("KZ2_AIM_LOG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    return on;
+}
+static kz2_aim_stats kz2_aim = { 0, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0, 1.0f, 0, 0 };
+static int kz2_aim_in_mod;
+static void kz2_aim_flush(const char* state)
+{
+    if (kz2_aim.mod < 150) return;
+    char line[512];
+    kz2_aim_stats_line(&kz2_aim, state, line, (int)sizeof line);
+    fprintf(stderr, "%s\n", line);
+    kz2_aim_stats_reset(&kz2_aim);
+}
+/* Candidate gather (r3 = E, r4 = cone, f1 = range, r6 = mode, r7 = &list {count, base, capacity}; 20-byte entries). The
+ * game's entity list it walks: *(0xF3B288) + 0x398 = count (1.29; the v1.01 global is not mapped: 0). */
+extern "C" uint64_t ppu_guest_call(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static uint32_t kz2_aim_vcall_args(uint32_t obj, uint32_t slot, uint32_t a1)   /* obj->vf(slot)(a1): OPD pointers */
+{
+    const uint32_t vt = vm_read32(obj);
+    return vt ? (uint32_t)ppu_guest_call(vm_read32(vt + slot), obj, a1, 0, 0, 0, 0, 0, 0) : 0;
+}
+static uint32_t kz2_aim_vcall(uint32_t obj, uint32_t slot) { return kz2_aim_vcall_args(obj, slot, 0); }
+/* The gather's first filters replayed over the game's list (1.29 only, KZ2_AIM_LOG, once per 30 empty gathers): range
+ * (|pos - player| <= f1, pos = +0xB0), the +0xE4 bit 10 skip, not attached to the player (+0xCC), vf 0x94 != 0,
+ * vf 0x5C (faction) hostile to the player's (byte faction_player + 0x28 + faction->+0xC); nearest hostile at any range. */
+static struct { int have; float x, y, z, d; } kz2_aim_tgt;   /* nearest hostile of the last scan (KZ2_AIM_FACE) */
+static void kz2_aim_gather_detail(uint32_t E, float range, uint32_t g, int print = 1)
+{
+    const uint32_t n = vm_read32(g + 0x398), base = vm_read32(g + 0x39C);
+    const float px = kz2_gp_f32(E + 0xB0), py = kz2_gp_f32(E + 0xB4), pz = kz2_gp_f32(E + 0xB8);
+    const uint32_t pf = kz2_aim_vcall(E, 0x5C);
+    unsigned in_range = 0, flag_ok = 0, alive = 0, hostile = 0, hostile_any = 0;
+    float near_h = 1e30f;
+    for (uint32_t i = 0; i < n && i < 4096; i++) {
+        const uint32_t e = vm_read32(base + 4 * i);
+        if (!e || e == E) continue;
+        const float dx = kz2_gp_f32(e + 0xB0) - px, dy = kz2_gp_f32(e + 0xB4) - py, dz = kz2_gp_f32(e + 0xB8) - pz;
+        const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+        const int r = d <= range, f = !((vm_read32(e + 0xE4) >> 10) & 1) && vm_read32(e + 0xCC) != E;
+        if (!f) { in_range += r; continue; }
+        const int a = kz2_aim_vcall(e, 0x94) != 0;
+        const uint32_t ef = a ? kz2_aim_vcall(e, 0x5C) : 0;
+        const int h = pf && ef && vm_read8(pf + (uint32_t)(int32_t)vm_read32(ef + 0xC) + 0x28) != 0;
+        in_range += r; flag_ok += r; alive += r && a; hostile += r && h;
+        if (h && a) {
+            hostile_any++;
+            if (d < near_h) { near_h = d; kz2_aim_tgt.x = kz2_gp_f32(e + 0xB0); kz2_aim_tgt.y = kz2_gp_f32(e + 0xB4); kz2_aim_tgt.z = kz2_gp_f32(e + 0xB8); }
+        }
+    }
+    kz2_aim_tgt.have = hostile_any > 0; kz2_aim_tgt.d = near_h;
+    if (print) fprintf(stderr, "[aim] gather detail: range %.1f, player (%.1f, %.1f, %.1f), %u entities: %u in range, %u not skipped, %u alive,"
+            " %u hostile; hostile at any range %u (nearest %.1f)\n", range, px, py, pz, n, in_range, flag_ok, alive, hostile,
+            hostile_any, hostile_any ? near_h : -1.0f);
+}
+[[maybe_unused]] static void kz2_aim_gather(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t ents_global)
+{
+    const uint32_t list = (uint32_t)ctx->gpr[7], E = (uint32_t)ctx->gpr[3];
+    const float range = (float)ctx->fpr[1];
+    lifted(ctx);
+    if (!kz2_aim_in_mod) return;
+    const uint32_t g = ents_global ? vm_read32(ents_global) : 0;
+    const uint32_t cand = vm_read32(list);
+    kz2_aim_stats_gather(&kz2_aim, cand, g ? vm_read32(g + 0x398) : 0);
+    static unsigned s_empty;
+    if (g && !cand && s_empty++ % 300 == 0) kz2_aim_gather_detail(E, range, g);
+}
+/* Target finder: gather, then a line-of-sight ray per candidate; returns 1 with the target in *r8. */
+extern "C" uint64_t ppu_guest_call_ct(uint32_t, uint32_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t);
+[[maybe_unused]] static void kz2_aim_find(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    /* Once (KZ2_AIM_LOG, 1.29): which function the finder's line-of-sight query is. The finder gets a world handle
+     * from E vf 0x234 into {flag, &p, 0} @0x2FAFF8, uses *p, and calls its vf 0x18 per candidate @0x2FB2E8; replayed
+     * here into scratch below the caller's stack, then released with 0x1DEB8 as the finder does. */
+    static int s_once;
+    if (kz2_aim_in_mod && !s_once && vm_read32(0x00F3B288u)) {
+        s_once = 1;
+        const uint32_t E = (uint32_t)ctx->gpr[3], sc = ((uint32_t)ctx->gpr[1] - 0x800u) & ~0xFu;
+        vm_write32(sc, 0); vm_write32(sc + 4, 0); vm_write32(sc + 8, 0);
+        kz2_aim_vcall_args(E, 0x234, sc);
+        const uint32_t ok = vm_read32(sc), pp = vm_read32(sc + 4), w = pp ? vm_read32(pp) : 0;
+        const uint32_t vt = w ? vm_read32(w) : 0, opd = vt ? vm_read32(vt + 0x18) : 0;
+        fprintf(stderr, "[aim] finder world: flag %u, holder 0x%08X, world 0x%08X, vtable 0x%08X, vf 0x18 OPD 0x%08X -> code 0x%08X\n",
+                ok, pp, w, vt, opd, opd ? vm_read32(opd) : 0);
+        ppu_guest_call_ct(0x0001DEB8u, 0x00EC3038u, sc, 0, 0, 0, 0, 0, 0, 0);
+    }
+    lifted(ctx);
+    if (kz2_aim_in_mod) kz2_aim_stats_find(&kz2_aim, (uint32_t)ctx->gpr[3] != 0);
+}
+/* Aim-cone factor (r3 = M, r4 = E, r5 = &factor out): 1 without a target, the AimAssistSpeedCurve value with one. */
+[[maybe_unused]] static void kz2_aim_cone(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t out = (uint32_t)ctx->gpr[5];
+    lifted(ctx);
+    if (kz2_aim_in_mod) kz2_aim_stats_cone(&kz2_aim, kz2_gp_f32(out));
+}
+/* Softlock search (r3 = M, r4 = E, r6 = &target out, cleared first): no target = ApplyInputModifier skips the slowdown
+ * @0x2EF948 and the pull @0x2EF7E8. */
+[[maybe_unused]] static void kz2_aim_soft(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t out = (uint32_t)ctx->gpr[6];
+    lifted(ctx);
+    if (kz2_aim_in_mod) kz2_aim_stats_soft(&kz2_aim, vm_read32(out) != 0);
+}
+#ifdef PPU_OVERRIDE_002EFEB8
+void func_002EFEB8(ppu_context* ctx) { kz2_aim_soft(ctx, func_002EFEB8__lifted); }   // @0x002EFEB8 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002E4C90
+void func_002E4C90(ppu_context* ctx) { kz2_aim_soft(ctx, func_002E4C90__lifted); }   // @0x002E4C90 (v1.01)
+#endif
+/* The finder's per-candidate line-of-sight query (world vf 0x18 = the thunk 0x19BFD8 -> 0x19BEF8; r4 = 0, r5 = the
+ * candidate's 16-byte point block (candidate + 4), r6 = the candidate entity, r7 = the finder's filter object, r8 = the
+ * finder's state: after the call +0x1C = the hit index (-1 = none) and byte +0x20 = "it is the candidate"). */
+[[maybe_unused]] static void kz2_aim_los(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    if (!kz2_aim_in_mod) { lifted(ctx); return; }
+    const uint32_t pts = (uint32_t)ctx->gpr[5], ent = (uint32_t)ctx->gpr[6], st = (uint32_t)ctx->gpr[8];
+    static int s_where;
+    if (!s_where) {   /* 0x19BEF8 with r4 = 0: (*(*(this - 0x138 + 0x1A4) + 0xC4))->vf 0x50 does the query */
+        s_where = 1;
+        const uint32_t th = (uint32_t)ctx->gpr[3] - 0x138u, a = vm_read32(th + 0x1A4), o = a ? vm_read32(a + 0xC4) : 0;
+        const uint32_t vt = o ? vm_read32(o) : 0, opd = vt ? vm_read32(vt + 0x50) : 0;
+        fprintf(stderr, "[aim] los query: this 0x%08X, +0x1A4 0x%08X, +0xC4 0x%08X, vtable 0x%08X, vf 0x50 OPD 0x%08X -> code 0x%08X;"
+                " filter 0x%08X vtable 0x%08X, masks 0x%08X 0x%08X 0x%08X 0x%08X\n", th, a, o, vt, opd, opd ? vm_read32(opd) : 0,
+                (uint32_t)ctx->gpr[7], vm_read32((uint32_t)ctx->gpr[7]), vm_read32((uint32_t)ctx->gpr[7] + 4),
+                vm_read32((uint32_t)ctx->gpr[7] + 8), vm_read32((uint32_t)ctx->gpr[7] + 12), vm_read32((uint32_t)ctx->gpr[7] + 16));
+    }
+    const uint32_t cnt0 = vm_read32(st + 0x10);
+    float p[8];
+    for (int i = 0; i < 8; i++) p[i] = kz2_gp_f32(pts + 4u * (uint32_t)i);
+    lifted(ctx);
+    static unsigned n, none, other, hit;
+    const int32_t idx = (int32_t)vm_read32(st + 0x1C);
+    const unsigned fl = vm_read8(st + 0x20);
+    n++; if (idx == -1) none++; else if (!fl) other++; else hit++;
+    if (n <= 8 || n % 500 == 0)
+        fprintf(stderr, "[aim] los #%u: entity 0x%08X at (%.1f, %.1f, %.1f), block %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f -> r3 %u,"
+                " hit %d, flag %u, state hits %u -> %u (so far: %u none, %u other, %u the candidate)\n", n, ent, kz2_gp_f32(ent + 0xB0),
+                kz2_gp_f32(ent + 0xB4), kz2_gp_f32(ent + 0xB8), p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
+                (uint32_t)ctx->gpr[3], idx, fl, cnt0, vm_read32(st + 0x10), none, other, hit);
+}
+/* The line-of-sight queue: the query (0x1FED30) appends {state, request} to *(0xF3B288) + 0x338; 0x68F6F0 (submit, r3 =
+ * queue) and 0x68FAC0 (collect, r3 = queue, r4 = wait) run it; the collect gives up unless byte +0x10 is set, +4 (count)
+ * is non-zero and the job at +0x14 reports done (0x508D40 at lr 0x68FB44). KZ2_AIM_LOG counts what they see, for this
+ * queue only, one line per 200 collects. */
+static unsigned kz2_los_sub, kz2_los_col, kz2_los_col_off, kz2_los_col_empty, kz2_los_col_wait, kz2_los_ready, kz2_los_notready;
+[[maybe_unused]] static void kz2_los_submit(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t q = (uint32_t)ctx->gpr[3], g = kz2_aim_log_on() ? vm_read32(0x00F3B288u) : 0;
+    if (g && q == g + 0x338) {
+        static unsigned s_n;
+        if (++s_n <= 3) fprintf(stderr, "[aim] los submit #%u: queue count %u, flag +0x10 %u, lr 0x%08X\n", s_n, vm_read32(q + 4),
+                                vm_read8(q + 0x10), (uint32_t)ctx->lr);
+        kz2_los_sub++;
+    }
+    lifted(ctx);
+}
+static uint32_t kz2_aim_M;   /* the soldier's JoystickInputModifier (its finder states are M+0x18 aim, M+0x3C softlock) */
+[[maybe_unused]] static void kz2_los_collect(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t q = (uint32_t)ctx->gpr[3], g = kz2_aim_log_on() ? vm_read32(0x00F3B288u) : 0;
+    if (g && q == g + 0x338 && kz2_aim_M && vm_read8(q + 0x10) && vm_read32(q + 4)) {
+        /* Ours in this batch: queue entries {state, request, valid} (12 B at +8); after the collect the job's results
+         * (44 B each at *(q + 0x1C): from, to, ..., +0x24 -> hit {+0 object, +4 t, +8 normal}) and each state's +0x1C. */
+        const uint32_t n = vm_read32(q + 4), arr = vm_read32(q + 8);
+        uint32_t idx[8], st[8]; int k = 0;
+        for (uint32_t i = 0; i < n && i < 512 && k < 8; i++) {
+            const uint32_t s0 = vm_read32(arr + 12 * i);
+            if (s0 == kz2_aim_M + 0x18 || s0 == kz2_aim_M + 0x3C) { idx[k] = i; st[k] = s0; k++; }
+        }
+        lifted(ctx);
+        static unsigned s_lines, s_ours, s_clear, s_all, s_all_clear, s_batches;
+        const uint32_t res = vm_read32(q + 0x1C);
+        static unsigned s_hist[8], s_noobj, s_near;   /* t: null hit, <0.1, <0.5, <0.9, <0.999, <1, ==1, >1 */
+        static uint32_t s_obj[16]; static unsigned s_objn[16], s_objmiss, s_short; static float s_objlo[16], s_objhi[16];
+        static uint32_t s_cv[16]; static unsigned s_cn[16], s_cclear, s_cshort[16], s_cok[16]; static float s_clen[16];
+        /* Every caller of this queue (by the queue state's vtable: the aim finder 0xF9F02C, 11 m downward
+         * ground probes 0xF97DE8, 1.3 m probes 0xFBB8D8, 3 m 0xF80B08; no AI line-of-sight caller seen on it). */
+        for (uint32_t i = 0; i < n && i < 512; i++) {
+            const uint32_t h = vm_read32(res + 44 * i + 0x24);
+            s_all++;
+            if (!h) { s_hist[0]++; continue; }
+            const float t = kz2_gp_f32(h + 4);
+            s_all_clear += t >= 1.0f;
+            s_hist[t < 0.1f ? 1 : t < 0.5f ? 2 : t < 0.9f ? 3 : t < 0.999f ? 4 : t < 1.0f ? 5 : t == 1.0f ? 6 : 7]++;
+            if (!vm_read32(h)) s_noobj++;
+            if (t >= 0.999f && t != 1.0f && s_near++ < 6)
+                fprintf(stderr, "[aim] los near-1 t %.9g (bits 0x%08X), object 0x%08X\n", t, vm_read32(h + 4), vm_read32(h));
+            /* which objects the rays hit (every caller) and a sample of the short ones, with the queue state's
+             * vtable as the caller (ASSUMPTION: entry i <-> result i, true while every entry is valid). */
+            const uint32_t ob = vm_read32(h), sv = vm_read32(vm_read32(arr + 12 * i));
+            int slot = -1;
+            for (int j = 0; j < 16; j++) if (s_objn[j] && s_obj[j] == ob) { slot = j; break; }
+            if (slot < 0) for (int j = 0; j < 16; j++) if (!s_objn[j]) { slot = j; s_obj[j] = ob; s_objlo[j] = 9.f; s_objhi[j] = -9.f; break; }
+            if (slot >= 0) { s_objn[slot]++; if (t < s_objlo[slot]) s_objlo[slot] = t; if (t > s_objhi[slot]) s_objhi[slot] = t; }
+            else s_objmiss++;
+            {   /* per caller (the queue state's vtable): rays, clear, t < 0.1, mean length */
+                int c = -1;
+                for (int j = 0; j < 16; j++) if (s_cn[j] && s_cv[j] == sv) { c = j; break; }
+                if (c < 0) for (int j = 0; j < 16; j++) if (!s_cn[j]) { c = j; s_cv[j] = sv; break; }
+                if (c >= 0) {
+                    const uint32_t r = res + 44 * i;
+                    const float dx = kz2_gp_f32(r + 12) - kz2_gp_f32(r), dy = kz2_gp_f32(r + 16) - kz2_gp_f32(r + 4),
+                                dz = kz2_gp_f32(r + 20) - kz2_gp_f32(r + 8);
+                    s_cn[c]++; s_cok[c] += t >= 1.0f; s_cshort[c] += t < 0.1f; s_clen[c] += sqrtf(dx * dx + dy * dy + dz * dz);
+                } else s_cclear++;
+            }
+            if (t < 0.1f && s_short++ % 1500 == 0) {
+                const uint32_t r = res + 44 * i;
+                fprintf(stderr, "[aim] los short: caller vtable 0x%08X, from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f), +0x18 0x%08X"
+                        " +0x1C 0x%08X, t %.4f object 0x%08X (vtable 0x%08X, +4 0x%08X +8 0x%08X +0xC 0x%08X) normal (%.2f, %.2f, %.2f)"
+                        " +0x14 0x%08X\n", sv, kz2_gp_f32(r), kz2_gp_f32(r + 4), kz2_gp_f32(r + 8), kz2_gp_f32(r + 12),
+                        kz2_gp_f32(r + 16), kz2_gp_f32(r + 20), vm_read32(r + 0x18), vm_read32(r + 0x1C), t, ob,
+                        ob ? vm_read32(ob) : 0, ob ? vm_read32(ob + 4) : 0, ob ? vm_read32(ob + 8) : 0, ob ? vm_read32(ob + 12) : 0,
+                        kz2_gp_f32(h + 8), kz2_gp_f32(h + 12), kz2_gp_f32(h + 16), vm_read32(h + 0x14));
+            }
+        }
+        if (s_batches % 250 == 249) {
+            fprintf(stderr, "[aim] los objects (%u not tabled):", s_objmiss);
+            for (int j = 0; j < 16; j++) if (s_objn[j])
+                fprintf(stderr, " 0x%08X(vt 0x%08X) n %u t %.3f..%.3f;", s_obj[j], s_obj[j] ? vm_read32(s_obj[j]) : 0, s_objn[j],
+                        s_objlo[j], s_objhi[j]);
+            fprintf(stderr, "\n");
+        }
+        if (s_batches % 250 == 249) {
+            fprintf(stderr, "[aim] los callers (%u not tabled):", s_cclear);
+            for (int j = 0; j < 16; j++) if (s_cn[j])
+                fprintf(stderr, " vt 0x%08X n %u clear %u short %u len %.1f;", s_cv[j], s_cn[j], s_cok[j], s_cshort[j], s_clen[j] / s_cn[j]);
+            fprintf(stderr, "\n");
+        }
+        if (++s_batches % 100 == 0)
+            fprintf(stderr, "[aim] los batches %u: all callers %u rays, %u clear (t >= 1); ours %u, %u clear; t: null %u, <0.1 %u,"
+                    " <0.5 %u, <0.9 %u, <0.999 %u, <1 %u, =1 %u, >1 %u; no object %u\n", s_batches, s_all, s_all_clear, s_ours, s_clear,
+                    s_hist[0], s_hist[1], s_hist[2], s_hist[3], s_hist[4], s_hist[5], s_hist[6], s_hist[7], s_noobj);
+        for (int j = 0; j < k; j++) {
+            const uint32_t r = res + 44 * idx[j], h = vm_read32(r + 0x24);
+            const float tt = h ? kz2_gp_f32(h + 4) : -1.0f;
+            s_ours++; s_clear += tt >= 1.0f;   /* 0x30A580: the state's flag = (t >= 1), i.e. the ray reached its end point */
+            if (!(s_lines < 20 || s_ours % 40 == 0)) continue;
+            s_lines++;
+            const float hx = kz2_gp_f32(r) + tt * (kz2_gp_f32(r + 12) - kz2_gp_f32(r)), hy = kz2_gp_f32(r + 4) + tt * (kz2_gp_f32(r + 16) - kz2_gp_f32(r + 4));
+            fprintf(stderr, "[aim] los t %.3f at (%.1f, %.1f); %u of ours so far, %u clear\n", tt, hx, hy, s_ours, s_clear);
+            if (s_lines > 20) continue;
+            fprintf(stderr, "[aim] los result: entry %u of %u (%s state): from (%.1f, %.1f, %.1f) to (%.1f, %.1f, %.1f), hit 0x%08X"
+                    " {object 0x%08X, t %.3f}, state +0x1C %d +0x20 %u, state vtable 0x%08X vf 0xC code 0x%08X\n", idx[j], n,
+                    st[j] == kz2_aim_M + 0x18 ? "aim" : "softlock", kz2_gp_f32(r), kz2_gp_f32(r + 4), kz2_gp_f32(r + 8),
+                    kz2_gp_f32(r + 12), kz2_gp_f32(r + 16), kz2_gp_f32(r + 20), h, h ? vm_read32(h) : 0, h ? kz2_gp_f32(h + 4) : -1.0f,
+                    (int32_t)vm_read32(st[j] + 0x1C), vm_read8(st[j] + 0x20), vm_read32(st[j]),
+                    vm_read32(st[j]) ? vm_read32(vm_read32(vm_read32(st[j]) + 0xC)) : 0);
+        }
+        return;
+    }
+    if (g && q == g + 0x338) {
+        kz2_los_col++;
+        if (!vm_read8(q + 0x10)) kz2_los_col_off++;
+        if (!vm_read32(q + 4)) kz2_los_col_empty++;
+        if ((uint32_t)ctx->gpr[4] & 0xFF) kz2_los_col_wait++;
+        static unsigned s_n;
+        if (++s_n <= 3 || s_n % 200 == 0)
+            fprintf(stderr, "[aim] los collect #%u (lr 0x%08X, wait %u, flag %u, count %u): %u submits, %u collects (%u flag off, %u empty,"
+                    " %u waiting), job done %u / not done %u\n", s_n, (uint32_t)ctx->lr, (uint32_t)ctx->gpr[4] & 0xFF, vm_read8(q + 0x10),
+                    vm_read32(q + 4), kz2_los_sub, kz2_los_col, kz2_los_col_off, kz2_los_col_empty, kz2_los_col_wait, kz2_los_ready,
+                    kz2_los_notready);
+    }
+    lifted(ctx);
+}
+[[maybe_unused]] static void kz2_los_done(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t lr_collect)
+{
+    const uint32_t lr = (uint32_t)ctx->lr;
+    lifted(ctx);
+    if (lr == lr_collect && kz2_aim_log_on()) { if ((uint32_t)ctx->gpr[3]) kz2_los_ready++; else kz2_los_notready++; }
+}
+#ifdef PPU_OVERRIDE_0068F6F0
+void func_0068F6F0(ppu_context* ctx) { kz2_los_submit(ctx, func_0068F6F0__lifted); }   // @0x0068F6F0 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_0068FAC0
+void func_0068FAC0(ppu_context* ctx) { kz2_los_collect(ctx, func_0068FAC0__lifted); }   // @0x0068FAC0 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00508D40
+void func_00508D40(ppu_context* ctx) { kz2_los_done(ctx, func_00508D40__lifted, 0x0068FB44u); }   // @0x00508D40 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00682000
+void func_00682000(ppu_context* ctx) { kz2_los_submit(ctx, func_00682000__lifted); }   // @0x00682000 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_006823D0
+void func_006823D0(ppu_context* ctx) { kz2_los_collect(ctx, func_006823D0__lifted); }   // @0x006823D0 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_004FBC90
+void func_004FBC90(ppu_context* ctx) { kz2_los_done(ctx, func_004FBC90__lifted, 0x006823D0u + 0x84u); }   // @0x004FBC90 (v1.01; lr ASSUMPTION: same offset)
+#endif
+#ifdef PPU_OVERRIDE_0019BFD8
+void func_0019BFD8(ppu_context* ctx) { kz2_aim_los(ctx, func_0019BFD8__lifted); }   // @0x0019BFD8 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00196660
+void func_00196660(ppu_context* ctx) { kz2_aim_los(ctx, func_00196660__lifted); }   // @0x00196660 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_002F9F50
+void func_002F9F50(ppu_context* ctx) { kz2_aim_gather(ctx, func_002F9F50__lifted, 0x00F3B288u); }   // @0x002F9F50 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002FAF70
+void func_002FAF70(ppu_context* ctx) { kz2_aim_find(ctx, func_002FAF70__lifted); }   // @0x002FAF70 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002EFC88
+void func_002EFC88(ppu_context* ctx) { kz2_aim_cone(ctx, func_002EFC88__lifted); }   // @0x002EFC88 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002EECD8
+void func_002EECD8(ppu_context* ctx) { kz2_aim_gather(ctx, func_002EECD8__lifted, 0); }   // @0x002EECD8 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_002EFCF8
+void func_002EFCF8(ppu_context* ctx) { kz2_aim_find(ctx, func_002EFCF8__lifted); }   // @0x002EFCF8 (v1.01)
+#endif
+#ifdef PPU_OVERRIDE_002E4A60
+void func_002E4A60(ppu_context* ctx) { kz2_aim_cone(ctx, func_002E4A60__lifted); }   // @0x002E4A60 (v1.01)
+#endif
+
 [[maybe_unused]] static void kz2_aim_gate(ppu_context* ctx, void (*lifted)(ppu_context*), const uint32_t* sites, int n,
                                           int stick_args, const char* name)
 {
@@ -1352,6 +1673,7 @@ static int kz2_look_is_mouse(void);   /* mouse look, below */
     const uint32_t lr = (uint32_t)ctx->lr;
     static unsigned skipped, ran_site, changed, ran_other;
     if (kz2_gp_aim_skip(on, lr, sites, n)) {
+        if (stick_args && kz2_aim_log_on()) { kz2_aim.mod++; kz2_aim_flush("off (modifier skipped)"); }
         if (kz2_gp_log_on() && (++skipped == 1 || skipped % 600 == 0))
             fprintf(stderr, "[gameplay] aim assist off: %s skipped at lr 0x%08X (%u skipped, %u ran at the look sites, %u other callers)\n",
                     name, lr, skipped, ran_site, ran_other);
@@ -1362,6 +1684,40 @@ static int kz2_look_is_mouse(void);   /* mouse look, below */
     for (int i = 0; i < n; i++) site |= sites[i] == lr;
     if (!site) { ran_other++; lifted(ctx); return; }
     ran_site++;
+    if (stick_args && kz2_aim_log_on()) {   /* KZ2_AIM_LOG: inputs, outputs and the target search under it */
+        const uint32_t M = (uint32_t)ctx->gpr[3], px = (uint32_t)ctx->gpr[5], py = (uint32_t)ctx->gpr[6];
+        kz2_aim_M = M;
+        const float fx = kz2_gp_f32(px), fy = kz2_gp_f32(py);
+        const unsigned found0 = kz2_aim.found + kz2_aim.soft_found, cand0 = kz2_aim.cand_max;
+        /* The JoystickInputModifierResource in force (M+8: the mounted gun's, else the weapon's InventoryWeaponResource
+         * +0x11C, else SoldierResource +0x484; picked by 0x1668A8 each Update): which curves it has decides what can run.
+         * +0x14 AimAssistDistanceCurve (aim cone factor), +0x1C SoftlockDistanceCurve (no softlock target = no slowdown
+         * and no pull), +0x34 shoot curve, +0x40 zoom AssistCurve; cones in degrees. Logged when it changes. */
+        static uint32_t s_res = 0xFFFFFFFFu;
+        const uint32_t res = vm_read32(M + 8);
+        if (res != s_res) {
+            s_res = res;
+            if (res)
+                fprintf(stderr, "[aim] resource 0x%08X: softlock curve 0x%08X cone %.3g/%.3g, aim curve 0x%08X cone %.3g/%.3g,"
+                        " shoot curve 0x%08X cone %.3g/%.3g, zoom curve 0x%08X cone %.3g/%.3g, accel %.3g/%.3g\n", res,
+                        vm_read32(res + 0x1C), kz2_gp_f32(res + 0x24), kz2_gp_f32(res + 0x28), vm_read32(res + 0x14),
+                        kz2_gp_f32(res + 0x0C), kz2_gp_f32(res + 0x10), vm_read32(res + 0x34), kz2_gp_f32(res + 0x2C),
+                        kz2_gp_f32(res + 0x30), vm_read32(res + 0x40), kz2_gp_f32(res + 0x38), kz2_gp_f32(res + 0x3C),
+                        kz2_gp_f32(res + 0x48), kz2_gp_f32(res + 0x44));
+            else fprintf(stderr, "[aim] resource none (M+8 = 0)\n");
+        }
+        kz2_aim_in_mod = 1;
+        lifted(ctx);
+        kz2_aim_in_mod = 0;
+        const float ox = kz2_gp_f32(px), oy = kz2_gp_f32(py);
+        kz2_aim_stats_mod(&kz2_aim, fx, fy, ox, oy, kz2_gp_f32(M + 0x10), kz2_gp_f32(M + 0x0C));
+        static unsigned s_events;
+        if ((ox != fx || oy != fy || kz2_aim.found + kz2_aim.soft_found != found0 || kz2_aim.cand_max != cand0) && ++s_events <= 40)
+            fprintf(stderr, "[aim] event: stick (%.3f, %.3f) -> (%.3f, %.3f), M+0x10 %.3f M+0x0C %.3f, cand max %u, found %u\n",
+                    fx, fy, ox, oy, kz2_gp_f32(M + 0x10), kz2_gp_f32(M + 0x0C), kz2_aim.cand_max, kz2_aim.found);
+        kz2_aim_flush("on");
+        return;
+    }
     if (!kz2_gp_log_on() || !stick_args) { lifted(ctx); return; }
     const uint32_t px = (uint32_t)ctx->gpr[5], py = (uint32_t)ctx->gpr[6];
     const float fx = kz2_gp_f32(px), fy = kz2_gp_f32(py);
@@ -1619,6 +1975,11 @@ static void kz2_mouse_pre(ppu_context* ctx)
         }
     }
     s_updates++;
+    if (s_updates == 1) {   /* the starting device and assist state, not only the changes */
+        char b[200];
+        kz2_look_start_line(c, kz2_look.mouse, b, (int)sizeof b);
+        fprintf(stderr, "[mouse] %s\n", b);
+    }
     if (s_dump && s_updates == 1) kz2_mouse_dump("first", E, t);
     if (s_dump && s_dump_at > 0.0 && t >= s_dump_at) { s_dump_at = -1.0; kz2_mouse_dump("after", E, t); }
     if (s_log && (fabsf(sx) > 0.25f || fabsf(sy) > 0.25f)) {   /* stick reference: the game's own rate and pitch */
@@ -1627,6 +1988,38 @@ static void kz2_mouse_pre(ppu_context* ctx)
             s_last_stick = t;
             fprintf(stderr, "[mouse] stick t=%.3f stick=%.3f,%.3f rate=%.4f pitch=%.5f dt=%.5f fwd=%.4f,%.4f,%.4f\n", t, sx, sy,
                     kz2_gp_f32(C + 0xF8), ctx->fpr[2], kz2_ul_dt, kz2_gp_f32(E + 0x31C), kz2_gp_f32(E + 0x320), kz2_gp_f32(E + 0x324));
+        }
+    }
+    /* KZ2_AIM_FACE=T0-T1[,T0-T1...] (TEST HARNESS, off by default; needs KZ2_AIM_LOG=1 and the 1.29 EBOOT): in
+     * those windows of the script clock the yaw rate is set to turn the body toward the nearest live hostile (scan of the
+     * game's entity list every 5th update), so a scripted run can bring an enemy into the assist's cones; outside them
+     * the stick alone looks. One line a second: distance, bearing error, the rate written. */
+    static const char* s_face = getenv("KZ2_AIM_FACE");
+    if (s_face && *s_face && kz2_aim_log_on() && t >= 0.0) {
+        int in = 0;
+        for (const char* q = s_face; *q;) {
+            char* e1; const double a0 = strtod(q, &e1); if (*e1 != '-') break;
+            char* e2; const double a1 = strtod(e1 + 1, &e2);
+            in |= t >= a0 && t < a1;
+            q = *e2 == ',' ? e2 + 1 : e2; if (e2 == e1 + 1) break;
+        }
+        static unsigned s_fn; static double s_fline = -1.0;
+        if (in && s_fn++ % 5 == 0) { const uint32_t g = vm_read32(0x00F3B288u); if (g) kz2_aim_gather_detail(E, 0.0f, g, 0); }
+        if (in && kz2_aim_tgt.have) {
+            const float hx = kz2_gp_f32(E + 0x320), hy = kz2_gp_f32(E + 0x324);   /* view forward x, y (+0x31C reads 0; run kz2-r74-aim-on2) */
+            const float want = atan2f(kz2_aim_tgt.y - kz2_gp_f32(E + 0xB4), kz2_aim_tgt.x - kz2_gp_f32(E + 0xB0));
+            float err = want - atan2f(hy, hx);
+            while (err > 3.14159265f) err -= 6.2831853f;
+            while (err < -3.14159265f) err += 6.2831853f;
+            const uint32_t res = vm_read32(E + 0xC4);
+            float rate = kz2_mouse_rate_for(err * 0.3f, res ? kz2_gp_f32(res + 0x2A8) : 0.0f, (float)kz2_ul_dt);
+            rate = rate > 1.0f ? 1.0f : rate < -1.0f ? -1.0f : rate;
+            uint32_t u; memcpy(&u, &rate, 4); vm_write32(C + 0xF8, u);
+            if (t - s_fline >= 1.0 || t < s_fline) {
+                s_fline = t;
+                fprintf(stderr, "[aim] face t=%.2f: hostile at %.1f, bearing error %+.1f deg, rate %+.3f (view %.3f,%.3f body %.3f,%.3f)\n",
+                        t, kz2_aim_tgt.d, err * 57.29578f, rate, hx, hy, kz2_gp_f32(E + 0x40), kz2_gp_f32(E + 0x44));
+            }
         }
     }
     if (!c->mouse_look) { kz2_look_note(&kz2_look, sx, sy, 0.25f, 0); return; }
@@ -1772,7 +2165,7 @@ void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifte
  * ASSUMPTION: the player's pad is port 0 (single player; the game's device object was not mapped to a port).
  * Lines: one "[motion] ... right stick" per controller kind the first time the stick drives it; every arm step of a
  * charge (@0x001174A8: entity +0x244 steps, resource +0xC4 -> +0x1F0 range count, +0x1F4 the {min, max} pairs in
- * fractions of 45 deg, hand +0x25C); a valve's angle (@0x00125BF0: rep +0x240, radians) each time it has moved 30 deg.
+ * radians, hand +0x25C in radians; an earlier change: logged in degrees, x 57.29578, not x 45 as before); a valve's angle (@0x00125BF0: rep +0x240, radians) each time it has moved 30 deg.
  * KZ2_MOTION_LOG=1 adds the stick, the tilt and the hand of every getter call (at most 4000 lines).
  * each fed call also tells cellPad (pad_motion_tilt_note) that a tilt controller is reading, so the
  * keyboard's tilt_left / tilt_right keys (keybinds.ini, Z / X by default; patch 6060) give the grab and the tilt
@@ -1781,6 +2174,7 @@ void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifte
 extern "C" int  pad_motion_port(unsigned port, unsigned char* rx);   /* cellPad.c (patch 6049) */
 extern "C" void pad_motion_set_mode(int mode);
 extern "C" void pad_motion_tilt_note(void);   /* cellPad.c (patch 6060): the tilt keys act while this is fresh */
+extern "C" void pad_dsu_set_port(unsigned port);   /* cellPad.c (patch 6062): DSU motion client, 0 = off */
 static int kz2_motion_log_on(void)
 {
     static int v = -1;
@@ -1803,6 +2197,15 @@ extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
             m == KZ2_MOTION_OFF ? "the right stick turns valves and arms charges (the pad's own tilt is not used)"
             : m == KZ2_MOTION_ON ? "only the pad's own tilt (a pad without an accelerometer cannot turn valves or arm charges)"
                                  : "the pad's own tilt when it has a working accelerometer, else the right stick");
+    /* An earlier change (ENHANCEMENT, from KZ3 patch 4028): gameplay.ini dsu_port (KZ2_DSU_PORT) starts cellPad's DSU (cemuhook)
+     * client; its samples become port 0's accelerometer and gyro words, so motion = auto/on treat it as a pad with
+     * sensors (the getter keeps the real tilt, the right stick no longer drives the valves and charges). */
+    const int dsu = kz2_gameplay_get()->dsu_port;
+    pad_dsu_set_port((unsigned)dsu);
+    if (dsu)
+        fprintf(stderr, "[motion] dsu_port = %d: DSU (cemuhook) motion from 127.0.0.1:%d%s\n", dsu, dsu,
+                m == KZ2_MOTION_OFF ? " (motion = off: the game gets a still pad, the right stick turns valves and charges)"
+                                    : " (while samples arrive, valves and charges take the tilt, not the right stick)");
 }
 [[maybe_unused]] static void kz2_motion_get(ppu_context* ctx, void (*lifted)(ppu_context*))
 {
@@ -1856,9 +2259,9 @@ extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
     const uint32_t n = res ? vm_read32(res + 0x1F0) : 0, arr = res ? vm_read32(res + 0x1F4) : 0;
     char win[160] = "";
     for (uint32_t i = 0, o = 0; arr && i < n && i < 6 && o < sizeof win - 32; i++)
-        o += (uint32_t)snprintf(win + o, sizeof win - o, " [%.2f..%.2f]", kz2_gp_f32(arr + 8 * i) * 45.0f, kz2_gp_f32(arr + 8 * i + 4) * 45.0f);
+        o += (uint32_t)snprintf(win + o, sizeof win - o, " [%.2f..%.2f]", kz2_gp_f32(arr + 8 * i) * 57.29578f, kz2_gp_f32(arr + 8 * i + 4) * 57.29578f);
     fprintf(stderr, "[motion] t=%.2f charge 0x%08X arm step %u of %u (hand %+.2f deg; windows in deg:%s)%s\n", kz2_motion_t(), E, after, n,
-            kz2_gp_f32(E + 0x25C) * 45.0f, win, after >= n && n ? ": armed" : "");
+            kz2_gp_f32(E + 0x25C) * 57.29578f, win, after >= n && n ? ": armed" : "");
     fflush(stderr);
 }
 [[maybe_unused]] static void kz2_valve_rep(ppu_context* ctx, void (*lifted)(ppu_context*))

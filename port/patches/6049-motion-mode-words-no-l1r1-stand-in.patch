@@ -3,7 +3,8 @@ KZ2 patch 6049 (ENHANCEMENT): motion mode for the SIXAXIS words; patch 4015's L1
 Killzone 2 turns valves and arms demolition charges by tilting the pad. Patch 4015 tilted the motion words from the
 right stick X while L1+R1 were held on a pad without sensors (36 deg at full stick). Root cause of the reports that it
 "does not fully work" and soft-locks in the second mission: the charge arms only while the hand is inside its
-ArmRanges windows (33.38..37.31 deg, 0x001174A8), and the hand follows the tilt with a 1 deg dead band (the
+ArmRanges windows (0x001174A8; an earlier change: they are radians, 42.50..47.50 deg, not the 33.38..37.31 deg first read,
+see port/kz2/kz2_motion.h), and the hand follows the tilt with a 1 deg dead band (the
 controllers' constructors, 0x00107700 / 0x00108C90), so 4015's map armed only with the stick at 95.6..100 % of its
 travel; a pad, mapper or driver that stops a few per cent short never arms. A second cause: 4015 switched itself off
 for any pad that reported a sensor, including a gyro-only or a 0 g virtual pad.

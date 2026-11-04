@@ -1,0 +1,214 @@
+KZ2 patch 6069: LD_REC_MEMO, the recording memo. Default off. Plus a fix of patch 2045's state
+memo: ld_downsample and ld_scaled_blit now invalidate it.
+
+From the Killzone 3 port's walker plan (Project Helghast docs/in-progress/walker-plan.md step 2 and section 5 item 2; plan
+only, no KZ3 patch; the Killzone 3 PC port "Project Helghast", same author, MIT); written here.
+Patch 2045's per-list state memo (g_ld_sm) skips SetPipelineState, SetGraphicsRootSignature, SetDescriptorHeaps and
+OMSetRenderTargets when unchanged; every draw still recorded RSSetViewports, RSSetScissorRects, the stencil reference
+(OMSetStencilRef or the per-face call), OMSetBlendFactor, OMSetDepthBounds, IASetVertexBuffers, IASetPrimitiveTopology
+(always TRIANGLELIST), up to three SetGraphicsRootDescriptorTable and two SetGraphicsRootConstantBufferView. With
+LD_REC_MEMO=1 (or T: KZ2_WALKER_TOGGLE's phase, patch 6067) each is skipped when it equals the value last recorded on
+the same command list in the same state-memo generation (g_ld_sm_gen: list Reset and every path that binds its own
+pipeline, root signature or heaps); the root arguments are also forgotten whenever the root signature is set. The memo
+is live only while the state memo is (LD_NO_STATE_MEMO=1 turns both off). With RSX_PERF=1 [perf-walk2] ends with
+"| rec-memo skips N" (calls skipped in the period).
+The fix (always on): ld_downsample and ld_scaled_blit (NV3089 scaled resolves done as draws) set their own PSO, root
+signature, heaps and render target on the live list without LD_SM_INVALIDATE, so a following draw with the PSO the
+memo remembered skipped SetPipelineState and drew with the blit's pipeline. KZ2's heavy view has no NV3089 blits
+([perf-nv3089] n=0), so nothing seen changes there. Both functions are upstream ps3recomp v0.18.0 code and 2045 is
+KZ3's patch, so ASSUMPTION: KZ3 has the same gap (not checked in KZ3's tree).
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 37c0d0f..e2ba02c 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2497,14 +2497,14 @@ static DWORD WINAPI rsx_perf_thread(LPVOID unused)
+             if (d[RSX_PERF_W_ON])   /* patch 2045: the rest of the walk and the draw's split, ms in the last period */
+                 fprintf(stderr,
+                     "[perf-walk2] t=%.0fs meth %.1fms cmds %lld | draw: pre %.1f surf %.1f texloop %.1f desc %.1f (srvtbl %.1f hits %lld, smptbl %.1f)"
+-                    " rec %.1f (recent %.1f) post %.1f (rs %.1f) | bar %lld/%.1fms omrt %.1f sm-hits %lld unit-skips %lld\n",
++                    " rec %.1f (recent %.1f) post %.1f (rs %.1f) | bar %lld/%.1fms omrt %.1f sm-hits %lld unit-skips %lld | rec-memo skips %lld\n",
+                     tnow, d[RSX_PERF_W_METH_T] * tk, d[RSX_PERF_W_METH_CMD_N],
+                     d[RSX_PERF_W_D_PRE_T] * tk, d[RSX_PERF_W_D_SURF_T] * tk, d[RSX_PERF_W_D_TEXLOOP_T] * tk,
+                     d[RSX_PERF_W_D_DESC_T] * tk, d[RSX_PERF_W_D_SRVTBL_T] * tk, d[RSX_PERF_W_D_SRVTBL_HIT_N],
+                     d[RSX_PERF_W_D_SMPTBL_T] * tk, d[RSX_PERF_W_D_REC_T] * tk, d[RSX_PERF_W_D_RECENT_T] * tk,
+                     d[RSX_PERF_W_D_POST_T] * tk, d[RSX_PERF_W_D_RS_T] * tk,
+                     d[RSX_PERF_W_D_BAR_N], d[RSX_PERF_W_D_BAR_T] * tk, d[RSX_PERF_W_D_OMRT_T] * tk, d[RSX_PERF_W_D_SM_HIT_N],
+-                    d[RSX_PERF_W_D_UNIT_SKIP_N]);
++                    d[RSX_PERF_W_D_UNIT_SKIP_N], d[RSX_PERF_W_D_RM_SKIP_N]);
+             if (d[RSX_PERF_W_ON])   /* patch 2080: NV3089 blits (whole method, its GPU mirror, the guest copy) */
+                 fprintf(stderr, "[perf-nv3089] t=%.0fs n=%lld blit %.1fms (gpu %.1fms, copy %.1fms rows %lld)"
+                                 " bytes %.2fMB\n", tnow, d[RSX_PERF_W_NV3089_N], d[RSX_PERF_W_NV3089_T] * tk,
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index b841d92..0a642dc 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -2029,6 +2029,37 @@ static float ld_half(u32 h)
+ 
+ /* Blend colour (CONSTANT_COLOR / CONSTANT_ALPHA factors). Live-draw never set it, so D3D12 used the
+  * command list default. Patch 2006: from SET_BLEND_COLOR (and BLEND_COLOR2 on FP16 surfaces). */
++/* KZ2 patch 6069: LD_REC_MEMO=1 (default off; T = KZ2_WALKER_TOGGLE's phase, patch 6067), the recording memo of the
++ * Killzone 3 walker plan (Project Helghast walker-plan.md step 2 / section 5 item 2, plan only). Patch 2045's state memo
++ * covers PSO, root signature, heaps and render targets; every draw still re-recorded the viewport, scissor, stencil
++ * references, blend factor, depth bounds, topology, the vertex buffer view, the root descriptor tables and the root
++ * CBVs. With the memo each is skipped when it equals the value last recorded on this command list since the state
++ * memo's generation (g_ld_sm_gen: list Reset, every path that binds its own pipeline, root signature or heaps). The
++ * root arguments are also forgotten whenever the root signature is set (D3D12 drops them on a root signature change).
++ * Live only while the state memo is (LD_NO_STATE_MEMO=1 turns both off). */
++static struct {
++    u32 gen; int live;
++    int vp_ok; D3D12_VIEWPORT vp; int sc_ok; D3D12_RECT sc;
++    int st_ok; u32 st_front, st_back; int st_face;
++    int bf_ok; float bf[4];
++    int db_ok; float db_lo, db_hi;
++    int topo_ok; int vb_ok; D3D12_VERTEX_BUFFER_VIEW vb;
++    int ra_ok[5]; UINT64 ra[5];   /* root 0 CBV, 1 SRV table, 2 sampler table, 3 VS texture table, 4 PS CBV */
++} g_ld_rm;
++static long long g_ld_rm_skips;   /* calls skipped in this draw, added to RSX_PERF_W_D_RM_SKIP_N */
++static int ld_rec_memo_on(void)
++{
++    static int on = -1;
++    extern int gcm_walker_switch(const char* name, int dflt, int* cache);
++    return gcm_walker_switch("LD_REC_MEMO", 0, &on);
++}
++/* 1 = record the root argument `i` = v (and remember it); 0 = the list already has it. */
++static int ld_rm_root(int i, UINT64 v)
++{
++    if (g_ld_rm.live && g_ld_rm.ra_ok[i] && g_ld_rm.ra[i] == v) { g_ld_rm_skips++; return 0; }
++    g_ld_rm.ra_ok[i] = 1; g_ld_rm.ra[i] = v;
++    return 1;
++}
+ static void ld_set_blend_factor(int fp16)
+ {
+     const u32 c = rsx_dsp_reg(&g.rsx, M_BLEND_COLOR);
+@@ -2041,6 +2072,8 @@ static void ld_set_blend_factor(int fp16)
+         f[0] = (float)((c >> 16) & 0xFFu) / 255.0f; f[1] = (float)((c >> 8) & 0xFFu) / 255.0f;
+         f[2] = (float)(c & 0xFFu) / 255.0f;         f[3] = (float)(c >> 24) / 255.0f;
+     }
++    if (g_ld_rm.live && g_ld_rm.bf_ok && !memcmp(g_ld_rm.bf, f, sizeof f)) { g_ld_rm_skips++; return; }   /* patch 6069 */
++    g_ld_rm.bf_ok = 1; memcpy(g_ld_rm.bf, f, sizeof f);
+     g.list->lpVtbl->OMSetBlendFactor(g.list, f);
+ }
+ 
+@@ -2052,6 +2085,12 @@ static void ld_set_stencil_refs(void)
+     u32 back = front;
+     if ((rsx_dsp_reg(&g.rsx, M_TWO_SIDED_STENCIL) & 1u) && g.rsx.seen[M_BACK_STENCIL_FUNC_REF >> 2])
+         back = rsx_dsp_reg(&g.rsx, M_BACK_STENCIL_FUNC_REF) & 0xFFu;
++    {   /* patch 6069 */
++        const int face = back != front && g_ld_caps.per_face_stencil && g_ld_caps.list8;
++        if (g_ld_rm.live && g_ld_rm.st_ok && g_ld_rm.st_front == front && g_ld_rm.st_back == back &&
++            g_ld_rm.st_face == face) { g_ld_rm_skips++; return; }
++        g_ld_rm.st_ok = 1; g_ld_rm.st_front = front; g_ld_rm.st_back = back; g_ld_rm.st_face = face;
++    }
+     if (back != front && g_ld_caps.per_face_stencil && g_ld_caps.list8) {
+         enum { LD_LIST7_SLOTS = sizeof(ID3D12GraphicsCommandList7Vtbl) / sizeof(void*) };
+         void** vtbl = *(void***)g_ld_caps.list8;
+@@ -6644,6 +6683,7 @@ static int ld_downsample(u32 si, u32 sx, u32 sy, u32 k,
+     g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+     g.list->lpVtbl->SetPipelineState(g.list, pso);
+     g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.downsample_rootsig);
++    LD_SM_INVALIDATE();   /* patch 6069: own PSO, root signature, heaps, RT, viewport: the next draw re-records all */
+     const u32 c[5] = {sx, sy, dx, dy, k};
+     g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 0, 5, c, 0);
+     g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
+@@ -6782,6 +6822,7 @@ static int ld_scaled_blit(u32 si, float sx, float sy, float sw, float sh,
+     g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+     g.list->lpVtbl->SetPipelineState(g.list, pso);
+     g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_sblit_rs);
++    LD_SM_INVALIDATE();   /* patch 6069: own PSO, root signature, heaps, RT, viewport: the next draw re-records all */
+     const float r[4] = { sx / (float)s->w, sy / (float)s->h,
+                          (sx + sw) / (float)s->w, (sy + sh) / (float)s->h };
+     g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 0, 4, r, 0);
+@@ -14734,17 +14775,24 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     if (rsx_perf_walk_on()) rsx_perf_add(cb_reused ? RSX_PERF_W_CB_REUSE_N : RSX_PERF_W_CB_COPY_N, 1);
+ 
+     if (!sm_on || g_ld_sm.pso != pso) { g.list->lpVtbl->SetPipelineState(g.list, pso); g_ld_sm.pso = pso; }
+-    if (!sm_on || !g_ld_sm.rootsig) { g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x); g_ld_sm.rootsig = 1; }
+-    g.list->lpVtbl->SetGraphicsRootConstantBufferView(
+-        g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + cb_slot);
+-    if (ld_fp_constants_buffered())
+-        g.list->lpVtbl->SetGraphicsRootConstantBufferView(
+-            g.list, 4,
+-            g.ps_cb->lpVtbl->GetGPUVirtualAddress(g.ps_cb) +
+-                ps_cb_offset);
+-    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
+-    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 2, stbl);
+-    if (vtex_mask)
++    /* patch 6069: the recording memo follows the state memo's generation */
++    g_ld_rm_skips = 0;
++    g_ld_rm.live = sm_on && ld_rec_memo_on();
++    if (g_ld_rm.gen != g_ld_sm_gen || !sm_on) { memset(&g_ld_rm, 0, sizeof g_ld_rm); g_ld_rm.gen = g_ld_sm_gen;
++                                                g_ld_rm.live = sm_on && ld_rec_memo_on(); }
++    if (!sm_on || !g_ld_sm.rootsig) { g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x); g_ld_sm.rootsig = 1;
++                                      memset(g_ld_rm.ra_ok, 0, sizeof g_ld_rm.ra_ok); }   /* 6069: root args dropped */
++    {
++        const UINT64 cbv0 = g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + cb_slot;
++        if (ld_rm_root(0, cbv0)) g.list->lpVtbl->SetGraphicsRootConstantBufferView(g.list, 0, cbv0);
++    }
++    if (ld_fp_constants_buffered()) {
++        const UINT64 cbv4 = g.ps_cb->lpVtbl->GetGPUVirtualAddress(g.ps_cb) + ps_cb_offset;
++        if (ld_rm_root(4, cbv4)) g.list->lpVtbl->SetGraphicsRootConstantBufferView(g.list, 4, cbv4);
++    }
++    if (ld_rm_root(1, table.ptr)) g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
++    if (ld_rm_root(2, stbl.ptr)) g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 2, stbl);
++    if (vtex_mask && ld_rm_root(3, vtex_table.ptr))
+         g.list->lpVtbl->SetGraphicsRootDescriptorTable(
+             g.list, 3, vtex_table);
+     if (!cb_reused) g.cb_used += CB_BLOCK_ALIGNED;
+@@ -14785,8 +14833,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         sc.left = (LONG)((float)sc.left * ph_sx + 0.5f); sc.right = (LONG)((float)sc.right * ph_sx + 0.5f);
+         sc.top = (LONG)((float)sc.top * ph_sy + 0.5f); sc.bottom = (LONG)((float)sc.bottom * ph_sy + 0.5f);
+     }
+-    g.list->lpVtbl->RSSetViewports(g.list, 1, &dvp);
+-    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++    if (g_ld_rm.live && g_ld_rm.vp_ok && !memcmp(&g_ld_rm.vp, &dvp, sizeof dvp)) g_ld_rm_skips++;   /* patch 6069 */
++    else { g.list->lpVtbl->RSSetViewports(g.list, 1, &dvp); g_ld_rm.vp_ok = 1; g_ld_rm.vp = dvp; }
++    if (g_ld_rm.live && g_ld_rm.sc_ok && !memcmp(&g_ld_rm.sc, &sc, sizeof sc)) g_ld_rm_skips++;
++    else { g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc); g_ld_rm.sc_ok = 1; g_ld_rm.sc = sc; }
+     /* Dynamic stencil reference (kept out of the PSO key on purpose); back reference for two-sided. */
+     ld_set_stencil_refs();
+     {
+@@ -14805,7 +14855,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         if (lo > 1.0f) lo = 1.0f;
+         if (!(hi <= 1.0f)) hi = 1.0f;
+         if (hi < lo) hi = lo;
+-        g_ld_caps.list1->lpVtbl->OMSetDepthBounds(g_ld_caps.list1, lo, hi);
++        if (g_ld_rm.live && g_ld_rm.db_ok && g_ld_rm.db_lo == lo && g_ld_rm.db_hi == hi) g_ld_rm_skips++;   /* 6069 */
++        else { g_ld_caps.list1->lpVtbl->OMSetDepthBounds(g_ld_caps.list1, lo, hi); g_ld_rm.db_ok = 1; g_ld_rm.db_lo = lo; g_ld_rm.db_hi = hi; }
+     }
+ 
+     D3D12_VERTEX_BUFFER_VIEW vbv;
+@@ -14813,14 +14864,18 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     vbv.BufferLocation = vb_src->lpVtbl->GetGPUVirtualAddress(vb_src) + g.vb_used;
+     vbv.StrideInBytes = vertex_stride;
+     vbv.SizeInBytes = (u32)draw_payload_bytes;   /* patch 2076: the block after it is not vertex data */
+-    if (vertex_stride)
+-        g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv);
++    if (vertex_stride) {
++        if (g_ld_rm.live && g_ld_rm.vb_ok && !memcmp(&g_ld_rm.vb, &vbv, sizeof vbv)) g_ld_rm_skips++;   /* patch 6069 */
++        else { g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv); g_ld_rm.vb_ok = 1; g_ld_rm.vb = vbv; }
++    }
+     if (dc.vg) {   /* patch 2076: t20 = this draw's table + raw spans, t21 = the decode table */
+         g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root, vbv.BufferLocation + vg_block_off);
+         g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root + 1,
+                                                           g_vg.lut->lpVtbl->GetGPUVirtualAddress(g_vg.lut));
+     }
+-    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    if (g_ld_rm.live && g_ld_rm.topo_ok) g_ld_rm_skips++;   /* patch 6069: always TRIANGLELIST here */
++    else { g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); g_ld_rm.topo_ok = 1; }
++    if (g_ld_rm_skips && rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_D_RM_SKIP_N, g_ld_rm_skips);
+     LDW_T0(recent_t0);   /* patch 2045 */
+     {
+         const u64 serial = ++g_ld_recent_draw_total;
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 81f9d87..514be6a 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -263,6 +263,7 @@ enum {
+     RSX_PERF_W_D_BAR_T, RSX_PERF_W_D_BAR_N, RSX_PERF_W_D_OMRT_T, RSX_PERF_W_D_SM_HIT_N,
+     RSX_PERF_W_TEX_UP_T,   /* the upload half (barriers + CopyTextureRegion) of TEX_NEW_T */
+     RSX_PERF_W_D_UNIT_SKIP_N,   /* enabled units not bound: the FP never samples them */
++    RSX_PERF_W_D_RM_SKIP_N,   /* patch 6069: recording calls the LD_REC_MEMO memo skipped */
+     RSX_PERF_W_CB_COPY_N, RSX_PERF_W_CB_REUSE_N,   /* patch 6064: draws that copied the vertex constants / reused the previous slot */
+     RSX_PERF_W_WRAP_SRV, RSX_PERF_W_WRAP_SMP,   /* patch 6063: descriptor-ring wraps by ring (SRV table ring, sampler ring) */
+     RSX_PERF_W_FLUSH_N0, RSX_PERF_W_FLUSH_N_END = RSX_PERF_W_FLUSH_N0 + 11,   /* ld_flush by reason (12 reasons, N0..N_END; 6048: upring) */

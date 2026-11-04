@@ -152,7 +152,7 @@ static inline int sk_apart(uint32_t o, uint32_t on, uint32_t a, uint32_t an)
 
 /* P, P - Q, N and the two byte vectors' blends of one vertex; the fast form returns 0 when an fma result needs the
  * helper's double path (the caller then runs the exact form) */
-static inline __attribute__((always_inline)) int sk_bulk(const int exact, const __m128* const A[3],
+static inline __attribute__((always_inline)) int sk_bulk(const int exact, const int nbv, const __m128* const A[3],
                                                          const __m128* const B[3], __m128 p, __m128 nv,
                                                          const __m128 bs[2], __m128 w0, __m128 w1, __m128 w2,
                                                          __m128 out[5])
@@ -171,7 +171,7 @@ static inline __attribute__((always_inline)) int sk_bulk(const int exact, const 
     out[1] = sk_fs(&x, out[0], sk_blend(&x, tq[0], tq[1], tq[2], w0, w1, w2));
     out[2] = sk_blend(&x, tn[0], tn[1], tn[2], w0, w1, w2);
 #pragma GCC unroll 2
-    for (int v = 0; v < 2; v++) {
+    for (int v = 0; v < nbv; v++) {   /* 0 for the two-stream loop @0x50C0 (no byte vectors) */
         const __m128 sx = lane(bs[v], 0), sy = lane(bs[v], 1), sz = lane(bs[v], 2);
         __m128 t[3];
 #pragma GCC unroll 3
@@ -232,8 +232,8 @@ static int sk_skin_54C0(spu_context* c)   // @0x000054C0 (job_00d90c00)
             bs[v] = fm_(_mm_cvtepi32_ps(_mm_setr_epi32(sext8(b[0]), sext8(b[1]), sext8(b[2]), 0)), k127);
         }
         __m128 o4[5];
-        const int fast = small && sk_bulk(0, A, B, p, nv, bs, w0, w1, w2, o4);
-        if (!fast) sk_bulk(1, A, B, p, nv, bs, w0, w1, w2, o4);
+        const int fast = small && sk_bulk(0, 2, A, B, p, nv, bs, w0, w1, w2, o4);
+        if (!fast) sk_bulk(1, 2, A, B, p, nv, bs, w0, w1, w2, o4);
         const __m128 P = o4[0], D = o4[1], N = o4[2], X[2] = { o4[3], o4[4] };
         __m128 rl[3];
         sk_rlen3(N, X[0], X[1], rl);
@@ -264,8 +264,132 @@ static int sk_skin_54C0(spu_context* c)   // @0x000054C0 (job_00d90c00)
     return 1;
 }
 
+/* ---- an earlier change: the job's two other hot leaves (the RE notes "An earlier change"; tools/spu/loop_dataflow.py output
+ * work/spu/r32/sk50c0_flow.txt, sk5b10_flow.txt) ----
+ *
+ * @0x50C0 (slot 83, KZ2_NATIVE_JOB_SKIN2; loop head 0x5278, 8.2 % of the job's host samples in kz2-spu32-prof1):
+ * called from @0x4C98, the same three-bone skinning as 0x54C0 without the two byte vectors: records of 14 bytes (the
+ * window W at r6 + 6 + 14 k: weights W[0], W[1], bones W[5..7]), P from the r7 palette, Q from r8, D = cflts(P - Q,
+ * 142), the unit normal N; output [r3 + 32 k] = P.x, P.y, P.z, hi16(D.x) << 16 | hi16(D.y) and [r3 + 32 k + 16] =
+ * hi16(D.z) << 16 | hi16(Nu.x), hi16(Nu.y) << 16 | hi16(Nu.z), 0, 0. Every float op as sk_bulk (the same order).
+ * The loop leaves r3 + 32 n, r4 + 16 (n + 2) (its position pointer runs two ahead), r5 + 16 (n + 1), r6 + 20 + 14 n,
+ * r2 = that r6, r9 - n; tools/spu/live_proof.py from 0x4C98 (work/spu/r32/live.sh): RESULT clean for every other
+ * register it writes (r7, r8, r10-r79).
+ * @0x5B10 (slot 84, KZ2_NATIVE_JOB_SKINUNPACK; loop 0x5B88, 11.7 %): called from @0x4E44, the decompression of the
+ * vertex streams 0x54C0 reads: per 20-byte record at r5 + 20 k, the position [r3 + 16 k] = fma(csflt(int16 x, y, z,
+ * 0), r7, r8) (big-endian halfwords at bytes 0-5; lane 3 fma(0, r7.3, r8.3)) and the normal [r4 + 16 k] =
+ * fm(csflt(int8 bytes 8-10, 0), 1/127 (0x3C010204)). The loop leaves r3 and r4 + 16 n, r5 + 40 + 20 n, r2 = r5 - 20,
+ * r6 - n; live_proof from 0x4E44: RESULT clean for r9-r27.
+ * Both decline (the lifted loop runs) unless 1 <= n <= 4096, the outputs are 16-byte aligned, and every range they
+ * write lies inside the local store apart from every range they read (the pipelined loops read ahead; reads only). */
+static inline void sk_regs_add(spu_context* c, int r, uint32_t d)
+{
+    for (int i = 0; i < 4; i++) c->gpr[r]._u32[i] += d;
+}
+
+static int sk_skin2_50C0(spu_context* c)   // @0x000050C0 (job_00d90c00)
+{
+    uint8_t* const ls = c->ls;
+    const uint32_t n = c->gpr[9]._u32[0];
+    const uint32_t o = c->gpr[3]._u32[0], r4 = c->gpr[4]._u32[0], r5 = c->gpr[5]._u32[0];
+    const uint32_t r6 = c->gpr[6]._u32[0], m7 = c->gpr[7]._u32[0], m8 = c->gpr[8]._u32[0];
+    if (n < 1 || n > 4096 || (o & 15) || o >= SPU_LS_SIZE || SPU_LS_SIZE - o < 32 * n) return 0;
+    const uint32_t on = 32 * n;
+    const uint32_t ra[5] = { (r6 + 6) & ~15u, r4 & ~15u, r5 & ~15u, m7 & ~15u, m8 & ~15u };
+    const uint32_t rn[5] = { 14 * n + 64, 16 * n + 48, 16 * n + 32, 64 * 255 + 64, 64 * 255 + 64 };
+    for (int i = 0; i < 5; i++)
+        if (ra[i] >= SPU_LS_SIZE || SPU_LS_SIZE - ra[i] < rn[i] || !sk_apart(o, on, ra[i], rn[i])) return 0;
+
+    const __m128 k255 = fbits(0x3B808081u), one = fbits(0x3F800000u);
+    static __thread sk_pal pa, pb;
+    memset(pa.have, 0, sizeof pa.have);
+    memset(pa.small, 0, sizeof pa.small);
+    memset(pb.have, 0, sizeof pb.have);
+    memset(pb.small, 0, sizeof pb.small);
+#if defined(__FMA__)
+    const int fast_ok = g_kz3_spu_slowcg == 0;
+#else
+    const int fast_ok = 0;
+#endif
+    const __m128 bs[2] = { _mm_setzero_ps(), _mm_setzero_ps() };   /* not read (nbv 0) */
+    for (uint32_t k = 0; k < n; k++) {
+        uint8_t W[16];
+        memcpy(W, ls + r6 + 6 + 14 * k, 16);   /* inside the checked records' range */
+        const __m128 wv = fm_(_mm_cvtepi32_ps(_mm_setr_epi32(W[0], W[1], 0, 0)), k255);
+        const __m128 w0 = lane(wv, 0), w1 = lane(wv, 1), w2 = fs_(one, fa_(w0, w1));
+        const __m128 *A[3], *B[3];
+        int small = fast_ok;
+        for (int j = 0; j < 3; j++) {
+            A[j] = sk_mat(&pa, ls, m7, W[5 + j], &small);
+            B[j] = sk_mat(&pb, ls, m8, W[5 + j], &small);
+        }
+        const __m128 p = ldf(ls, r4 + 16 * k), nv = ldf(ls, r5 + 16 * k);
+        small &= sk_small(p) & sk_small(nv);
+        __m128 o4[5];
+        const int fast = small && sk_bulk(0, 0, A, B, p, nv, bs, w0, w1, w2, o4);
+        if (!fast) sk_bulk(1, 0, A, B, p, nv, bs, w0, w1, w2, o4);
+        const __m128 P = o4[0], D = o4[1], N = o4[2];
+        __m128 rl[3];
+        sk_rlen3(N, N, N, rl);   /* lane-wise: rl[0] = fi(l, frsqest(l)), l = (N.x^2 + N.y^2) + N.z^2 */
+        const u128 Du = sk_cflts142(D);
+        const u128 Nu = sk_cflts142(fm_(N, rl[0]));
+        const u128 Pu = U(P);
+        u128 q0, q1;
+        q0._u32[0] = Pu._u32[0];
+        q0._u32[1] = Pu._u32[1];
+        q0._u32[2] = Pu._u32[2];
+        q0._u32[3] = hi16(Du._u32[0]) << 16 | hi16(Du._u32[1]);
+        q1._u32[0] = hi16(Du._u32[2]) << 16 | hi16(Nu._u32[0]);
+        q1._u32[1] = hi16(Nu._u32[1]) << 16 | hi16(Nu._u32[2]);
+        q1._u32[2] = 0;
+        q1._u32[3] = 0;
+        stq(ls, o + 32 * k, q0);
+        stq(ls, o + 32 * k + 16, q1);
+    }
+    sk_regs_add(c, 3, 32 * n);
+    sk_regs_add(c, 4, 16 * (n + 2));
+    sk_regs_add(c, 5, 16 * (n + 1));
+    sk_regs_add(c, 6, 20 + 14 * n);
+    sk_regs_add(c, 9, 0u - n);
+    c->gpr[2] = c->gpr[6];
+    return 1;
+}
+
+static int sk_unpack_5B10(spu_context* c)   // @0x00005B10 (job_00d90c00)
+{
+    uint8_t* const ls = c->ls;
+    const uint32_t n = c->gpr[6]._u32[0];
+    const uint32_t o3 = c->gpr[3]._u32[0], o4 = c->gpr[4]._u32[0], r5 = c->gpr[5]._u32[0];
+    if (n < 1 || n > 4096 || ((o3 | o4) & 15) || o3 >= SPU_LS_SIZE || o4 >= SPU_LS_SIZE || SPU_LS_SIZE - o3 < 16 * n ||
+        SPU_LS_SIZE - o4 < 16 * n || ovl(o3, 16 * n, o4, 16 * n))
+        return 0;
+    const uint32_t rr = r5 & ~15u, rn = 20 * n + 80;   /* the records, with the loop's read-ahead */
+    if (rr >= SPU_LS_SIZE || SPU_LS_SIZE - rr < rn || ovl(o3, 16 * n, rr, rn) || ovl(o4, 16 * n, rr, rn)) return 0;
+    const __m128 sc = F(c->gpr[7]), bi = F(c->gpr[8]), k127 = fbits(0x3C010204u);
+    for (uint32_t k = 0; k < n; k++) {
+        const uint8_t* b = ls + r5 + 20 * k;
+        const __m128i iv = _mm_setr_epi32((int16_t)(b[0] << 8 | b[1]), (int16_t)(b[2] << 8 | b[3]),
+                                          (int16_t)(b[4] << 8 | b[5]), 0);
+        const __m128i jv = _mm_setr_epi32((int8_t)b[8], (int8_t)b[9], (int8_t)b[10], 0);
+        /* csflt(., 155): exact for 16- and 8-bit integers */
+        stq(ls, o3 + 16 * k, U(fma_(_mm_cvtepi32_ps(iv), sc, bi)));
+        stq(ls, o4 + 16 * k, U(fm_(_mm_cvtepi32_ps(jv), k127)));
+    }
+    sk_regs_add(c, 3, 16 * n);
+    sk_regs_add(c, 4, 16 * n);
+    sk_regs_add(c, 5, 40 + 20 * n);
+    c->gpr[2] = c->gpr[5];
+    sk_regs_add(c, 2, 0u - 20);
+    sk_regs_add(c, 6, 0u - n);
+    return 1;
+}
+
 const kz2_native_entry kz2_native_skinning[] = {
     { 80, "KZ2_NATIVE_JOB_SKIN", "Anim.Skinning", "job_00d90c00", 0x54C0u, sk_skin_54C0, "sk_skin", SK_POOL_LO,
       SK_POOL_HI, 0xb291e50c05d6cd08ull, 0 },
+    { 83, "KZ2_NATIVE_JOB_SKIN2", "Anim.Skinning", "job_00d90c00", 0x50C0u, sk_skin2_50C0, "sk_skin2", SK_POOL_LO,
+      SK_POOL_HI, 0xb291e50c05d6cd08ull, 0 },
+    { 84, "KZ2_NATIVE_JOB_SKINUNPACK", "Anim.Skinning", "job_00d90c00", 0x5B10u, sk_unpack_5B10, "sk_unpack",
+      SK_POOL_LO, 0x5FB0u, 0xdd13cbebdf7d5c48ull, 0 },
 };
 const unsigned kz2_native_skinning_n = sizeof kz2_native_skinning / sizeof kz2_native_skinning[0];

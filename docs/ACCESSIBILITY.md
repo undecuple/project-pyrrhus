@@ -18,7 +18,7 @@ published as pre-releases; the installer and Start menu entries below belong to 
   instead of hold, and can switch the aim assist off. All three are off or original by default; set them in
   `gameplay.ini` next to `keybinds.ini` (`crouch_toggle = 1`, `cover_toggle = 1`, `aim_assist = off`; see BUILDING.md for
   the `KZ2_*` variables). The file is created with its defaults and a comment on every key at the first start and is never overwritten. There is no in-game page for them yet.
-- **Motion controls are optional.** `motion = off` in `gameplay.ini` replaces every tilt (valves, charges) with the right stick; hold L1 and R1 as the game asks. `auto` (the default) uses the controller's tilt only when it has a working accelerometer.
+- **Motion controls are optional.** `motion = off` in `gameplay.ini` replaces every tilt (valves, charges) with the right stick; hold L1 and R1 as the game asks. `auto` (the default) uses the controller's tilt only when it has a working accelerometer. A pad that reaches the game without its motion sensor (for example over XInput) can still tilt through a DSU (cemuhook) server on the same computer: `dsu_port = on` in `gameplay.ini` (off by default).
 - **Not yet:** remapping single pad buttons, and the game's own controls menu (sensitivity, invert Y).
 
 ## Button prompts

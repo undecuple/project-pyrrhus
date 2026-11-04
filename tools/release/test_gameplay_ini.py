@@ -75,6 +75,8 @@ def main():
             check(kv[("gameplay", "cover_toggle")] == m.group(3), "cover_toggle default")
         mm = re.search(r"c->motion = KZ2_MOTION_(\w+);", src[src.index("c->aim_assist = KZ2_AIM_AUTO"):])
         check(bool(mm) and kv[("gameplay", "motion")] == mm.group(1).lower(), "motion default")
+        md = re.search(r"c->dsu_port = (\d+);", src[src.index("c->aim_assist = KZ2_AIM_AUTO"):])
+        check(bool(md) and kv.get(("gameplay", "dsu_port")) == md.group(1), "dsu_port default")
         hdr = open(os.path.join(repo, "port", "kz2", "kz2_gameplay.h"), encoding="utf-8").read()
         h = src[src.index("c->aim_assist = KZ2_AIM_AUTO"):][:400]
         for nm, val in re.findall(r"#define (KZ2_MOUSE_\w+_DEF)\s+([\d.]+)f", hdr):   # SENS_DEF, YAW_DEF

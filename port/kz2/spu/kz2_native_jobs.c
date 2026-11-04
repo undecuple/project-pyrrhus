@@ -1,7 +1,8 @@
 /* kz2_native_jobs.c -- fills the native gates: KZ2_NATIVE_JOB_<NAME>=1 per job or family,
  * KZ2_NATIVE_JOB_POST=1 for every Gfx.Post gate (=0: none), the Gfx.Post flags on by default for the slots recorded in
  * play (native_flags.h), KZ2_NATIVE_REC=DIR to record real gate inputs, KZ2_NATIVE_TOGGLE=<slots> to flip
- * those gates between lifted and native every KZ2_NATIVE_TOGGLE_PERIOD s of one run (native_toggle.h). Each slot's gate is
+ * those gates between lifted and native every KZ2_NATIVE_TOGGLE_PERIOD s of one run (native_toggle.h; an earlier change:
+ * KZ2_NATIVE_TOGGLE_PERIOD=ab follows KZ2_AB_TOGGLE's phase, so KZ2_AB_TOGGLE_INVERT applies). Each slot's gate is
  * a trampoline into kz2_native_run (native_common.c) with that slot's entry. See kz2_native_jobs.h. */
 #include "kz2_native_jobs.h"
 #include "native_flags.h"
@@ -125,8 +126,15 @@ static unsigned long long now_ms(void)
 
 /* 1 = this call runs native. The first call of a new phase prints the switch (one thread wins the exchange) and the
  * calls each toggled slot had in the phase that ended. */
+extern volatile int g_kz2_ab_phase;   /* patch 7016, spu_coherency.c (KZ2_AB_TOGGLE, port/kz2/spu/kz2_ab_toggle.c) */
+static int s_tog_ab;                  /* an earlier change: KZ2_NATIVE_TOGGLE_PERIOD=ab follows that phase (odd = native) */
 static int tog_native(int slot)
 {
+    if (s_tog_ab) {   /* the [ab-toggle] lines record the switches (KZ2_AB_TOGGLE_INVERT starts the run native) */
+        const int nat = __atomic_load_n(&g_kz2_ab_phase, __ATOMIC_RELAXED) & 1;
+        __atomic_fetch_add(&s_tog_calls[nat][slot], 1, __ATOMIC_RELAXED);
+        return nat;
+    }
     const unsigned long long t = now_ms() - s_tog_t0;
     const long ph = kz2_native_toggle_phase(t, s_tog_period);
     const long old = __atomic_load_n(&s_tog_phase, __ATOMIC_RELAXED);
@@ -148,12 +156,26 @@ static int tog_native(int slot)
     return nat;
 }
 
-/* One trampoline per slot (the gate pointer takes only the context): the slot's entry through kz2_native_run, or the
- * recorder. */
+/* KZ2_POST_SKIP (diagnostic, port/kz2/spu/kz2_ab_toggle.c): while patch 7016's g_kz2_post_skip is set,
+ * a Gfx.Post subroutine gate returns at once (the pass or kernel does nothing; with the arena's DMA skipped too the
+ * picture is wrong); otherwise the gate the slot would have had (s_skip_base, NULL = the lifted body). */
+extern volatile int g_kz2_post_skip;   /* patch 7016, spu_coherency.c */
+static int (*s_skip_base[KZ2_NATIVE_SLOTS])(spu_context*);
+static volatile long s_skip_n;
+static int post_skip(spu_context* c, int slot)
+{
+    if (__atomic_load_n(&g_kz2_post_skip, __ATOMIC_RELAXED)) { __atomic_fetch_add(&s_skip_n, 1, __ATOMIC_RELAXED); return 1; }
+    return s_skip_base[slot] ? s_skip_base[slot](c) : 0;
+}
+long kz2_post_skip_gate_calls(void) { return __atomic_load_n(&s_skip_n, __ATOMIC_RELAXED); }
+
+/* One trampoline per slot (the gate pointer takes only the context): the slot's entry through kz2_native_run, the
+ * recorder, the toggle or the post skip. */
 #define T1(a, b) static int gate_##a##b(spu_context* c) { return kz2_native_run(c, s_ent[8 * a + b]); } \
                  static int rec_##a##b(spu_context* c) { return rec(c, 8 * a + b); } \
                  static int tog_##a##b(spu_context* c) { \
-                     return tog_native(8 * a + b) ? kz2_native_run(c, s_ent[8 * a + b]) : 0; }
+                     return tog_native(8 * a + b) ? kz2_native_run(c, s_ent[8 * a + b]) : 0; } \
+                 static int skp_##a##b(spu_context* c) { return post_skip(c, 8 * a + b); }
 #define T8(a) T1(a, 0) T1(a, 1) T1(a, 2) T1(a, 3) T1(a, 4) T1(a, 5) T1(a, 6) T1(a, 7)
 T8(0) T8(1) T8(2) T8(3) T8(4) T8(5) T8(6) T8(7) T8(8) T8(9) T8(10) T8(11) T8(12) T8(13) T8(14) T8(15)
 #define P8(f, a) f##a##0, f##a##1, f##a##2, f##a##3, f##a##4, f##a##5, f##a##6, f##a##7
@@ -162,6 +184,7 @@ T8(0) T8(1) T8(2) T8(3) T8(4) T8(5) T8(6) T8(7) T8(8) T8(9) T8(10) T8(11) T8(12)
 static int (*const s_gate_fn[KZ2_NATIVE_SLOTS])(spu_context*) = { P128(gate_) };
 static int (*const s_rec_fn[KZ2_NATIVE_SLOTS])(spu_context*) = { P128(rec_) };
 static int (*const s_tog_fn[KZ2_NATIVE_SLOTS])(spu_context*) = { P128(tog_) };
+static int (*const s_skp_fn[KZ2_NATIVE_SLOTS])(spu_context*) = { P128(skp_) };
 
 static const char* get_env(const char* k) { return getenv(k); }
 
@@ -172,28 +195,45 @@ static const char* enabled_by(const kz2_native_entry* e)
     return kz2_native_enabled_by(e->env, e->job, e->slot, get_env, buf, sizeof buf);
 }
 
+static void add_one(const kz2_native_entry* e)
+{
+    if (s_rec_dir) {
+        g_kz2_native_gate[e->slot] = s_rec_fn[e->slot];
+        return;
+    }
+    if (s_tog[e->slot]) {
+        g_kz2_native_gate[e->slot] = s_tog_fn[e->slot];
+        fprintf(stderr, "[native] %s %s 0x%05X %s toggled every %llu ms (slot %d, KZ2_NATIVE_TOGGLE=%s)\n", e->job,
+                e->image, e->addr, e->kind, s_tog_period, e->slot, s_tog_list);
+        return;
+    }
+    const char* by = enabled_by(e);
+    if (by) {
+        g_kz2_native_gate[e->slot] = s_gate_fn[e->slot];
+        fprintf(stderr, "[native] %s %s 0x%05X %s native (slot %d, %s)\n", e->job, e->image, e->addr, e->kind,
+                e->slot, by);
+    }
+}
+
+static int s_post_skip_on;   /* KZ2_POST_SKIP set (read once at init) */
+
+/* KZ2_POST_SKIP: the Gfx.Post subroutine gates take the skip trampoline over whatever add() installed. Not ILR's
+ * slot 68 (its native code also runs the pass's epilogue reloads) nor a "continue at" gate. */
+static void add_skip(const kz2_native_entry* e)
+{
+    if (!s_post_skip_on || !e->job || strncmp(e->job, "Gfx.Post.", 9) || e->cont || e->slot == 68) return;
+    s_skip_base[e->slot] = g_kz2_native_gate[e->slot];
+    g_kz2_native_gate[e->slot] = s_skp_fn[e->slot];
+}
+
 static void add(const kz2_native_entry* t, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
         const kz2_native_entry* e = &t[i];
         if (e->slot < 0 || e->slot >= KZ2_NATIVE_SLOTS) continue;
         s_ent[e->slot] = e;
-        if (s_rec_dir) {
-            g_kz2_native_gate[e->slot] = s_rec_fn[e->slot];
-            continue;
-        }
-        if (s_tog[e->slot]) {
-            g_kz2_native_gate[e->slot] = s_tog_fn[e->slot];
-            fprintf(stderr, "[native] %s %s 0x%05X %s toggled every %llu ms (slot %d, KZ2_NATIVE_TOGGLE=%s)\n", e->job,
-                    e->image, e->addr, e->kind, s_tog_period, e->slot, s_tog_list);
-            continue;
-        }
-        const char* by = enabled_by(e);
-        if (by) {
-            g_kz2_native_gate[e->slot] = s_gate_fn[e->slot];
-            fprintf(stderr, "[native] %s %s 0x%05X %s native (slot %d, %s)\n", e->job, e->image, e->addr, e->kind,
-                    e->slot, by);
-        }
+        add_one(e);
+        add_skip(e);
     }
 }
 
@@ -225,15 +265,18 @@ __attribute__((constructor)) static void kz2_native_jobs_init(void)
         fprintf(stderr, "[native] recording gate inputs to %s (%ld per slot, every %ld calls, after %.0f s)\n", d,
                 s_rec_n, s_rec_every, s_rec_after);
     }
+    { const char* ps = getenv("KZ2_POST_SKIP"); s_post_skip_on = ps && *ps && *ps != '0'; }   /* an earlier change */
     const char* tg = getenv("KZ2_NATIVE_TOGGLE");
     if (!s_rec_dir && tg && *tg) {
         const int n = kz2_native_toggle_parse(tg, s_tog, KZ2_NATIVE_SLOTS);
         const char* ps = getenv("KZ2_NATIVE_TOGGLE_PERIOD");
-        const double per = (ps && *ps) ? strtod(ps, NULL) : 4.0;
+        s_tog_ab = ps && !strcmp(ps, "ab");   /* an earlier change */
+        const double per = (ps && *ps && !s_tog_ab) ? strtod(ps, NULL) : 4.0;
         if (per >= 0.1) s_tog_period = (unsigned long long)(per * 1000.0 + 0.5);
         snprintf(s_tog_list, sizeof s_tog_list, "%s", tg);
         s_tog_t0 = now_ms();
         if (n < 0) fprintf(stderr, "[native] KZ2_NATIVE_TOGGLE=%s: not a slot list (75,76 or 75-77); toggle off\n", tg);
+        else if (s_tog_ab) fprintf(stderr, "[native-toggle] %d slots follow KZ2_AB_TOGGLE's phase (odd = native)\n", n);
         else fprintf(stderr, "[native-toggle] t=0.000s phase=0 lifted (start: %d slots, period %llu ms)\n", n,
                      s_tog_period);
     }
@@ -246,4 +289,9 @@ __attribute__((constructor)) static void kz2_native_jobs_init(void)
     add(kz2_native_particles, kz2_native_particles_n);
     add(kz2_native_skinning, kz2_native_skinning_n);
     add(kz2_native_raycast, kz2_native_raycast_n);
+    if (s_post_skip_on) {
+        int n = 0;
+        for (int k = 0; k < KZ2_NATIVE_SLOTS; k++) n += g_kz2_native_gate[k] == s_skp_fn[k];
+        fprintf(stderr, "[post-skip] %d Gfx.Post gates return at once while the skip is on\n", n);
+    }
 }

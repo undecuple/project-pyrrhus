@@ -50,6 +50,30 @@ int kz2_gp_apply_motion_env(kz2_gameplay_cfg* c, const char* motion)
     return 0;
 }
 
+int kz2_gp_parse_dsu(const char* s)
+{
+    if (!s || !*s) return -1;
+    const int b = kz2_gp_parse_bool(s);
+    if (b == 0) return 0;
+    if (b == 1) return KZ2_DSU_PORT_DEFAULT;
+    long v = 0;
+    int n = 0;
+    for (; *s; s++, n++) {
+        if (*s < '0' || *s > '9' || n >= 5) return -1;
+        v = v * 10 + (*s - '0');
+    }
+    return v >= 1024 && v <= 65535 ? (int)v : -1;
+}
+
+int kz2_gp_apply_dsu_env(kz2_gameplay_cfg* c, const char* port)
+{
+    if (!port || !*port) return 0;
+    const int x = kz2_gp_parse_dsu(port);
+    if (x < 0) return 1;
+    c->dsu_port = x;
+    return 0;
+}
+
 /* A positive finite number up to 1000, else -1. */
 static float kz2_gp_parse_pos(const char* s)
 {
@@ -77,7 +101,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
 {
     c->aim_assist = KZ2_AIM_AUTO; c->crouch_toggle = 0; c->cover_toggle = 0;
     c->mouse_look = 1; c->mouse_sens = KZ2_MOUSE_SENS_DEF; c->mouse_zoom = 1.0f; c->mouse_yaw = KZ2_MOUSE_YAW_DEF;
-    c->mouse_invert = 0; c->motion = KZ2_MOTION_AUTO;
+    c->mouse_invert = 0; c->motion = KZ2_MOTION_AUTO; c->dsu_port = 0;
     int bad = 0, in = 0;   /* in: 1 = [gameplay], 2 = [mouse] */
     const char* p = text ? text : "";
     while (*p) {
@@ -110,6 +134,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
         else if (ieq(k, "crouch_toggle")) { const int x = kz2_gp_parse_bool(v); if (x < 0) bad++; else c->crouch_toggle = x; }
         else if (ieq(k, "cover_toggle")) { const int x = kz2_gp_parse_bool(v); if (x < 0) bad++; else c->cover_toggle = x; }
         else if (ieq(k, "motion")) { const int x = kz2_gp_parse_motion(v); if (x < 0) bad++; else c->motion = x; }
+        else if (ieq(k, "dsu_port")) { const int x = kz2_gp_parse_dsu(v); if (x < 0) bad++; else c->dsu_port = x; }
     }
     return bad;
 }
@@ -184,6 +209,61 @@ int kz2_gp_aim_skip(int aim_on, uint32_t lr, const uint32_t* sites, int nsites)
     return 0;
 }
 
+void kz2_aim_stats_reset(kz2_aim_stats* s)
+{
+    memset(s, 0, sizeof *s);
+    s->min_m10 = 1.0f; s->min_cone = 1.0f;
+}
+
+void kz2_aim_stats_mod(kz2_aim_stats* s, float x0, float y0, float x1, float y1, float m10, float m0c)
+{
+    s->mod++;
+    const float ax = fabsf(x0), ay = fabsf(y0), ex = fabsf(x1 - x0), ey = fabsf(y1 - y0);
+    const float in = ax > ay ? ax : ay, dx = ex > ey ? ex : ey;
+    if (x1 != x0 || y1 != y0) s->edits++;   /* float compare: -0.0 -> 0.0 is no edit */
+    if (in > s->max_in) s->max_in = in;
+    if (dx > s->max_dx) s->max_dx = dx;
+    if (m10 < s->min_m10) s->min_m10 = m10;
+    if (m0c > s->max_m0c) s->max_m0c = m0c;
+}
+
+void kz2_aim_stats_gather(kz2_aim_stats* s, unsigned candidates, unsigned entities)
+{
+    s->gather++;
+    if (candidates) s->gather_hit++;
+    if (candidates > s->cand_max) s->cand_max = candidates;
+    if (entities > s->ents_max) s->ents_max = entities;
+}
+
+void kz2_aim_stats_find(kz2_aim_stats* s, int found) { s->find++; if (found) s->found++; }
+
+void kz2_aim_stats_cone(kz2_aim_stats* s, float factor)
+{
+    s->cone++;
+    if (factor < 1.0f) s->cone_lt1++;
+    if (factor < s->min_cone) s->min_cone = factor;
+}
+
+void kz2_aim_stats_soft(kz2_aim_stats* s, int found) { s->soft++; if (found) s->soft_found++; }
+
+int kz2_aim_stats_line(const kz2_aim_stats* s, const char* aim_state, char* buf, int cap)
+{
+    return snprintf(buf, (size_t)cap,
+                    "[aim] assist %s: modifier %u calls, %u stick edits (|in| max %.3f, |edit| max %.4f), slowdown min %.3f,"
+                    " softlock max %.3f; gather %u calls, %u with candidates (max %u, entities max %u); finder %u calls,"
+                    " %u found; softlock %u calls, %u with a target; cone %u calls, %u < 1 (min %.3f)",
+                    aim_state, s->mod, s->edits, s->max_in, s->max_dx, s->min_m10, s->max_m0c, s->gather, s->gather_hit,
+                    s->cand_max, s->ents_max, s->find, s->found, s->soft, s->soft_found, s->cone, s->cone_lt1, s->min_cone);
+}
+
+int kz2_look_start_line(const kz2_gameplay_cfg* c, int look_is_mouse, char* buf, int cap)
+{
+    static const char* an[] = { "auto", "on", "off" };
+    const int a = c->aim_assist >= 0 && c->aim_assist <= 2 ? c->aim_assist : 0;
+    return snprintf(buf, (size_t)cap, "look device at start: %s (aim assist %s, aim_assist %s, mouse_look %d)",
+                    look_is_mouse ? "mouse" : "stick", kz2_gp_aim_on(c, look_is_mouse) ? "on" : "off", an[a], c->mouse_look);
+}
+
 void kz2_cover_begin(kz2_cover_latch* l) { l->queried = 0; l->found = 0; }
 
 int kz2_cover_held(kz2_cover_latch* l, int enabled, int orig_held, int pressed_cover, int pressed_sprint, int pressed_jump)
@@ -207,7 +287,7 @@ const kz2_gameplay_cfg* kz2_gameplay_get(void)
     static kz2_gameplay_cfg cfg;
     static int done;
     if (done) return &cfg;
-    char t[2048]; t[0] = 0;
+    static char t[16384]; t[0] = 0;   /* was 2048 on the stack; the default file is ~1.6 KB, a commented one can pass 2 KB */
     int file = 0, bad;
 #ifdef _WIN32
     wchar_t p[1100];
@@ -220,15 +300,16 @@ const kz2_gameplay_cfg* kz2_gameplay_get(void)
     const int benv = kz2_gp_apply_env(&cfg, getenv("KZ2_AIM_ASSIST"), getenv("KZ2_CROUCH_TOGGLE"), getenv("KZ2_COVER_TOGGLE")) +
                      kz2_gp_apply_mouse_env(&cfg, getenv("KZ2_MOUSE_LOOK"), getenv("KZ2_MOUSE_SENS"), getenv("KZ2_MOUSE_ZOOM_SENS"),
                                             getenv("KZ2_MOUSE_YAW"), getenv("KZ2_MOUSE_INVERT")) +
-                     kz2_gp_apply_motion_env(&cfg, getenv("KZ2_MOTION"));
+                     kz2_gp_apply_motion_env(&cfg, getenv("KZ2_MOTION")) +
+                     kz2_gp_apply_dsu_env(&cfg, getenv("KZ2_DSU_PORT"));
     /* The old switch of patch 4015's stand-in: KZ2_MOTION_STICK=0 (no stand-in) is motion = on when KZ2_MOTION is unset. */
     { const char* m = getenv("KZ2_MOTION"), *o = getenv("KZ2_MOTION_STICK");
       if ((!m || !*m) && o && o[0] == '0') cfg.motion = KZ2_MOTION_ON; }
     static const char* const an[3] = { "auto", "on", "off" };
     fprintf(stderr, "[gameplay] aim_assist %s, crouch_toggle %d, cover_toggle %d, mouse_look %d (sensitivity %.3g x %.4g deg/count,"
-            " zoom x%.3g, invert_y %d), motion %s (gameplay.ini %s; %d bad value(s) ignored)\n",
+            " zoom x%.3g, invert_y %d), motion %s, dsu_port %d (gameplay.ini %s; %d bad value(s) ignored)\n",
             an[cfg.aim_assist], cfg.crouch_toggle, cfg.cover_toggle, cfg.mouse_look, cfg.mouse_sens, cfg.mouse_yaw,
-            cfg.mouse_zoom, cfg.mouse_invert, an[cfg.motion], file ? "read" : "not there", bad + benv);
+            cfg.mouse_zoom, cfg.mouse_invert, an[cfg.motion], cfg.dsu_port, file ? "read" : "not there", bad + benv);
     done = 1;
     return &cfg;
 }

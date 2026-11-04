@@ -1111,6 +1111,98 @@ static void synth_mopp(spu_context* c, uint64_t seed)
     if (rnd() % 32 == 0) setreg(c, 1, 0x3F008);
 }
 
+/* Anim.Skinning 0x50C0 (slot 83): the two-stream skinning loop, records of 14 bytes (window at r6 + 6),
+ * the same streams and palettes as synth_skin; 1 in 16 declined on purpose. */
+static void synth_skin2(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    g_dirty = rnd() % 4 == 0;
+    const uint32_t n = 1 + rnd() % 200;
+    const int game = rnd() % 2;
+    const uint32_t r4 = game ? 0x6100 : 0x8000 + 16 * (rnd() % 64), r5 = game ? 0x7100 : 0x9000 + 16 * (rnd() % 64);
+    const uint32_t r6 = 0xA000 + rnd() % 256, out = 0xC000 + 16 * (rnd() % 64);
+    const uint32_t m7 = 0x30000 + 16 * (rnd() % 16), m8 = 0x35000 + 16 * (rnd() % 16);
+    const int few = rnd() % 3 == 0;
+    for (uint32_t k = 0; k <= n + 1; k++) {
+        uint8_t* w = c->ls + r6 + 6 + 14 * k;
+        for (int i = 0; i < 14; i++) w[i] = (uint8_t)rnd();
+        if (rnd() % 4 == 0) { w[0] = 255; w[1] = 0; }
+        if (rnd() % 8 == 0) { w[0] = (uint8_t)(128 + rnd() % 128); w[1] = (uint8_t)(rnd() % 128); }
+        if (few) for (int j = 5; j < 8; j++) w[j] = (uint8_t)(rnd() % 4);
+        fls(c, r4 + 16 * k, 16, -50.0f, 50.0f);
+        fls(c, r5 + 16 * k, 16, -1.0f, 1.0f);
+        if (rnd() % 16 == 0) memset(c->ls + r5 + 16 * k, 0, 12);
+    }
+    for (int pal = 0; pal < 2; pal++) {
+        const uint32_t b = pal ? m8 : m7;
+        for (uint32_t j = 0; j < 256; j++) {
+            fls(c, b + 64 * j, 48, -1.0f, 1.0f);
+            fls(c, b + 64 * j + 48, 16, -100.0f, 100.0f);
+            if (rnd() % 2)
+                for (int r = 0; r < 4; r++) be32w(c->ls + b + 64 * j + 16 * r + 12, r == 3 ? 0x3F800000u : 0);
+        }
+    }
+    if (rnd() % 4 == 0) {   /* random lane-3 words (the fast form ignores lane 3) */
+        for (uint32_t k = 0; k <= n + 1; k++) {
+            be32w(c->ls + r4 + 16 * k + 12, rnd());
+            be32w(c->ls + r5 + 16 * k + 12, rnd() % 2 ? rnd() : 0x7F800000u | rnd());
+        }
+        for (int pal = 0; pal < 2; pal++)
+            for (uint32_t j = 0; j < 256 * 4; j++)
+                if (rnd() % 2) be32w(c->ls + (pal ? m8 : m7) + 16 * j + 12, rnd() % 2 ? rnd() : 0x7F800000u | rnd());
+    }
+    setreg(c, 3, out);
+    setreg(c, 4, r4);
+    setreg(c, 5, r5);
+    setreg(c, 6, r6);
+    setreg(c, 7, m7 + (rnd() % 4 ? 0 : rnd() % 16));
+    setreg(c, 8, m8);
+    setreg(c, 9, n);
+    if (rnd() % 16 == 0) {   /* the declined cases */
+        switch (rnd() % 4) {
+        case 0: setreg(c, 3, m7 + 64 * (rnd() % 200)); break;
+        case 1: setreg(c, 4, out + 16 * (rnd() % 4)); break;
+        case 2: setreg(c, 3, out + 4); break;
+        default: setreg(c, 3, r6 - 16); break;
+        }
+    }
+}
+
+/* Anim.Skinning 0x5B10 (slot 84): the vertex-stream decompression. 20-byte records anywhere (any byte
+ * alignment), outputs at the game's 0x6100 / 0x7100 or elsewhere, scale r7 and bias r8 random floats (odd ones a
+ * quarter of the trials: NaN, infinity, denormals through the fma), counts 1-256 (game layout) or 1-300; 1 in 16 declined on purpose. */
+static void synth_skinunpack(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    g_dirty = rnd() % 4 == 0;
+    const int game = rnd() % 2;
+    const uint32_t n = 1 + rnd() % (game ? 256 : 300);   /* the game's two streams are 4 KB apart */
+    const uint32_t o3 = game ? 0x6100 : 0xC000 + 16 * (rnd() % 64), o4 = game ? 0x7100 : 0xE000 + 16 * (rnd() % 64);
+    const uint32_t r5 = 0x10000 + rnd() % 4096;
+    for (uint32_t i = 0; i < 20 * (n + 3); i++) c->ls[r5 + i] = (uint8_t)rnd();
+    u128 sc, bi;
+    for (int i = 0; i < 4; i++) {
+        sc._u32[i] = fbits_in(-0.01f, 0.01f);
+        bi._u32[i] = fbits_in(-500.0f, 500.0f);
+    }
+    if (rnd() % 8 == 0) sc._u32[3] = bi._u32[3] = 0;
+    for (int i = 0; i < 4; i++) {
+        c->gpr[7]._u32[i] = sc._u32[i];
+        c->gpr[8]._u32[i] = bi._u32[i];
+    }
+    setreg(c, 3, o3);
+    setreg(c, 4, o4);
+    setreg(c, 5, r5);
+    setreg(c, 6, n);
+    if (rnd() % 16 == 0) {   /* the declined cases */
+        switch (rnd() % 3) {
+        case 0: setreg(c, 3, r5 & ~15u); break;   /* the output over the records */
+        case 1: setreg(c, 4, o3 + 16 * (rnd() % 4)); break;   /* the two outputs overlap */
+        default: setreg(c, 4, o4 + 8); break;
+        }
+    }
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -1128,6 +1220,8 @@ static const struct {
     {"vj_vertex", synth_vjvert},     {"sk_skin", synth_skin},
     {"vj_light", synth_vjvert},   /* slot 81, the emitter with the SSE relight */
     {"mopp_vm", synth_mopp},      /* slot 82, the MOPP ray machine's loop head (a computed continuation) */
+    {"sk_skin2", synth_skin2},    /* slot 83 */
+    {"sk_unpack", synth_skinunpack},   /* slot 84 */
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
@@ -1137,6 +1231,16 @@ static long n_case, n_match, n_mis, n_fb, n_imis, n_bad, n_puts;
 
 /* gates whose r3 is a result (VertexJob's vertex emitter leaves its last memcpy's destination there, as
  * the SPU code does) */
+/* the scratch registers a subroutine gate sets for its caller (the rest are dead: live_proof.py), compared
+ * as r0 and r1 are. 0-terminated. */
+static const int* kind_keep(const kz2_native_entry* e)
+{
+    static const int sk2[] = { 2, 3, 4, 5, 6, 9, 0 }, sku[] = { 2, 3, 4, 5, 6, 0 };
+    if (!e->kind) return NULL;
+    if (!strcmp(e->kind, "sk_skin2")) return sk2;
+    if (!strcmp(e->kind, "sk_unpack")) return sku;
+    return NULL;
+}
 static int kind_r3(const kz2_native_entry* e)
 {
     return e->kind && (!strcmp(e->kind, "vj_vertex") || !strcmp(e->kind, "vj_light"));   /* slots 79, 81 */
@@ -1172,6 +1276,29 @@ static void mfc_mutate(hmfc_log* l)
 }
 static uint64_t t_lift, t_nat, b_lift, b_nat;
 static int do_interp;
+
+/* an earlier change: KZ2_GPU_CASES=FILE appends, for Gfx.Post.Downsample's row kernels (slots 71 @0x5620 RGBA8 and 72
+ * @0x56D0 16-bit), each recorded case's two source rows and the lifted code's output row to FILE, for the GPU compute
+ * check (tools/spu/gpu_post_test.c): u32 slot, u32 nq (output quadwords), src row 0 (32 nq bytes), src row 1 (32 nq),
+ * lifted output (16 nq). The rows come from the state before the call, the output from the lifted run. */
+static void gpu_case_export(int slot, const spu_context* in, const spu_context* lifted)
+{
+    static FILE* f;
+    static int init;
+    if (!init) { init = 1; const char* p = getenv("KZ2_GPU_CASES"); if (p && *p) f = fopen(p, "ab"); }
+    if (!f || (slot != 71 && slot != 72)) return;
+    const uint32_t dst = in->gpr[3]._u32[0], r0 = in->gpr[4]._u32[0], r1 = r0 + in->gpr[5]._u32[0];
+    const uint32_t n = in->gpr[6]._u32[0], step = slot == 71 ? 4u : 2u;
+    if (!n || n % step || n > 4096) return;
+    const uint32_t nq = n / step;
+    if ((uint64_t)dst + 16u * nq > SPU_LS_SIZE || (uint64_t)r0 + 32u * nq > SPU_LS_SIZE || (uint64_t)r1 + 32u * nq > SPU_LS_SIZE) return;
+    const uint32_t h[2] = { (uint32_t)slot, nq };
+    fwrite(h, 4, 2, f);
+    fwrite(in->ls + r0, 1, 32u * nq, f);
+    fwrite(in->ls + r1, 1, 32u * nq, f);
+    fwrite(lifted->ls + dst, 1, 16u * nq, f);
+    fflush(f);
+}
 
 static void one(const char* name, int slot, uint32_t entry)
 {
@@ -1227,6 +1354,7 @@ static void one(const char* name, int slot, uint32_t entry)
         t0 = now_ns();
         ra = run_lifted(&A, lf);
         t1 = now_ns();
+        if (ra == R_RET) gpu_case_export(slot, &S, &A);   /* an earlier change */
         nb = kz2_native_run(&B, e);
         t2 = now_ns();
     }
@@ -1269,6 +1397,11 @@ static void one(const char* name, int slot, uint32_t entry)
         if (!kind_dead(e, r) && memcmp(&A.gpr[r], &B.gpr[r], 16)) {
             bad = 1;
             snprintf(diff, sizeof diff, "r%d", r);
+        }
+    for (const int* kp = kind_keep(e); kp && *kp && !bad; kp++)   /* an earlier change */
+        if (memcmp(&A.gpr[*kp], &B.gpr[*kp], 16)) {
+            bad = 1;
+            snprintf(diff, sizeof diff, "r%d lifted %08X native %08X", *kp, A.gpr[*kp]._u32[0], B.gpr[*kp]._u32[0]);
         }
     if (!bad && kind_r3(e) && memcmp(&A.gpr[3], &B.gpr[3], 16)) {   /* a gate that returns r3 */
         bad = 1;

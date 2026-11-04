@@ -11,7 +11,7 @@ Off by default (PS3_GETENV_ONCE: one lookup). Diagnostic only; no behaviour chan
 
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -566,6 +566,50 @@
+@@ -567,6 +567,50 @@
      fflush(stderr);
  }
  
@@ -62,10 +62,10 @@ Off by default (PS3_GETENV_ONCE: one lookup). Diagnostic only; no behaviour chan
  void (SPU_ABI *spu_take_interrupt(spu_context* ctx,
                            void (SPU_ABI *tf)(spu_context*)))(spu_context*)
  {
-@@ -588,6 +632,7 @@
-         if (n <= 8 || (n & 4095) == 0)
-             fprintf(stderr, "[irq] back-to-back: pending iret restored before the next take (n=%ld img=%d srr0=0x%05X)\n",
-                     n, ctx->image_id, ctx->irq_resume_pc & SPU_LS_MASK);
+@@ -599,6 +643,7 @@
+                 s_b2b_n = n;
+             }
+         }
 +        if (PS3_GETENV_ONCE("KZ2_IRQ_B2B_DIFF")) kz2_b2b_diff(ctx);   /* patch 7009 */
          extern int spu_irq_regs_maybe_restore(spu_context*);
          spu_irq_regs_maybe_restore(ctx);

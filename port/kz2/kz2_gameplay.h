@@ -24,7 +24,12 @@ typedef struct {
     int   mouse_invert; /* mouse_invert_y 0/1 (default 0); KZ2_MOUSE_INVERT */
     /* an earlier change (ENHANCEMENT): */
     int   motion;       /* motion = auto|on|off, KZ2_MOTION_* in kz2_motion.h (default auto); KZ2_MOTION */
+    /* an earlier change (ENHANCEMENT; from KZ3 patch 4028): the UDP port of a DSU (cemuhook) motion server on 127.0.0.1, 0 = off
+     * (default). dsu_port = 0|off, on (= 26760, the cemuhook default) or 1024..65535; KZ2_DSU_PORT. cellPad patch 6062. */
+    int   dsu_port;
 } kz2_gameplay_cfg;
+
+#define KZ2_DSU_PORT_DEFAULT 26760   /* the port DSU servers (DS4Windows, SteamDeckGyroDSU, ...) listen on by default */
 
 #define KZ2_MOUSE_SENS_DEF 2.5f
 #define KZ2_MOUSE_YAW_DEF  0.022f
@@ -35,6 +40,11 @@ int kz2_gp_parse_aim(const char* s);
 int kz2_gp_parse_motion(const char* s);
 /* KZ2_MOTION (NULL = unset) overrides the file; a bad value is ignored and counted. */
 int kz2_gp_apply_motion_env(kz2_gameplay_cfg* c, const char* motion);
+/* dsu_port: a boolean off (0/off/false/no) -> 0, a boolean on (1/on/true/yes) -> KZ2_DSU_PORT_DEFAULT, a decimal
+ * 1024..65535 -> that port; NULL, "" or anything else (a port under 1024, a word) -> -1. */
+int kz2_gp_parse_dsu(const char* s);
+/* KZ2_DSU_PORT (NULL = unset) overrides the file; a bad value is ignored and counted. */
+int kz2_gp_apply_dsu_env(kz2_gameplay_cfg* c, const char* port);
 /* "0"/"1"/"on"/"off"/"true"/"false"/"yes"/"no" -> 0/1; NULL, "" or anything else -> -1. */
 int kz2_gp_parse_bool(const char* s);
 /* Defaults, then the [gameplay] section of an ini text (other sections ignored; "key = value", '#'/';' comments, a bad
@@ -69,6 +79,34 @@ int kz2_gp_aim_on(const kz2_gameplay_cfg* c, int look_is_mouse);
  * is skipped only when the assist is off AND its return address is one of these; the other callers (follow camera,
  * mounted gun) and the sprint slowdown (the modifier pointer is never touched) are not. */
 int kz2_gp_aim_skip(int aim_on, uint32_t lr, const uint32_t* sites, int nsites);
+
+/* Aim assist diagnostics (KZ2_AIM_LOG=1, off by default): what ApplyInputModifier @0x2F0120 and the target
+ * search under it see in one window of look updates. Fed by the guest glue in kz2_ppu_overrides.cpp; pure so the host
+ * test checks the counting and the line. "gather" = the candidate gather @0x2F9F50 (candidates after the range/cone test),
+ * "find" = the target finder @0x2FAF70 (1 = a candidate passed the line-of-sight ray), "cone" = the aim-cone factor
+ * @0x2EFC88 (1 = no target, < 1 = slow the stick), M+0x10 / M+0x0C = the modifier's rate-limited slowdown and softlock
+ * factors after the call. */
+typedef struct {
+    unsigned mod, edits;            /* modifier calls at UpdateLook's site; calls that changed the stick */
+    float max_in, max_dx;           /* largest |stick| in, largest |out - in| */
+    float min_m10, max_m0c;         /* slowdown factor (1 = none), softlock factor (0 = none) */
+    unsigned gather, gather_hit;    /* gather calls; calls with >= 1 candidate */
+    unsigned cand_max, ents_max;    /* most candidates in one call; most entities in the game's list */
+    unsigned find, found;           /* finder calls; calls that returned a target */
+    unsigned cone, cone_lt1;        /* aim-cone calls; calls with a factor < 1 */
+    float min_cone;
+    unsigned soft, soft_found;      /* softlock search @0x2EFEB8 calls; calls that left a target (it gates the slowdown) */
+} kz2_aim_stats;
+void kz2_aim_stats_reset(kz2_aim_stats* s);
+void kz2_aim_stats_mod(kz2_aim_stats* s, float x0, float y0, float x1, float y1, float m10, float m0c);
+void kz2_aim_stats_gather(kz2_aim_stats* s, unsigned candidates, unsigned entities);
+void kz2_aim_stats_find(kz2_aim_stats* s, int found);
+void kz2_aim_stats_cone(kz2_aim_stats* s, float factor);
+void kz2_aim_stats_soft(kz2_aim_stats* s, int found);
+/* One "[aim] ..." summary line (no newline) into buf; returns its length. */
+int kz2_aim_stats_line(const kz2_aim_stats* s, const char* aim_state, char* buf, int cap);
+/* The first look update's line: "look device at start: stick (aim assist on, aim_assist auto)". */
+int kz2_look_start_line(const kz2_gameplay_cfg* c, int look_is_mouse, char* buf, int cap);
 
 /* Cover toggle latch. The game asks "is cover held" (held(11)) once per frame at one call site; with the toggle the
  * latch replaces the held bit. begin() before the game's cover function, held() at the query, end() after it. */

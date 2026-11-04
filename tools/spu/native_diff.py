@@ -24,6 +24,8 @@ OUT = os.environ.get("KZ2_OUT", "work")
 OUT = OUT if os.path.isabs(OUT) else os.path.join(ROOT, OUT)
 PT = os.environ.get("KZ2_PATCHED_DIR", os.path.join(OUT, "ps3recomp-patched"))
 SPU = os.path.join(OUT, "spu")
+# KZ2_NATIVE_SRC (mutation checks): another copy of port/kz2/spu to build the native side from
+NSRC = os.environ.get("KZ2_NATIVE_SRC", os.path.join(ROOT, "port/kz2/spu"))
 
 
 def gates():
@@ -52,13 +54,13 @@ def build(name, bdir):
     lift = os.path.join(SPU, "lift", name)
     srcs = [os.path.join(ROOT, "tools/spu/native_diff_harness.c"), os.path.join(lift, "spu_recomp.c"),
             os.path.join(PT, "runtime/spu/spu_drain.c"), os.path.join(PT, "runtime/spu/spu_interp.c"),
-            *sorted(glob.glob(os.path.join(ROOT, "port/kz2/spu/native_*.c")))]
-    newest = max(os.path.getmtime(s) for s in srcs + [os.path.join(ROOT, "port/kz2/spu/kz2_native_jobs.h"),
+            *sorted(glob.glob(os.path.join(NSRC, "native_*.c")))]
+    newest = max(os.path.getmtime(s) for s in srcs + [os.path.join(NSRC, "kz2_native_jobs.h"),
                                                        os.path.join(ROOT, "tools/spu/harness_mfc.h"),
-                                                       *glob.glob(os.path.join(ROOT, "port/kz2/spu/*.h"))])
+                                                       *glob.glob(os.path.join(NSRC, "*.h"))])
     if not os.path.exists(exe) or os.path.getmtime(exe) < newest:
         inc = ["-I", os.path.join(PT, "runtime/spu"), "-I", os.path.join(PT, "include"), "-I",
-               os.path.join(PT, "runtime"), "-I", lift, "-I", os.path.join(ROOT, "port/kz2/spu")]
+               os.path.join(PT, "runtime"), "-I", lift, "-I", NSRC]
         cmd = [os.environ.get("CC", "gcc"), "-O2", "-g", "-msse4.1", "-mfma", "-ffp-contract=off",
                "-fno-strict-aliasing", "-w", f"-DHARNESS_REGISTER={name}_spu_recomp_register", *inc, *srcs, "-lm",
                "-o", exe]

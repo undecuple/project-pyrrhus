@@ -9,11 +9,20 @@ then gives them to the job (KZ3: r0 = 0xBAD00000 in a control run). KZ2's runtim
 spu_take_interrupt, unchanged since Project Helghast), and the WWS policy module runs jobs with interrupts on. Written
 here from that description (KZ3's patch itself was not copied): spu_take_interrupt first completes a pending iret
 the way the dispatch would (restore; pop the frame, or unwind to the taking frame, whose loop then takes the
-still-pending event), and counts it as "[irq] back-to-back" (the first 8, then every 4096th).
+still-pending event), and counts it as "[irq] back-to-back" (the first 8, then every 4096th; since an earlier change the first 8, then one
+count line every 10 s: the 4096th-event line was 29 % of all log lines in an earlier change).
 
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -574,6 +574,23 @@
+@@ -196,6 +196,7 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include "ps3emu/log_first.h"
++#include <time.h>   /* KZ2 patch 7008: the back-to-back count's clock */
+ 
+ /* Sync-model ring-drain: the wwsjob PM's job ring drains only when jobs mark
+  * their record's "done" bit (0x8000 in the record's first halfword @LS 0xDF0).
+@@ -574,6 +575,33 @@
          if (--g_sn_defer == 0) g_sn_defer_ctx = 0;
          return tf;
      }
@@ -28,9 +37,19 @@ still-pending event), and counts it as "[irq] back-to-back" (the first 8, then e
 +        (ctx->pc & SPU_LS_MASK) == (ctx->irq_resume_pc & SPU_LS_MASK)) {
 +        static volatile long s_b2b = 0;
 +        const long n = __atomic_add_fetch(&s_b2b, 1, __ATOMIC_RELAXED);
-+        if (n <= 8 || (n & 4095) == 0)
++        if (n <= 8)
 +            fprintf(stderr, "[irq] back-to-back: pending iret restored before the next take (n=%ld img=%d srr0=0x%05X)\n",
 +                    n, ctx->image_id, ctx->irq_resume_pc & SPU_LS_MASK);
++        else if ((n & 1023) == 0) {   /* an earlier change: then a count every 10 s (was every 4096th event) */
++            static volatile long long s_b2b_t; static volatile long s_b2b_n;
++            const long long now = (long long)time(NULL), t0 = s_b2b_t;
++            if (!t0) { s_b2b_t = now; s_b2b_n = n; }
++            else if (now - t0 >= 10 && __atomic_compare_exchange_n(&s_b2b_t, (long long*)&t0, now, 0,
++                                                                   __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++                fprintf(stderr, "[irq] back-to-back: n=%ld (+%ld in %lld s)\n", n, n - s_b2b_n, now - t0);
++                s_b2b_n = n;
++            }
++        }
 +        extern int spu_irq_regs_maybe_restore(spu_context*);
 +        spu_irq_regs_maybe_restore(ctx);
 +    }

@@ -1,0 +1,78 @@
+KZ2 patch 6070: the PSO key's split in a [perf-psokey] line. Diagnostic; no behaviour change.
+
+Written here. [perf-walk]'s "pso: key" (the walker's PSO lookup before the cache probe: 0.8-3 ms a frame in Corinth
+Sands) is split in five parts, timed only while RSX_PERF's walk window is on (LDW_T0/LDW_ADD): rs+fpconst
+(decode_render_state, rsx_fp_collect_constants, the alpha reference), vp (the VP identity: 2029's memo compare or the
+FNV), fp (the FP hash or its memo), units+inputs (the unnormalised-unit loop, the translator inputs, the WPOS and ddy
+scans of the FP), tail (ld_pso_key_tail). Printed once a second as
+`[perf-psokey] t=Ns rs+fpconst A vp B fp C units+inputs D tail E` (ms in the period). It says which part a PSO key memo
+(the walker plan's item 3) would have to remove.
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index e2ba02c..ce2ea4a 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2505,6 +2505,10 @@ static DWORD WINAPI rsx_perf_thread(LPVOID unused)
+                     d[RSX_PERF_W_D_POST_T] * tk, d[RSX_PERF_W_D_RS_T] * tk,
+                     d[RSX_PERF_W_D_BAR_N], d[RSX_PERF_W_D_BAR_T] * tk, d[RSX_PERF_W_D_OMRT_T] * tk, d[RSX_PERF_W_D_SM_HIT_N],
+                     d[RSX_PERF_W_D_UNIT_SKIP_N], d[RSX_PERF_W_D_RM_SKIP_N]);
++            if (d[RSX_PERF_W_ON])   /* patch 6070: the split of [perf-walk]'s "pso: key", ms in the last period */
++                fprintf(stderr, "[perf-psokey] t=%.0fs rs+fpconst %.1f vp %.1f fp %.1f units+inputs %.1f tail %.1f\n", tnow,
++                        d[RSX_PERF_W_PK_RS_T] * tk, d[RSX_PERF_W_PK_VP_T] * tk, d[RSX_PERF_W_PK_FP_T] * tk,
++                        d[RSX_PERF_W_PK_XI_T] * tk, d[RSX_PERF_W_PK_TAIL_T] * tk);
+             if (d[RSX_PERF_W_ON])   /* patch 2080: NV3089 blits (whole method, its GPU mirror, the guest copy) */
+                 fprintf(stderr, "[perf-nv3089] t=%.0fs n=%lld blit %.1fms (gpu %.1fms, copy %.1fms rows %lld)"
+                                 " bytes %.2fMB\n", tnow, d[RSX_PERF_W_NV3089_N], d[RSX_PERF_W_NV3089_T] * tk,
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 0a642dc..7a767f8 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10329,6 +10329,8 @@ static ID3D12PipelineState* get_pso(
+     }
+     g.fp_alpha_ref = rsx_fp_alpha_ref(
+         rs.alpha_ref_raw, rs.alpha_ref_format);
++    LDW_ADD(RSX_PERF_W_PK_RS_T, gp_t2);   /* patch 6070: render state + FP constants */
++    LDW_T0(pk_t1);
+ 
+     u64 vp_h;   /* patch 2029: FNV of the VP, memoized; also g_ld_current_pso.vp_hash */
+     {
+@@ -10343,6 +10345,8 @@ static ID3D12PipelineState* get_pso(
+             }
+         }
+     }
++    LDW_ADD(RSX_PERF_W_PK_VP_T, pk_t1);   /* patch 6070: the VP identity */
++    LDW_T0(pk_t2);
+     u64 key = vp_h;
+     const u32 fp_hmode = ld_fp_constants_buffered() ? 1u : 2u;
+     if (fp_same && g_ld_fpm.hvalid && g_ld_fpm.hmode == fp_hmode && g_ld_fpm.hseed == key) {
+@@ -10361,6 +10365,8 @@ static ID3D12PipelineState* get_pso(
+         LD_PSO_BAIL("shader hash collapsed to zero");
+         return NULL;
+     }
++    LDW_ADD(RSX_PERF_W_PK_FP_T, pk_t2);   /* patch 6070: the FP hash */
++    LDW_T0(pk_t3);
+     const u64 kl_fp = key;   /* patch 2042: LD_PSO_KEYLOG component */
+     const u32 fp_ctrl_key = fp_ctrl & 0x4Eu;   /* the key tail's value, for the keylog */
+     /* Texel-addressed (RSX_TEX_FMT_UNNORM) units need their coordinates divided
+@@ -10436,7 +10442,10 @@ static ID3D12PipelineState* get_pso(
+         }
+     }
+     u64 kl_pre_rs = 0;
++    LDW_ADD(RSX_PERF_W_PK_XI_T, pk_t3);   /* patch 6070: units, the key inputs, WPOS/ddy scans */
++    LDW_T0(pk_t4);
+     key = ld_pso_key_tail(key, &xi, packed_payload, &kl_pre_rs);   /* patch 2071: shared with the prewarm */
++    LDW_ADD(RSX_PERF_W_PK_TAIL_T, pk_t4);   /* patch 6070: the key tail hash */
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_note_fp_variants(
+         fp_uc, fp_size, fp_ctrl_key, cube_mask, &rs);
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 514be6a..030d384 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -263,6 +263,7 @@ enum {
+     RSX_PERF_W_D_BAR_T, RSX_PERF_W_D_BAR_N, RSX_PERF_W_D_OMRT_T, RSX_PERF_W_D_SM_HIT_N,
+     RSX_PERF_W_TEX_UP_T,   /* the upload half (barriers + CopyTextureRegion) of TEX_NEW_T */
+     RSX_PERF_W_D_UNIT_SKIP_N,   /* enabled units not bound: the FP never samples them */
++    RSX_PERF_W_PK_RS_T, RSX_PERF_W_PK_VP_T, RSX_PERF_W_PK_FP_T, RSX_PERF_W_PK_XI_T, RSX_PERF_W_PK_TAIL_T,   /* patch 6070: the PSO key split */
+     RSX_PERF_W_D_RM_SKIP_N,   /* patch 6069: recording calls the LD_REC_MEMO memo skipped */
+     RSX_PERF_W_CB_COPY_N, RSX_PERF_W_CB_REUSE_N,   /* patch 6064: draws that copied the vertex constants / reused the previous slot */
+     RSX_PERF_W_WRAP_SRV, RSX_PERF_W_WRAP_SMP,   /* patch 6063: descriptor-ring wraps by ring (SRV table ring, sampler ring) */

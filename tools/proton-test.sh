@@ -16,6 +16,9 @@
 # Exit status: 0 if the program was still running at screenshot time or exited 0; the log is printed.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Disk floor: no new run below 20 GB free on /home (KZ2_MIN_FREE_GB overrides).
+free=$(df -B1G --output=avail /home | tail -1 | tr -d ' ')
+(( free >= ${KZ2_MIN_FREE_GB:-20} )) || { echo "proton-test: only ${free} GB free on /home: stopping" >&2; exit 4; }
 SECONDS_RUN=10 SHOT="" NAME="" PROTON_DIR="$HOME/.local/share/Steam/compatibilitytools.d/Proton-GE Latest"
 while [[ $# -gt 0 ]]; do
   case "$1" in

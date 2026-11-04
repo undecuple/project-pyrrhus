@@ -4,7 +4,8 @@
   tools/spu/toggle_ab.py LOG [--from S] [--to S] [--ovl 224,201] [--manifest ...] [--md]
 
 LOG holds patch 1032's `[wacct]` windows (KZ3_WAIT_ACCT=1, KZ2_WACCT_TOPN=40 so small jobs are listed) and the
-toggle's `[native-toggle] ... phase=N` switch lines (port/kz2/spu/native_toggle.h; even N = lifted, odd = native).
+toggle's `[native-toggle] ... phase=N` switch lines (port/kz2/spu/native_toggle.h; even N = lifted, odd = native), or
+(KZ2_NATIVE_TOGGLE_PERIOD=ab) KZ2_AB_TOGGLE's `[ab-toggle] ... phase=N on|off` (odd = native as well).
 A wacct header `t=T` opens the report of the window that ended at T; a switch line printed after header k (before
 k+1) happened inside window k+1, so window k+1 is mixed and dropped. Every other window belongs to one phase.
 
@@ -24,7 +25,7 @@ from collections import defaultdict
 HDR = re.compile(r"\[wacct\] ---- t=([\d.]+)s window=(\d+)ms flips=(\d+)")
 THR = re.compile(r"\[wacct\] thr=(\S+) wait=(\d+)ms(.*?) \|(.*)$")
 SITE = re.compile(r" (\w+):(\S+?)=([\d.]+)ms/(\d+)")
-TOG = re.compile(r"\[native-toggle\] t=([\d.]+)s phase=(\d+) ")
+TOG = re.compile(r"\[(?:native|ab)-toggle\] t=([\d.]+)s phase=(\d+) ")   # ab-toggle too
 
 
 def names(path):
@@ -41,7 +42,7 @@ def windows(log):
     cur = None
     with open(log, errors="replace") as f:
         for line in f:
-            if "[native-toggle]" in line:
+            if "[native-toggle]" in line or "[ab-toggle]" in line:
                 m = TOG.search(line)
                 if m:
                     first = phase is None

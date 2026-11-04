@@ -1,0 +1,346 @@
+KZ2 patch 6062 (ENHANCEMENT, opt-in, off by default): the DSU (cemuhook) motion client, so a pad whose gyro reaches
+Windows only through a DSU server (DS4Windows, DualSenseX, BetterJoy, a Steam Deck or phone DSU app) turns the valves
+and arms the demolition charges by real tilt, the way a SIXAXIS does.
+
+Source: Project Helghast (the Killzone 3 PC port) patch 4028, pad_dsu.h / pad_dsu_io.h and the poll in cellPad.c,
+same author, MIT licence (Project Helghast, snapshot work/kz3-import/2a4bd292/). Adapted for KZ2:
+- the setting is gameplay.ini [gameplay] dsu_port = 0|off, on (= 26760, the cemuhook default) or 1024..65535, read by
+  the title port (port/kz2/kz2_gameplay.c; KZ2_DSU_PORT wins for one run) and passed in with pad_dsu_set_port() before
+  the first poll; 4028's keybinds.ini [motion] section, its bridge verb and its axis-map keys are not taken (the map is
+  fixed at 4028's default: for KZ2's tilt readers only the sign of X matters, and both directions are used);
+- the samples feed patch 6049's motion path, not the prompts alone: port 0's has_sensor, has_accel and SIXAXIS words,
+  so motion = auto/on pass them to the game (the accelerometer latch reads gravity, kz2_motion_feed says no stick) and
+  the right stick and the keyboard tilt keys (6060) stop driving the valves and charges; motion = off sends a still pad
+  and keeps the stick, as for any pad;
+- written after the keyboard merge as well (pad_dsu_apply), which clears port 0 when no pad is there, so a keyboard
+  player can use a DSU server too; after 1 s without a sample port 0's sensor fields are cleared once;
+- one socket user at a time (pad_poll_backend may run on two threads in one tick); a socket that cannot be opened is
+  retried once a second.
+The socket is bound to 127.0.0.1 and connect()ed to 127.0.0.1:<port>: no other host can be named and nothing listens
+on a public interface; every byte from the server is checked (magic, version, length, CRC32, event, slot state, finite
+and in-range floats) before it is used. Host test: tools/runtime/test_dsu.sh (a fake DSU server on 127.0.0.1).
+
+diff -ruN a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c	2026-11-04 08:04:17.253414802 -0600
++++ b/libs/input/cellPad.c	2026-11-04 08:05:38.923337451 -0600
+@@ -71,6 +71,7 @@
+ #include "pad_host.h"
+ #include "pad_motion_stick.h"   /* 4015, 6049 */
+ #include "pad_kb_roles.h"      /* 6050 */
++#include "pad_dsu_io.h"        /* 6062: DSU (cemuhook) motion client, from KZ3 patch 4028 */
+ #ifndef _WIN32
+ /* 4011: PKB_PROMPTS_* and the value names on every platform (pure header; the Windows keyboard code below includes it
+  * again for the bindings, which only Windows polls). */
+@@ -1257,6 +1258,78 @@
+     return s_remap[f].src[g] < PRM_N ? prm_names[s_remap[f].src[g]] : "";
+ }
+ 
++/* KZ2 patch 6062 (ENHANCEMENT, off by default; from Project Helghast patch 4028, MIT): the DSU (cemuhook) motion client
++ * (pad_dsu.h, pad_dsu_io.h). The title port sets the server's port from gameplay.ini dsu_port / KZ2_DSU_PORT
++ * (pad_dsu_set_port, before the first poll; 0 = off, and then this costs one load per poll). While samples arrive they
++ * are port 0's accelerometer and gyro (has_sensor, has_accel and the four SIXAXIS words), so 6049's motion mode treats
++ * them as a pad with sensors: auto/on pass them to the game and the title port stops feeding the right stick to the
++ * valves and charges once the words have read gravity; off sends a still pad as for any pad. pad_dsu_poll runs after
++ * the host pads (it marks port 0 as having motion for the prompt tracker), pad_dsu_apply after the keys are merged
++ * (the merge clears port 0's state when no pad is there, so a keyboard player can use a DSU server too). After 1 s
++ * without a sample the words go back to whatever the pad itself reports (a still pad without sensors). */
++static PadDsu            s_dsu = { PDSU_BAD, 0, 0, 0, 0, { { 0 }, { 0 }, 0, 0 }, 0, 0 };
++static volatile unsigned s_dsu_want;   /* the port asked for, 0 = off */
++static int               s_dsu_seen;   /* 1 while samples arrive */
++static int               s_dsu_drop;   /* 1 = the samples stopped: clear port 0's sensor fields once */
++static unsigned          s_dsu_w[4];
++static volatile int      s_dsu_busy;   /* two threads may poll in the same tick (pad_poll_backend): one does the socket */
++void pad_dsu_set_port(unsigned port) { s_dsu_want = port <= 65535u ? port : 0; }
++
++static void pad_dsu_poll(void)
++{
++    static int warned;
++    static unsigned long long next_try;
++    const unsigned port = s_dsu_want;
++    if (!port && !s_dsu.port) return;
++    if (__sync_lock_test_and_set(&s_dsu_busy, 1)) return;
++    const unsigned long long now = pad_now_ms();
++    if (!port) {
++        pdsu_close(&s_dsu);
++        printf("[pad] DSU motion off\n"); fflush(stdout);
++        if (s_dsu_seen) { s_dsu_seen = 0; s_dsu_drop = 1; }
++        warned = 0;
++    } else if (s_dsu.port != port && (now < next_try || !pdsu_open(&s_dsu, port))) {
++        if (now >= next_try) next_try = now + 1000;   /* no socket: try again once a second, say so once */
++        if (!warned) { warned = 1; printf("[pad] DSU motion: cannot open a socket to 127.0.0.1:%u\n", port); fflush(stdout); }
++    } else {
++        if (s_dsu.next_reg == 0) { printf("[pad] DSU motion on: client of 127.0.0.1:%u (localhost only)\n", port); fflush(stdout); }
++        if (pdsu_poll(&s_dsu, now)) {
++            PadDsuMap dm;
++            pdsu_map_default(&dm);
++            pdsu_words(&s_dsu.last, &dm, s_dsu_w);
++            s_port_motion[0] = 1;   /* 4011: the prompt tracker's "motion sensors" */
++            if (!s_dsu_seen) {
++                s_dsu_seen = 1;
++                printf("[pad] DSU motion: samples from 127.0.0.1:%u (slot %u; words %u %u %u %u): %s\n", port, s_dsu.last.slot,
++                       s_dsu_w[0], s_dsu_w[1], s_dsu_w[2], s_dsu_w[3],
++                       s_motion_mode == PAD_MOTION_OFF ? "motion = off, the game gets a still pad"
++                                                       : "valves and demolition charges take this tilt");
++                fflush(stdout);
++            }
++        } else if (s_dsu_seen) {
++            s_dsu_seen = 0;
++            s_dsu_drop = 1;
++            printf("[pad] DSU motion: no samples for 1 s (accepted %u, rejected %u)\n", s_dsu.accepted, s_dsu.rejected);
++            fflush(stdout);
++        }
++    }
++    __sync_lock_release(&s_dsu_busy);
++}
++
++static void pad_dsu_apply(void)
++{
++    PadHostState* hs = &s_host_state[0];
++    if (s_dsu_seen) {
++        hs->has_sensor = 1; hs->has_accel = 1;
++        hs->sensor_x = (u16)s_dsu_w[0]; hs->sensor_y = (u16)s_dsu_w[1]; hs->sensor_z = (u16)s_dsu_w[2]; hs->sensor_g = (u16)s_dsu_w[3];
++    } else if (s_dsu_drop) {
++        s_dsu_drop = 0;   /* a pad with its own sensors writes them again at its next poll (pad_sdl_sensors) */
++        hs->has_sensor = 0; hs->has_accel = 0;
++        hs->sensor_x = 512; hs->sensor_y = 399; hs->sensor_z = 512; hs->sensor_g = 512;
++        s_port_motion[0] = 0;
++    }
++}
++
+ static void pad_poll_backend(void)
+ {
+     /* Benign race: two threads may poll in the same tick. That costs one extra
+@@ -1280,11 +1353,13 @@
+     /* KZ3 patch 2037: keys always polled (not only with no pad on port 0) and merged into port 0. */
+     pad_poll_keyboard();
+ #endif
++    pad_dsu_poll();          /* 6062: after the pads' own sensors, before the prompt tracker reads the motion flag */
+     pad_remap_apply_all();   /* 4013: the pad layout, on the pads only (not on the keys, merged below) */
+     pad_prompt_track();   /* 4011: before the keys are merged into port 0 */
+ #ifdef _WIN32
+     pad_merge_keyboard();
+ #endif
++    pad_dsu_apply();         /* 6062: port 0's sensor words, after the merge */
+ }
+ 
+ /* ---------------------------------------------------------------------------
+diff -ruN a/libs/input/pad_dsu.h b/libs/input/pad_dsu.h
+--- a/libs/input/pad_dsu.h	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/input/pad_dsu.h	2026-11-04 08:04:44.173448637 -0600
+@@ -0,0 +1,119 @@
++/* KZ2 patch 6062 (ENHANCEMENT, opt-in, default off): the DSU (cemuhook) motion client, pure part. From Project
++ * Helghast (the Killzone 3 PC port) patch 4028, pad_dsu.h (same author, MIT), adapted: KZ2_ names; the port setting is
++ * read by the title port (gameplay.ini [gameplay] dsu_port, port/kz2/kz2_gameplay.c), so the name <-> port and axis-map
++ * parsers of 4028's keybinds.ini [motion] section are not here; the axis map is fixed at 4028's default.
++ * Here: the CRC32, the request packet, the strict parser for a server's pad-data packet, the conversion to the DS3
++ * SIXAXIS words the game reads (the same words and constants as pad_sdl_sensors in pad_host.h). The socket part is
++ * pad_dsu_io.h. Nothing here touches the network or guest memory; tools/runtime/test_dsu.c tests it on the host.
++ *
++ * Protocol (cemuhook, as implemented by DS4Windows, Steam Deck DSU servers, DSUClient): UDP, little endian.
++ *   header 16 bytes: magic "DSUC" (client) / "DSUS" (server), u16 version 1001, u16 length of what follows the header,
++ *   u32 CRC32 of the whole packet with this field zero, u32 sender id.
++ *   then u32 event type; 0x100002 = pad data. Request body: u8 flags (0 = all slots, 1 = by slot), u8 slot, 6 bytes MAC.
++ *   pad data (100 bytes): 20 slot, 21 slot state, 22 model, 23 connection, 24-29 MAC, 30 battery, 31 connected,
++ *   32 u32 packet number, 36.. buttons / sticks / touch, 68 u64 motion timestamp (us), 76 accel x y z (float, g),
++ *   88 gyro pitch yaw roll (float, deg/s).
++ * Every byte from the server is untrusted (it is on 127.0.0.1, but still another process): the parser checks the
++ * magic, version, length, CRC, event type, slot state and that every float is finite and in a physical range before
++ * anything reaches the pad state.
++ * ASSUMPTION (4028's, not checked against a real server on hardware): the server's accel/gyro frame is the DualShock
++ * 4's own, the frame SDL reports for a DS4 (x right, y up, z toward the player). For KZ2's valves and charges only the
++ * sign of x matters (their roll is atan(-X / sqrt(Y^2 + Z^2)), kz2_motion.h) and both directions are used. */
++#ifndef KZ2_PAD_DSU_H
++#define KZ2_PAD_DSU_H
++
++#include <stdint.h>
++#include <string.h>
++
++#define PDSU_PORT_DEFAULT 26760
++#define PDSU_VERSION 1001
++#define PDSU_EV_DATA 0x100002u
++#define PDSU_DATA_LEN 100
++#define PDSU_REQ_LEN 28
++
++static inline uint32_t pdsu_crc32(const uint8_t* p, unsigned long n)
++{
++    uint32_t c = 0xFFFFFFFFu;
++    unsigned long i;
++    int k;
++    for (i = 0; i < n; i++) {
++        c ^= p[i];
++        for (k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(c & 1u));
++    }
++    return ~c;
++}
++static inline void pdsu_put16(uint8_t* p, unsigned v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
++static inline void pdsu_put32(uint8_t* p, uint32_t v) { pdsu_put16(p, v & 0xFFFFu); pdsu_put16(p + 2, v >> 16); }
++static inline unsigned pdsu_get16(const uint8_t* p) { return (unsigned)p[0] | ((unsigned)p[1] << 8); }
++static inline uint32_t pdsu_get32(const uint8_t* p) { return pdsu_get16(p) | ((uint32_t)pdsu_get16(p + 2) << 16); }
++static inline float pdsu_getf(const uint8_t* p) { uint32_t u = pdsu_get32(p); float f; memcpy(&f, &u, 4); return f; }
++
++/* the registration request (pad data of every slot); returns PDSU_REQ_LEN */
++static inline int pdsu_request(uint8_t out[PDSU_REQ_LEN], uint32_t client_id)
++{
++    memset(out, 0, PDSU_REQ_LEN);
++    memcpy(out, "DSUC", 4);
++    pdsu_put16(out + 4, PDSU_VERSION);
++    pdsu_put16(out + 6, 12);   /* event type + flags + slot + MAC */
++    pdsu_put32(out + 12, client_id);
++    pdsu_put32(out + 16, PDSU_EV_DATA);   /* flags 0, slot 0, MAC 0: all slots */
++    pdsu_put32(out + 8, pdsu_crc32(out, PDSU_REQ_LEN));
++    return PDSU_REQ_LEN;
++}
++
++typedef struct { float accel[3]; float gyro[3]; uint64_t ts_us; unsigned slot; } PadDsuSample;
++enum { PDSU_OK = 0, PDSU_SHORT, PDSU_MAGIC, PDSU_VERSION_BAD, PDSU_LENGTH, PDSU_CRC, PDSU_EVENT, PDSU_NOPAD, PDSU_RANGE };
++
++/* parse one datagram of n bytes; PDSU_OK fills *s. Accepted pad data must be connected (byte 31 = 1, slot state 2). */
++static inline int pdsu_parse(const uint8_t* p, unsigned long n, PadDsuSample* s)
++{
++    uint8_t tmp[PDSU_DATA_LEN];
++    uint32_t crc;
++    float v[6];
++    int i;
++    if (n < PDSU_DATA_LEN) return PDSU_SHORT;
++    if (memcmp(p, "DSUS", 4)) return PDSU_MAGIC;
++    if (pdsu_get16(p + 4) != PDSU_VERSION) return PDSU_VERSION_BAD;
++    if (pdsu_get16(p + 6) != PDSU_DATA_LEN - 16) return PDSU_LENGTH;   /* a longer datagram: only its first 100 bytes count */
++    memcpy(tmp, p, PDSU_DATA_LEN);
++    crc = pdsu_get32(p + 8);
++    memset(tmp + 8, 0, 4);
++    if (pdsu_crc32(tmp, PDSU_DATA_LEN) != crc) return PDSU_CRC;
++    if (pdsu_get32(p + 16) != PDSU_EV_DATA) return PDSU_EVENT;
++    if (p[21] != 2 || p[31] != 1) return PDSU_NOPAD;
++    for (i = 0; i < 3; i++) {
++        const float a = pdsu_getf(p + 76 + 4 * i), g = pdsu_getf(p + 88 + 4 * i);
++        if (!(a >= -16.0f && a <= 16.0f) || !(g >= -2000.0f && g <= 2000.0f)) return PDSU_RANGE;   /* also rejects NaN */
++        v[i] = a;
++        v[3 + i] = g;
++    }
++    memcpy(s->accel, v, sizeof s->accel);   /* only a fully accepted packet touches the sample */
++    memcpy(s->gyro, v + 3, sizeof s->gyro);
++    s->ts_us = (uint64_t)pdsu_get32(p + 68) | ((uint64_t)pdsu_get32(p + 72) << 32);
++    s->slot = p[20];
++    return PDSU_OK;
++}
++
++/* DS3 SIXAXIS words (10 bits) as pad_sdl_sensors makes them: accel 512 - 113 a/g (flat: Y = 399 at +1 g), gyro G =
++ * 512 - 123 yaw/(90 deg/s) with yaw = the server's second gyro value. */
++static inline unsigned pdsu_word(float v)
++{
++    float w = v + (v >= 0.0f ? 0.5f : -0.5f);
++    return (unsigned)(w < 0.0f ? 0 : w > 1023.0f ? 1023 : (int)w);
++}
++/* Server axis -> DS3 word, 4028's default (a setting there, fixed here): +-(1..3) = accel x/y/z, +-(4..6) = gyro x/y/z
++ * (pitch, yaw, roll); the sign is the direction. w[] = X, Y, Z, G. */
++typedef struct { signed char w[4]; } PadDsuMap;
++static inline void pdsu_map_default(PadDsuMap* m) { m->w[0] = 1; m->w[1] = 2; m->w[2] = 3; m->w[3] = 5; }
++static inline void pdsu_words(const PadDsuSample* s, const PadDsuMap* m, unsigned w[4])
++{
++    int i;
++    for (i = 0; i < 4; i++) {
++        int e = m->w[i], k = e < 0 ? -e : e;
++        float sg = e < 0 ? -1.0f : 1.0f, v;
++        if (k < 1 || k > 6) { w[i] = 512; continue; }
++        v = k <= 3 ? s->accel[k - 1] : s->gyro[k - 4];
++        w[i] = i < 3 ? pdsu_word(512.0f - 113.0f * sg * v) : pdsu_word(512.0f - 123.0f * sg * v / 90.0f);
++    }
++}
++#endif
+diff -ruN a/libs/input/pad_dsu_io.h b/libs/input/pad_dsu_io.h
+--- a/libs/input/pad_dsu_io.h	1969-12-31 18:00:00.000000000 -0600
++++ b/libs/input/pad_dsu_io.h	2026-11-04 08:05:02.987878424 -0600
+@@ -0,0 +1,93 @@
++/* KZ2 patch 6062: the DSU client's socket (see pad_dsu.h). From Project Helghast (the Killzone 3 PC port) patch 4028,
++ * pad_dsu_io.h (same author, MIT), KZ2_ names. One non-blocking UDP socket, bound to 127.0.0.1 (port chosen by the
++ * system) and connect()ed to 127.0.0.1:<setting>: it can only send to and receive from that address, there is no way to
++ * name another host, and nothing listens on a public interface. Polled from the pad poll (no thread). */
++#ifndef KZ2_PAD_DSU_IO_H
++#define KZ2_PAD_DSU_IO_H
++
++#include "pad_dsu.h"
++#ifdef _WIN32
++  #include <winsock2.h>
++  typedef SOCKET pdsu_sock_t;
++  #define PDSU_BAD INVALID_SOCKET
++  static inline void pdsu_closesock(pdsu_sock_t s) { closesocket(s); }
++  static inline int pdsu_nonblock(pdsu_sock_t s) { u_long on = 1; return ioctlsocket(s, FIONBIO, &on); }
++#else
++  #include <sys/socket.h>
++  #include <netinet/in.h>
++  #include <arpa/inet.h>
++  #include <fcntl.h>
++  #include <unistd.h>
++  typedef int pdsu_sock_t;
++  #define PDSU_BAD (-1)
++  static inline void pdsu_closesock(pdsu_sock_t s) { close(s); }
++  static inline int pdsu_nonblock(pdsu_sock_t s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK); }
++#endif
++
++typedef struct {
++    pdsu_sock_t sock;
++    unsigned port;                 /* the server's port on 127.0.0.1, 0 = closed (sock is only valid while port != 0) */
++    unsigned long long next_reg;   /* ms: when to send the next registration */
++    unsigned long long last_ms;    /* ms: the last accepted sample (0 = none yet) */
++    uint32_t client_id;
++    PadDsuSample last;
++    unsigned accepted, rejected;
++} PadDsu;
++
++/* 1 = open (or already open on this port), 0 = failed. Re-opens when the port changes. */
++static inline int pdsu_open(PadDsu* d, unsigned port)
++{
++    struct sockaddr_in a;
++    if (d->port == port && port) return 1;
++    if (d->port) pdsu_closesock(d->sock);
++    d->port = 0; d->sock = PDSU_BAD; d->last_ms = 0;
++    if (!port || port > 65535u) return 0;
++#ifdef _WIN32
++    { WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w)) return 0; }
++#endif
++    d->sock = socket(AF_INET, SOCK_DGRAM, 0);
++    if (d->sock == PDSU_BAD) return 0;
++    memset(&a, 0, sizeof a);
++    a.sin_family = AF_INET;
++    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    a.sin_port = 0;
++    if (bind(d->sock, (struct sockaddr*)&a, sizeof a) || (a.sin_port = htons((unsigned short)port),
++        connect(d->sock, (struct sockaddr*)&a, sizeof a)) || pdsu_nonblock(d->sock)) {
++        pdsu_closesock(d->sock); d->sock = PDSU_BAD;
++        return 0;
++    }
++    d->port = port;
++    d->next_reg = 0;
++    if (!d->client_id) d->client_id = 0x4B5A3200u ^ (uint32_t)(port * 2654435761u);
++    return 1;
++}
++static inline void pdsu_close(PadDsu* d)
++{
++    if (d->port) pdsu_closesock(d->sock);
++    d->port = 0; d->sock = PDSU_BAD; d->last_ms = 0;
++}
++
++/* Call from the pad poll with a millisecond clock: registers (first call, then every 1000 ms: a server drops a client
++ * that is silent for longer than a few seconds), takes every datagram waiting (at most 32), keeps the newest accepted
++ * one. Returns 1 when the last accepted sample is younger than 1000 ms. */
++static inline int pdsu_poll(PadDsu* d, unsigned long long now_ms)
++{
++    uint8_t buf[512];
++    int i;
++    if (!d->port) return 0;
++    if (now_ms >= d->next_reg) {
++        uint8_t rq[PDSU_REQ_LEN];
++        pdsu_request(rq, d->client_id);
++        send(d->sock, (const char*)rq, PDSU_REQ_LEN, 0);   /* errors (ICMP port unreachable) just mean no server yet */
++        d->next_reg = now_ms + 1000;
++    }
++    for (i = 0; i < 32; i++) {
++        PadDsuSample s;
++        int n = (int)recv(d->sock, (char*)buf, sizeof buf, 0);
++        if (n <= 0) break;
++        if (pdsu_parse(buf, (unsigned long)n, &s) == PDSU_OK) { d->last = s; d->last_ms = now_ms ? now_ms : 1; d->accepted++; }
++        else d->rejected++;
++    }
++    return d->last_ms && now_ms - d->last_ms < 1000;
++}
++#endif

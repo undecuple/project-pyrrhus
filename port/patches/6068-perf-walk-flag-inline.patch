@@ -1,0 +1,40 @@
+KZ2 patch 6068: rsx_perf_walk_on() is an inline read of a global flag.
+
+From the Killzone 3 port's walker plan (Project Helghast docs/in-progress/walker-plan.md section 5 item 11, s.4 / 2045a: "a
+measurement tool should not be 1.7 % of what it measures"; plan only, no KZ3 patch; the Killzone 3 PC port "Project
+Helghast", same author, MIT). rsx_perf_walk_on() was an out-of-line function in cellGcmSys.c that rsx_live_draw.c calls
+through LDW_T0 at every timed step of every draw (and once more per draw for each counter), with RSX_PERF off as well.
+Now the flag is `volatile int g_rsx_perf_walk_on` (cellGcmSys.c's [perf] ticker sets it, as it set the static before)
+and rsx_live_draw.h's rsx_perf_walk_on() is a static inline load of it. Same values, same callers.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 4a7673a..37c0d0f 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2300,9 +2300,10 @@ void rsx_perf_note_gcm_wait(unsigned lr, long long ticks)
+ /* Patch 2029: the walker split ([perf-walk]) and RSX_PERF_SAMPLE=2 (sample the
+  * walker thread) count only inside RSX_PERF_PROF=A,B (seconds since the first
+  * walk), so a level run keeps clean windows before and after it. */
+-static volatile int s_perf_walk_on;
++volatile int g_rsx_perf_walk_on;   /* patch 6068: read inline by rsx_perf_walk_on() (rsx_live_draw.h) */
++#define s_perf_walk_on g_rsx_perf_walk_on
+ static double s_perf_prof_a = -1, s_perf_prof_b = -1;
+-int rsx_perf_walk_on(void) { return s_perf_walk_on; }
++/* rsx_perf_walk_on() is inline in rsx_live_draw.h (patch 6068) */
+ void rsx_perf_add(int idx, long long v)
+ {
+     if (rsx_perf_enabled() && idx >= 0 && idx < RSX_PERF_COUNT)
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 2e97aae..81f9d87 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -273,7 +273,8 @@ enum {
+     RSX_PERF_W_NV3089_ROWS_N, RSX_PERF_W_NV3089_BYTES,
+     RSX_PERF_COUNT
+ };
+-int       rsx_perf_walk_on(void);              /* patch 2029: inside the RSX_PERF_PROF window */
++extern volatile int g_rsx_perf_walk_on;    /* patch 6068: the flag itself, set by cellGcmSys.c's [perf] ticker */
++static inline int rsx_perf_walk_on(void) { return g_rsx_perf_walk_on; }   /* patch 2029: inside the RSX_PERF_PROF window */
+ void      rsx_live_draw_perf_dump(void);       /* patch 2045: [perf-redecode] when the window closes */
+ void      rsx_live_draw_submit_pending(void);  /* patch 2029: submit recorded work, no wait */
+ int       rsx_perf_enabled(void);

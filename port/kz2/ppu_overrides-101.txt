@@ -15,6 +15,14 @@
 # Player gameplay settings (kz2_ppu_overrides.cpp). Found with the name_census 1.29 -> 1.01 map, call sites checked by disassembly. NOT lifted or run on v1.01 yet.
 002E4EF8  # v1.01 ApplyInputModifier (= 1.29 0x2F0120): skipped at lr 0x16E900 when aim_assist is off
 002E5658  # v1.01 shoot/zoom aim-assist helper (= 1.29 0x2F0880): skipped at lr 0x16E998 / 0x16EA2C
+002EECD8  # v1.01 aim assist candidate gather (= 1.29 0x2F9F50): KZ2_AIM_LOG
+002EFCF8  # v1.01 aim assist target finder (= 1.29 0x2FAF70): KZ2_AIM_LOG
+002E4A60  # v1.01 aim assist aim-cone factor (= 1.29 0x2EFC88): KZ2_AIM_LOG
+00196660  # v1.01 world vf 0x18 thunk (= 1.29 0x19BFD8): KZ2_AIM_LOG
+00682000  # v1.01 line-of-sight queue submit (= 1.29 0x68F6F0): KZ2_AIM_LOG
+006823D0  # v1.01 line-of-sight queue collect (= 1.29 0x68FAC0): KZ2_AIM_LOG
+004FBC90  # v1.01 job done test (= 1.29 0x508D40): KZ2_AIM_LOG
+002E4C90  # v1.01 aim assist softlock search (= 1.29 0x2EFEB8): KZ2_AIM_LOG
 00170990  # v1.01 crouch decision (= 1.29 0x176208): P+0x61 around the body (P = *(0x117E740 + 0x240))
 0007A098  # v1.01 net-state test (= 1.29 0x7B388): forced to 1 at lr 0x170A34 for crouch_toggle
 00170B38  # v1.01 cover decision (= 1.29 0x1763B0): cover_toggle latch frame

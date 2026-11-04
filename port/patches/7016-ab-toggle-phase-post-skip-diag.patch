@@ -1,0 +1,81 @@
+KZ2 patch 7016 (diagnostic, off by default): the same-run A/B phase and KZ2_POST_SKIP's runtime hooks.
+
+g_kz2_ab_phase (runtime/spu/spu_coherency.c, with the other SPU hooks, so that every link of spu_dma.h and every
+host-test link that has the switches has it): port/kz2/spu/kz2_ab_toggle.c's KZ2_AB_TOGGLE=<s> thread sets it every
+<s> seconds (odd = on); a runtime switch whose environment value is "t" follows it (patches 7017-7019).
+KZ2_POST_SKIP (diagnostic, wrong picture: the upper bound of moving the SPU post chain to the GPU): while
+g_kz2_post_skip is set, an SPU DMA GET or PUT whose EA lies in [g_kz2_post_skip_lo, g_kz2_post_skip_hi) (the post
+chain's arena: every post-chain DMA of 128 bytes or more, and nothing else's) copies nothing and completes;
+rsx_live_draw_before_guest_sync leaves the surfaces there (S640, S320) out of its write-back; kz2_native_jobs.c's
+Gfx.Post gates return at once. A plain return at the jobs' entry (KZ3 patch 1043's overlay skip) hangs the WWS job
+list (the job's crt0 calls the policy module's job API; tried in kz2-spu31-post1), so the jobs themselves still run
+their bookkeeping. Off = one load per DMA and per surface at the sync point.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -18045,6 +18045,19 @@ static void ld_fake_post(u32 i)
+     }
+ }
+ 
++/* KZ2 patch 7016 (diagnostic): KZ2_POST_SKIP leaves the post chain's input surfaces (EA in
++ * [g_kz2_post_skip_lo, hi), spu_coherency.c) out of the sync point's write-back while its jobs are skipped. */
++static inline int ld_post_skip_wb(const surface_t* sf)
++{
++    extern volatile int g_kz2_post_skip; extern uint32_t g_kz2_post_skip_lo, g_kz2_post_skip_hi;
++    extern volatile long g_kz2_post_skip_wb_n;
++    if (__builtin_expect(!g_kz2_post_skip, 1)) return 0;
++    extern u32 cellGcmResolveLocated(int local, u32 offset);
++    const u32 ea = cellGcmResolveLocated(sf->location == 0u, sf->offset);
++    if (ea < g_kz2_post_skip_lo || ea >= g_kz2_post_skip_hi) return 0;
++    __atomic_fetch_add(&g_kz2_post_skip_wb_n, 1, __ATOMIC_RELAXED);
++    return 1;
++}
+ u32 rsx_live_draw_before_guest_sync(void)
+ {
+     if (__builtin_expect(g_kz2_pmap_surf != 0, 0))   /* KZ2 patch 7015: offset = the caller */
+@@ -18055,7 +18068,8 @@ u32 rsx_live_draw_before_guest_sync(void)
+     u32 idx[64], n = 0, nlocal = 0;
+     for (u32 i = 0; i < g.n_surfaces && n < 64; i++)
+         if (g.surfaces[i].tex && g.surfaces[i].gv_gpu_dirty &&
+-            (g.surfaces[i].location == 1u || ld_local_wb_wanted(&g.surfaces[i])))   /* KZ2 patch 6008 */
++            (g.surfaces[i].location == 1u || ld_local_wb_wanted(&g.surfaces[i])) &&   /* KZ2 patch 6008 */
++            !ld_post_skip_wb(&g.surfaces[i]))   /* KZ2 patch 7016 */
+             { idx[n++] = i; if (g.surfaces[i].location == 0u) nlocal++; }
+     if (!n) return 0;
+     LDW_T0(wb_t0);
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -634,4 +634,14 @@ void spu_set_guest_read_hook(void (*hook)(uint32_t ea, uint32_t size)) { g_spu_g
+  * spu_dma.h has it. Null = off. */
+ struct spu_context;
+ void (*g_kz2_pmap_dma)(struct spu_context* spu, int put, uint32_t lsa, uint32_t ea, uint32_t size) = 0;
++/* KZ2 patch 7016: the same-run A/B phase of port/kz2/spu/kz2_ab_toggle.c (KZ2_AB_TOGGLE=<s>): odd = on.
++ * A runtime switch whose environment value is "t" follows it (patches 7017-7019); 0 while no toggle runs.
++ * KZ2_POST_SKIP (diagnostic, wrong picture; kz2_ab_toggle.c sets these): while g_kz2_post_skip is set, SPU DMA whose
++ * EA lies in [g_kz2_post_skip_lo, hi) (the SPU post chain's arena) copies nothing (spu_dma.h), the walker's sync point
++ * does not write back the surfaces there (rsx_live_draw.c) and the Gfx.Post native gates return at once
++ * (kz2_native_jobs.c). Here, with the other DMA hooks, so that every link of spu_dma.h has them. */
++volatile int g_kz2_ab_phase = 0;
++volatile int g_kz2_post_skip = 0;
++uint32_t g_kz2_post_skip_lo = 0, g_kz2_post_skip_hi = 0;
++volatile long g_kz2_post_skip_dma_n = 0, g_kz2_post_skip_wb_n = 0;
+ void spu_set_guest_write_hook(void (*hook)(uint32_t ea, uint32_t size)) { g_spu_guest_write_hook = hook; }
+diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -618,6 +618,13 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+             return 0;
+         }
+     }
++    { extern volatile int g_kz2_post_skip; extern uint32_t g_kz2_post_skip_lo, g_kz2_post_skip_hi;   /* KZ2 patch 7016 */
++      extern volatile long g_kz2_post_skip_dma_n;
++      if (__builtin_expect(g_kz2_post_skip != 0, 0) && (uint32_t)ea >= g_kz2_post_skip_lo &&
++          (uint32_t)ea < g_kz2_post_skip_hi && (mfc_is_get(cmd) || mfc_is_put(cmd))) {
++          __atomic_fetch_add(&g_kz2_post_skip_dma_n, 1, __ATOMIC_RELAXED);
++          return 0;   /* KZ2_POST_SKIP (diagnostic): the post chain's arena is neither read nor written */
++      } }
+     if (mfc_is_get(cmd)) {
+         /* KZ3 patch 2084: LD_POST_WB_DIAG (libs/video) counts GETs of live RSX surfaces; null unless that is on. */
+         { extern void (*g_spu_guest_read_hook)(uint32_t ea, uint32_t size);   /* spu_coherency.c */

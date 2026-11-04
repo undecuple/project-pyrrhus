@@ -10,14 +10,23 @@
  * Both controllers take roll = atan(-a / sqrt(b^2 + c^2)) and feed -roll to a follower with a dead band of exactly
  * 1 degree (the constructors store 0.0174533 rad: charge @0x00107700 into +0x114, value @0x00107688; valve @0x00108C90
  * into +0x110, value @0x00108C30), so the hand sits 1 degree behind the tilt.
- * A charge arms when the hand enters each ArmRanges window, 0.741765..0.829031 of 45 deg = 33.38..37.31 deg on each
- * side (0x001174A8). The stand-in that shipped before (patch 4015, L1+R1 + right stick) gave 36 deg at full stick, so
- * the hand reached 35 deg only with the stick at 95.6..100 % (36 s - 1 >= 33.38): a stick, pad mapper or driver
- * that stops short of the last 4.4 % (an outer dead zone, a round gate read on one axis, an XInput wrapper's scaling)
- * never arms the charge, the soft-lock players reported. Here the hand angle follows the stick to full tilt at
- * KZ2_MOTION_FULL_AT of the travel and stays there, KZ2_MOTION_PEAK_DEG = window centre + the dead band, so the hand
- * rests in the middle of both windows (1.95 deg margin each way) from 57 % of the stick to 100 %, and the valve's
- * +-35 deg hand clamp (ValveResource MinHandAngle/MaxHandAngle) is reached from 59 %.
+ * A charge (the arm condition read from the lifted code, after the tester measurement credited below):
+ *   the ExplosiveLocationRep hand E+0x25C (radians) follows the controller's +0x100 @0x00117898 at MaxRotationSpeed
+ *   (360 deg/s) x 1/15 per update and is clamped to [MinAngle, MaxAngle] = [-45, +45] deg (resource +0x178/+0x17C, x pi/180);
+ *   the arm update @0x001174A8 then takes a step for each ArmRanges window not yet done that CONTAINS the hand while the
+ *   grab is held (controller +0x108 >= 0.05), once the hand has stayed in it for ArmStepTime (resource +0x1FC, 0 s: the
+ *   first update), each window once, in any order. A containment test, not a crossing or speed test. The windows are
+ *   RADIANS compared with the radian hand: 0.741765..0.829031 rad = 42.50..47.50 deg on each side, centred on pi/4 =
+ *   45 deg, which is also the MaxAngle clamp, so the reachable part is 42.50..45.00 deg. (Rounds 65..73 read them as
+ *   fractions of 45 deg, 33.38..37.31 deg, and set the peak tilt to 36.344 deg: the hand rested at 35.34 deg, 7 deg short
+ *   of the window, and no charge ever armed from the stick.)
+ *   Measured by Feralnet on public #47 (2026-11-04): 36.344 never armed (0 arm-step lines), 44.0 armed every time with
+ *   the hand at 0.7504 rad (logged as 33.77 "deg" by the old x45 log = 43.0 deg), which is what this model predicts.
+ * Here the hand angle follows the stick to full tilt at KZ2_MOTION_FULL_AT of the travel and stays there;
+ * KZ2_MOTION_PEAK_DEG = window centre (45 deg) + the 1 deg band, so the hand rests on the MaxAngle clamp at the window
+ * centre (2.5 deg inside each edge) from 57 % of the stick to 100 %; the valve's +-35 deg hand clamp (ValveResource
+ * MinHandAngle/MaxHandAngle) is reached from 47 % (the valve turns by the hand's change while held, so the larger peak
+ * only reaches the same clamp sooner).
  * The tilt goes only to those two controllers (the getter is rewritten at their return addresses), so the zoom aim
  * never sees it, and no button is added: the game's own grab (GrabLeftHand/GrabRightHand, L1+R1) still decides when
  * the valve turns and when the charge arms, as on the PS3. */
@@ -27,7 +36,7 @@
 
 enum { KZ2_MOTION_AUTO = 0, KZ2_MOTION_ON = 1, KZ2_MOTION_OFF = 2 };
 
-#define KZ2_MOTION_PEAK_DEG 36.344f   /* (33.379 + 37.309) / 2 + 1: window centre plus the follower's 1 deg band */
+#define KZ2_MOTION_PEAK_DEG 46.0f     /* pi/4 rad (the ArmRanges centre and the charge's MaxAngle) + the follower's 1 deg band */
 #define KZ2_MOTION_FULL_AT  0.6f      /* fraction of the stick travel at which the peak tilt is reached */
 #define KZ2_MOTION_G        0.2209f   /* one g in the getter's units (113 words / 511.5) */
 

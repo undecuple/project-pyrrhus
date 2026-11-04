@@ -1,0 +1,114 @@
+KZ2 patch 7015 (diagnostic): hooks for KZ2_POST_MAP (port/kz2/spu/kz2_post_map.c, tools/spu/post_map.py),
+the map of the SPU post chain's data flow: g_kz2_pmap_dma is called for every SPU DMA GET (after the copy) and PUT
+(before it) with the SPU context; g_kz2_pmap_surf for the live-draw walker's guest-surface events (first GPU write since
+the surface's last write-back, write-back, texture bind, flip, guest sync point with its caller). Both pointers live in
+runtime/diag/kz2_pmap_hooks.c (walker) and runtime/spu/spu_coherency.c (DMA), null unless KZ2_POST_MAP is set: one load per DMA and per event.
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -703,6 +703,16 @@
+  * record) and nogpu (the record was never drawn to). Local surfaces count too (the sync-point write-back
+  * of patch 2017 covers main memory only). Off: the SPU read hook is not even installed (cellGcmSys.c). */
+ static int g_ld_pwd = -1;
++/* KZ2 patch 7015 (diagnostic): KZ2_POST_MAP (port/kz2/spu/kz2_post_map.c) sees the GPU writes, write-backs,
++ * texture binds and flips of guest surfaces. kind 0 = first GPU write since the surface's last write-back, 1 = write-back,
++ * 2 = texture bind (w/h/pitch of the texture; pitch = span), 3 = flip, 4 = guest sync point (offset = caller). Null = off. */
++extern void (*g_kz2_pmap_surf)(int kind, u32 location, u32 offset, u32 w, u32 h, u32 pitch, u32 texel);   /* kz2_pmap_hooks.c */
++static void ld_pmap_surf(int kind, u32 i)
++{
++    const surface_t* sf = &g.surfaces[i];
++    const u32 texel = sf->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8u : 4u;
++    g_kz2_pmap_surf(kind, sf->location, sf->offset, sf->w, sf->h, sf->pitch ? sf->pitch : sf->w * texel, texel);
++}
+ static volatile LONG g_ld_pwd_get[MAX_SURFACES][4];
+ static u32 g_ld_pwd_gpu[MAX_SURFACES], g_ld_pwd_wb[MAX_SURFACES];
+ static u32 g_ld_pwd_gpu_life[MAX_SURFACES], g_ld_pwd_wb_life[MAX_SURFACES], g_ld_pwd_key[MAX_SURFACES];
+@@ -725,6 +735,7 @@
+ }
+ static void ld_pwd_note_writeback(u32 i)
+ {
++    if (__builtin_expect(g_kz2_pmap_surf != 0, 0)) ld_pmap_surf(1, i);   /* KZ2 patch 7015 */
+     if (!ld_pwd_enabled()) return;
+     ld_pwd_rekey(i); g_ld_pwd_wb[i]++; g_ld_pwd_wb_life[i]++;
+ }
+@@ -747,6 +758,7 @@
+ }
+ static void ld_pwd_flip(void)
+ {
++    if (__builtin_expect(g_kz2_pmap_surf != 0, 0)) g_kz2_pmap_surf(3, 0, 0, 0, 0, 0, 0);   /* KZ2 patch 7015 */
+     if (!ld_pwd_enabled() || ++g_ld_pwd_frames % (u32)g_ld_pwd) return;
+     for (u32 i = 0; i < MAX_SURFACES && i < g.n_surfaces; i++) {
+         LONG c[4];
+@@ -769,6 +781,8 @@
+ static inline void ld_gv_note_gpu_write(u32 target)
+ {
+     if (target >= MAX_SURFACES) return;
++    if (__builtin_expect(g_kz2_pmap_surf != 0, 0) && target < g.n_surfaces && !g.surfaces[target].gv_gpu_dirty)
++        ld_pmap_surf(0, target);   /* KZ2 patch 7015: the first GPU write since the last write-back */
+     g.surfaces[target].gv_pending = 1;
+     g.surfaces[target].gv_dirty = 0;
+     g.surfaces[target].gv_gpu_dirty = 1;
+@@ -5639,6 +5653,8 @@
+ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+ {
+     const u32 remap = t->remap & 0xFFFF;
++    if (__builtin_expect(g_kz2_pmap_surf != 0, 0))   /* KZ2 patch 7015 */
++        g_kz2_pmap_surf(2, t->location, t->offset, t->width, t->height, texture_source_span(t), t->format);
+     static int refresh_enabled = -1;
+     if (refresh_enabled < 0)
+         refresh_enabled = getenv("RSX_NO_TEX_REFRESH") ? 0 : 1;
+@@ -18031,6 +18047,8 @@
+ 
+ u32 rsx_live_draw_before_guest_sync(void)
+ {
++    if (__builtin_expect(g_kz2_pmap_surf != 0, 0))   /* KZ2 patch 7015: offset = the caller */
++        g_kz2_pmap_surf(4, 0, (u32)((uintptr_t)__builtin_return_address(0) - (uintptr_t)GetModuleHandleA(NULL)), 0, 0, 0, 0);
+     static int en = -1;
+     if (en < 0) { const char* e = getenv("LD_MAIN_SURFACE_WRITEBACK"); en = e ? atoi(e) : 1; }
+     if (!en || !g.ready) return 0;
+diff --git a/runtime/diag/kz2_pmap_hooks.c b/runtime/diag/kz2_pmap_hooks.c
+new file mode 100644
+--- /dev/null
++++ b/runtime/diag/kz2_pmap_hooks.c
+@@ -0,0 +1,7 @@
++/* KZ2 patch 7015 (diagnostic): the walker hook KZ2_POST_MAP (port/kz2/spu/kz2_post_map.c) installs to
++ * map the SPU post chain's data flow: the GCM walker's guest-surface events (live draw: first GPU write since a
++ * write-back, write-back, texture bind, flip, guest sync point). Null = off: one load per event. The DMA hook,
++ * g_kz2_pmap_dma, is in runtime/spu/spu_coherency.c. */
++#include <stdint.h>
++void (*g_kz2_pmap_surf)(int kind, uint32_t location, uint32_t offset, uint32_t w, uint32_t h, uint32_t pitch,
++                        uint32_t texel) = 0;
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -629,4 +629,9 @@
+ /* KZ3 patch 2084: the same for DMA GETs, installed only by the renderer's LD_POST_WB_DIAG diagnostic. */
+ void (*g_spu_guest_read_hook)(uint32_t ea, uint32_t size) = 0;
+ void spu_set_guest_read_hook(void (*hook)(uint32_t ea, uint32_t size)) { g_spu_guest_read_hook = hook; }
++/* KZ2 patch 7015 (diagnostic): KZ2_POST_MAP's DMA hook (port/kz2/spu/kz2_post_map.c), called for every
++ * GET after its copy and every PUT before it (spu_dma.h); here, with the other DMA hooks, so that every link of
++ * spu_dma.h has it. Null = off. */
++struct spu_context;
++void (*g_kz2_pmap_dma)(struct spu_context* spu, int put, uint32_t lsa, uint32_t ea, uint32_t size) = 0;
+ void spu_set_guest_write_hook(void (*hook)(uint32_t ea, uint32_t size)) { g_spu_guest_write_hook = hook; }
+diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -654,6 +654,8 @@
+         memcpy(ls_ptr, ea_ptr, size);
+         { extern int g_kz2_joblog; extern void kz2_joblog_get(spu_context*, uint32_t, uint32_t, uint32_t);   /* KZ2 patch 7002 */
+           if (g_kz2_joblog && spu->image_id == 2) kz2_joblog_get(spu, lsa, (uint32_t)ea, size); }
++        { extern void (*g_kz2_pmap_dma)(spu_context*, int, uint32_t, uint32_t, uint32_t);   /* KZ2 patch 7015 */
++          if (__builtin_expect(g_kz2_pmap_dma != 0, 0)) g_kz2_pmap_dma(spu, 0, lsa, (uint32_t)ea, size); }
+         /* SPU_STACKEA_WATCH (b): scan the just-loaded payload for a 0xD00Cxxxx
+          * dword = the completion-word EA arriving in a job buffer. */
+         { static int s_se = -1; if (s_se < 0) s_se = getenv("SPU_STACKEA_WATCH") ? 1 : 0;
+@@ -746,6 +748,8 @@
+               if (g_spu_guest_write_hook) g_spu_guest_write_hook((uint32_t)ea, size); }
+             { extern int g_kz2_joblog; extern void kz2_joblog_put(spu_context*, uint32_t, uint32_t);   /* KZ2 patch 7002 */
+               if (g_kz2_joblog) kz2_joblog_put(spu, (uint32_t)ea, size); }
++            { extern void (*g_kz2_pmap_dma)(spu_context*, int, uint32_t, uint32_t, uint32_t);   /* KZ2 patch 7015 */
++              if (__builtin_expect(g_kz2_pmap_dma != 0, 0)) g_kz2_pmap_dma(spu, 1, lsa, (uint32_t)ea, size); }
+             uint32_t a0 = (uint32_t)ea & ~127u;
+             uint32_t a1 = ((uint32_t)ea + size - 1u) & ~127u;
+             int span_reserved = 0;

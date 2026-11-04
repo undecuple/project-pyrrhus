@@ -1,0 +1,318 @@
+KZ2 patch 7021: exact vector forms of the exponent-255 lanes of fa, fs, fm, fma, fms, fnms and the four
+float compares (on by default since an earlier change; KZ2_SPU_XRV=0 turns them off, "t" follows the same-run toggle of
+port/kz2/spu/kz2_ab_toggle.c), and
+the lanes of each KZ3_SPU_XRSTATS site, and KZ2_SPU_XRV=c, which runs both paths on the game's operands and logs any lane
+that differs ([spu-xrv-check], diagnostic).
+The SPU float unit has no Inf/NaN (exponent 255 is an ordinary binade, truncation, saturation at +-Smax, exponent 0 is
+zero); KZ3 patch 1071 recomputes such lanes one at a time with PR #287's integer lane code, 1089 handles zeros, far
+sums and saturated products inline. The rest went out of line lane by lane, and an fma vector with one such lane went
+down the whole fallback chain (double path, the TwoSum retry, four libm-or-hardware fmaf, then the lane recompute).
+KZ2's VertexJob normalises zero-length vectors (the squared length splatted to all four lanes: rsqrt estimate of 0, an
+exponent-255 word, through fi, fm, fnms, fma) and UpdateJob divides by zero denominators (frest of 0, then fcgt on
+-Smax), whole vectors at a time: 12 % of VertexJob's host time (spu rounds 32, 33).
+Here, with bit 1 of g_kz3_spu_xrq set: the same values from double arithmetic, four lanes at once (each single is exact
+as a double, the product is exact, TwoSum gives the exact sum as s + e, truncation is s with its low 29 bits cleared,
+one ulp less when they are zero and e has the other sign; saturation, +0 below 2^-126), and the compares as integer
+keys inline. Bit for bit the 1071/1089 results: tools/spu/test_spu_xrv.sh (every exponent-255 word against a partner
+set, and random words of every class, both fma modes, -msse4.1 and -mfma). With the probes (KZ3_SPU_XRSTATS,
+KZ3_SPU_FMASTATS) on, the old paths run, so they count the same lanes. KZ3_SPU_XRQ=0 still turns off 1089's inline lanes.
+
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -371,13 +371,130 @@
+     *m &= ~(unsigned)_mm_movemask_ps(_mm_castsi128_ps(done));
+     return _mm_castsi128_ps(_mm_blendv_epi8(_mm_castps_si128(r), v, done));
+ }
++/* KZ2 patch 7021: exact exponent-255 lanes in vector form. The 1071 lane code (spu__fa_lane,
++ * spu__fm_lane, spu__fma_lane: PR #287's) computes the exact sum or product and truncates it to 24 bits, saturating at
++ * +-Smax above 2^129 and giving +0 below 2^-126; an exponent-0 operand is zero. The same value from double arithmetic,
++ * four lanes per call: each word becomes the double with the same value (exponent 255 is just 2^128 here, exponent 0
++ * is +0; every single is exact in double, the range is far inside double's), the product p = a * b is exact (24 x 24
++ * bits), s = p + c and its rounding error e come from TwoSum (exact in round-to-nearest without overflow, whatever the
++ * gap), so the exact sum is s + e with |e| <= half an ulp of s. Truncated to 24 bits that is s with its low 29 mantissa
++ * bits cleared, one single ulp less (an integer -1 on the single's bits, which also steps down a binade from a power of
++ * two) when those bits are zero and e is non-zero with the other sign; |s| >= 2^129 saturates (also s = 2^129 minus a
++ * little: Smax either way), |s| < 2^-126 or a result exponent 0 gives +0, and so does s = 0. fa = a * 1 + b,
++ * fs = a * 1 + (b with its sign flipped), fm = a * b + 0, fma/fms/fnms with the sign flips of spu__fma_lane. Used
++ * only where the 1071 recompute ran (the lanes of m, with g_kz3_spu_xr on), only with bit 1 of g_kz3_spu_xrq
++ * (on by default since an earlier change; KZ2_SPU_XRV=0 = off, "t" = the same-run toggle) and only with the KZ3_SPU_XRSTATS / FMASTATS
++ * probes off, so the probes count the same lanes either way. Same bits as the 1071/1089 paths:
++ * tools/spu/test_spu_xrv.sh (every exponent-255 word against fixed partners, and wide random cases). KZ2's VertexJob
++ * normalising a zero-length vector (its squared length splatted to all four lanes, rsqrt estimate of 0 through fi,
++ * fm, fnms, fma; the product with the zero vector is 0) and UpdateJob's divide by a zero denominator (frest of 0, then
++ * fcgt on -Smax) send whole vectors here: an earlier change. */
++static inline __attribute__((always_inline)) __m128d spu__xrv_d(__m128i w) {   /* words 0 and 1 as exact doubles */
++    const __m128i W = _mm_cvtepu32_epi64(w);
++    const __m128i mag = _mm_slli_epi64(_mm_and_si128(W, _mm_set1_epi64x(0x7FFFFFFFll)), 29);
++    const __m128i sgn = _mm_slli_epi64(_mm_and_si128(W, _mm_set1_epi64x(0x80000000ll)), 32);
++    const __m128i d = _mm_or_si128(_mm_add_epi64(mag, _mm_set1_epi64x(896ll << 52)), sgn);
++    const __m128i z = _mm_cmpeq_epi64(_mm_and_si128(W, _mm_set1_epi64x(0x7F800000ll)), _mm_setzero_si128());
++    return _mm_castsi128_pd(_mm_andnot_si128(z, d));
++}
++static inline __attribute__((always_inline)) __m128i spu__xrv_half(__m128i a, __m128i b, __m128i c, int add) {
++    const __m128d p = _mm_mul_pd(spu__xrv_d(a), spu__xrv_d(b));
++    __m128d s = p;   /* fm (add = 0): the product is exact, nothing to add */
++    __m128i D, q, A;
++    if (add) {
++        const __m128d C = spu__xrv_d(c);
++        s = _mm_add_pd(p, C);
++        const __m128d bb = _mm_sub_pd(s, p);
++        const __m128d e = _mm_add_pd(_mm_sub_pd(p, _mm_sub_pd(s, bb)), _mm_sub_pd(C, bb));   /* TwoSum: s + e = p + C */
++        D = _mm_castpd_si128(s);
++        A = _mm_and_si128(D, _mm_set1_epi64x(0x7FFFFFFFFFFFFFFFll));
++        q = _mm_sub_epi64(_mm_srli_epi64(A, 29), _mm_set1_epi64x(896ll << 23));
++        const __m128i low0 = _mm_cmpeq_epi64(_mm_and_si128(D, _mm_set1_epi64x(0x1FFFFFFFll)), _mm_setzero_si128());
++        const __m128i opp = _mm_castpd_si128(_mm_cmplt_pd(_mm_mul_pd(e, s), _mm_setzero_pd()));   /* e != 0, other sign */
++        q = _mm_add_epi64(q, _mm_and_si128(low0, opp));                                            /* -1 where both */
++    } else {
++        D = _mm_castpd_si128(s);
++        A = _mm_and_si128(D, _mm_set1_epi64x(0x7FFFFFFFFFFFFFFFll));
++        q = _mm_sub_epi64(_mm_srli_epi64(A, 29), _mm_set1_epi64x(896ll << 23));
++    }
++    const __m128d as = _mm_castsi128_pd(A);
++    const __m128i tiny = _mm_castpd_si128(_mm_cmplt_pd(as, _mm_set1_pd(0x1p-126)));
++    const __m128i sat = _mm_castpd_si128(_mm_cmpge_pd(as, _mm_set1_pd(0x1p129)));
++    q = _mm_andnot_si128(tiny, q);
++    q = _mm_or_si128(_mm_andnot_si128(sat, q), _mm_and_si128(sat, _mm_set1_epi64x(0x7FFFFFFFll)));
++    return _mm_or_si128(q, _mm_and_si128(_mm_srli_epi64(D, 32), _mm_set1_epi64x(0x80000000ll)));   /* sign in bit 31 */
++}
++/* a * b + c (add = 1) or a * b (add = 0) on the lanes of m (bit i = word i), exact as above; the other lanes of r kept. */
++static inline __attribute__((always_inline)) __m128 spu__xrv_core(__m128 r, __m128 a, __m128 b, __m128 c, unsigned m, int add) {
++    const __m128i A = _mm_castps_si128(a), B = _mm_castps_si128(b), C = _mm_castps_si128(c);
++    const __m128i lo = spu__xrv_half(A, B, C, add);
++    const __m128i hi = spu__xrv_half(_mm_srli_si128(A, 8), _mm_srli_si128(B, 8), _mm_srli_si128(C, 8), add);
++    __m128i v = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(lo), _mm_castsi128_ps(hi), _MM_SHUFFLE(2, 0, 2, 0)));
++    const __m128i E = _mm_set1_epi32(0x7F800000);
++    v = _mm_andnot_si128(_mm_cmpeq_epi32(_mm_and_si128(v, E), _mm_setzero_si128()), v);        /* exponent 0 -> +0 */
++    const __m128i bit = _mm_setr_epi32(1, 2, 4, 8);
++    const __m128i sel = _mm_cmpeq_epi32(_mm_and_si128(_mm_set1_epi32((int)m), bit), bit);
++    return _mm_castsi128_ps(_mm_blendv_epi8(_mm_castps_si128(r), v, sel));
++}
++SPU_XR_COLD __m128 spu__xrv_fma(__m128 r, __m128 a, __m128 b, __m128 c, unsigned m) { return spu__xrv_core(r, a, b, c, m, 1); }
++SPU_XR_COLD __m128 spu__xrv_fm(__m128 r, __m128 a, __m128 b, unsigned m) { return spu__xrv_core(r, a, b, a, m, 0); }
++/* The compares on the lanes of m: spu__sf_key (exponent 0 = 0, else sign-magnitude as a signed integer, which fits
++ * int32) or spu__sf_mag, compared as integers. Inline: a few integer operations. */
++static inline __attribute__((always_inline)) __m128i spu__xrv_key(__m128i w, int mag) {
++    __m128i k = _mm_and_si128(w, _mm_set1_epi32(0x7FFFFFFF));
++    k = _mm_andnot_si128(_mm_cmpeq_epi32(_mm_and_si128(w, _mm_set1_epi32(0x7F800000)), _mm_setzero_si128()), k);
++    if (mag) return k;
++    const __m128i n = _mm_srai_epi32(w, 31);
++    return _mm_sub_epi32(_mm_xor_si128(k, n), n);
++}
++static inline __attribute__((always_inline)) u128 spu__xrv_cmp(u128 r, u128 a, u128 b, unsigned m, int op) {
++    __m128i R, A, B; memcpy(&R, &r, 16); memcpy(&A, &a, 16); memcpy(&B, &b, 16);
++    const int mag = op == SPU_XR_FCMEQ || op == SPU_XR_FCMGT;
++    const __m128i ka = spu__xrv_key(A, mag), kb = spu__xrv_key(B, mag);
++    const __m128i v = (op == SPU_XR_FCEQ || op == SPU_XR_FCMEQ) ? _mm_cmpeq_epi32(ka, kb) : _mm_cmpgt_epi32(ka, kb);
++    const __m128i bit = _mm_setr_epi32(1, 2, 4, 8);
++    R = _mm_blendv_epi8(R, v, _mm_cmpeq_epi32(_mm_and_si128(_mm_set1_epi32((int)m), bit), bit));
++    memcpy(&r, &R, 16); return r;
++}
++/* KZ2_SPU_XRV=c (diagnostic, bit 2 of g_kz3_spu_xrq): every vector that takes a 7021 path also runs the old one and
++ * keeps the old result; patch 1088's note (spu_drain.c) counts the vectors (op | 0x80) and logs the lanes that differ
++ * (op | 0xC0, with the new value as r): "[spu-xrv-check]" lines. The game's own operands, live. */
++SPU_XR_COLD __m128 spu__xrv_check(__m128 n, __m128 o, __m128 a, __m128 b, __m128 c, unsigned m, int op) {
++    u128 N, O, A, B, C; memcpy(&N, &n, 16); memcpy(&O, &o, 16); memcpy(&A, &a, 16); memcpy(&B, &b, 16); memcpy(&C, &c, 16);
++    unsigned d = 0;
++    for (int i = 0; i < 4; i++) d |= (unsigned)(N._u32[i] != O._u32[i]) << i;
++    kz3_spu_xr_note(op | 0x80, m, A._u32, B._u32, C._u32, N._u32, __builtin_return_address(0));
++    if (d) kz3_spu_xr_note(op | 0xC0, d, A._u32, B._u32, C._u32, N._u32, __builtin_return_address(0));
++    return o;
++}
++SPU_XR_COLD u128 spu__xrv_checku(u128 n, u128 o, u128 a, u128 b, u128 c, unsigned m, int op) {
++    __m128 N, O, A, B, C; memcpy(&N, &n, 16); memcpy(&O, &o, 16); memcpy(&A, &a, 16); memcpy(&B, &b, 16); memcpy(&C, &c, 16);
++    const __m128 r = spu__xrv_check(N, O, A, B, C, m, op);
++    u128 R; memcpy(&R, &r, 16); return R;
++}
++#  define SPU_XRV_ON() ((g_kz3_spu_xrq & 2) && g_kz3_spu_xr && !g_kz3_xr_stats)
+ #  define SPU_XR_RET_Q(m, r, a, b, op) do { unsigned _xm = (m); \
+     if (__builtin_expect(_xm != 0, 0)) { __m128 _xr, _xa, _xb; memcpy(&_xr, &(r), 16); memcpy(&_xa, &(a), 16); \
+-        memcpy(&_xb, &(b), 16); if (g_kz3_spu_xrq && g_kz3_spu_xr) _xr = spu__xrq(_xr, _xa, _xb, &_xm, op); \
+-        if (_xm) _xr = spu__xr_fixv(_xr, _xa, _xb, _xm, op, 0); memcpy(&(r), &_xr, 16); } \
++        memcpy(&_xb, &(b), 16); if ((g_kz3_spu_xrq & 1) && g_kz3_spu_xr) _xr = spu__xrq(_xr, _xa, _xb, &_xm, op); \
++        if (_xm) { \
++            if (SPU_XRV_ON()) { /* KZ2 patch 7021 */ \
++                const __m128 _one = _mm_set1_ps(1.0f), _sg = _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u)); \
++                const __m128 _xn = (op) == SPU_XR_FM ? spu__xrv_fm(_xr, _xa, _xb, _xm) \
++                    : spu__xrv_fma(_xr, _xa, _one, (op) == SPU_XR_FS ? _mm_xor_ps(_xb, _sg) : _xb, _xm); \
++                _xr = (g_kz3_spu_xrq & 4) ? spu__xrv_check(_xn, spu__xr_fixv(_xr, _xa, _xb, _xm, op, 0), _xa, _xb, _xb, _xm, op) : _xn; \
++            } else _xr = spu__xr_fixv(_xr, _xa, _xb, _xm, op, 0); } \
++        memcpy(&(r), &_xr, 16); } \
+     return r; } while (0)
++/* KZ2 patch 7021: the compares (fceq, fcgt, fcmeq, fcmgt) with their exponent-255 lanes inline (spu__xrv_cmp) */
++#  define SPU_XR_RET_C(m, r, a, b, op) do { const unsigned _xc = (m); \
++    if (__builtin_expect(_xc != 0, 0) && SPU_XRV_ON()) { \
++        if (__builtin_expect(g_kz3_spu_xrq & 4, 0)) return spu__xrv_checku(spu__xrv_cmp(r, a, b, _xc, op), \
++                                                                         spu__xr_fix(r, a, b, _xc, op, 0), a, b, a, _xc, op); \
++        return spu__xrv_cmp(r, a, b, _xc, op); } \
++    SPU_XR_RET(_xc, r, a, b, op, 0); } while (0)
+ #else
+ #  define SPU_XR_RET_Q(m, r, a, b, op) SPU_XR_RET(m, r, a, b, op, 0)
++#  define SPU_XR_RET_C(m, r, a, b, op) SPU_XR_RET(m, r, a, b, op, 0)
+ #endif
+ 
+ /* FI decodes the base and step fields produced by the hardware estimate
+@@ -911,6 +1028,27 @@
+ }
+ SPU_XR_COLD u128 spu__fma4_slow(__m128 av, __m128 bv, __m128 cv, int negb, int negc, int cgm, __m128d sl, __m128d sh,
+                                 __m128d okl, __m128d okh) {
++    /* KZ2 patch 7021: every lane outside the exponent-255 ones is a normal-range double sum (the inline test's okl/okh,
++     * where the result is cvtpd2ps of it, as below): those lanes as below, the exponent-255 lanes exact in vector form
++     * (spu__xrv_fma, the value spu__fma_lane gives them in spu__fma4_ref; FTZ never touches them: they are 0 or have
++     * exponent >= 1). Any other lane (a midpoint, a tiny or overflowing sum of normal words) takes the path below. */
++    if (SPU_XRV_ON() && !g_kz3_fma_stats) {
++        u128 a, b, c; memcpy(&a, &av, 16); memcpy(&b, &bv, 16); memcpy(&c, &cv, 16);
++        const unsigned xm = spu__xr_mask3(a, b, c);
++        const __m128 h4 = _mm_movelh_ps(_mm_cvtpd_ps(sl), _mm_cvtpd_ps(sh));
++        /* a lane the inline test passes can still round to the float overflow (s in [2^128 - 2^103, 2^128)): there
++         * the whole-vector path below recomputes it (host Inf -> the 1071 lane), so such a vector stays on that path */
++        const unsigned inf = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(
++            _mm_and_si128(_mm_castps_si128(h4), _mm_set1_epi32(0x7F800000)), _mm_set1_epi32(0x7F800000))));
++        if (xm && ((unsigned)(_mm_movemask_pd(okl) | _mm_movemask_pd(okh) << 2) | xm) == 15 && !(inf & ~xm)) {
++            const __m128 sg = _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u));
++            const __m128 r4 = spu__xrv_fma(h4, av, negb ? _mm_xor_ps(bv, sg) : bv, negc ? _mm_xor_ps(cv, sg) : cv, xm);
++            u128 r; memcpy(&r, &r4, 16);
++            if (__builtin_expect(g_kz3_spu_xrq & 4, 0))
++                return spu__xrv_checku(r, spu__fma4_ref(a, b, c, negb, negc, cgm), a, b, c, xm, SPU_XR_FMA | negb << 4 | negc << 5);
++            return r;
++        }
++    }
+     /* patch 1082: |sl|, |sh| recomputed here (seven vector arguments fit the xmm argument registers) */
+     const __m128d absm = _mm_castsi128_pd(_mm_set1_epi64x(0x7FFFFFFFFFFFFFFFll));
+     const __m128d al = _mm_and_pd(sl, absm), ah = _mm_and_pd(sh, absm);
+@@ -992,6 +1130,22 @@
+             _mm_cmpgt_epi32(ab, _mm_set1_epi32(0x7F7FFFFF)));
+         if (__builtin_expect(_mm_testz_si128(odd, odd), 1)) { u128 r; memcpy(&r, &r4, 16); return r; }
+ #endif
++        /* KZ2 patch 7021: a lane whose r is not odd is already its reference value (as above: the double path gives it
++         * the same bits, and the whole-vector recompute keeps it); the exponent-255 lanes exact in vector form. Any
++         * odd lane outside them sends the vector down the paths below, as before. */
++        if (SPU_XRV_ON() && !g_kz3_fma_stats) {
++            const unsigned xm = spu__xr_mask3(a, b, c);
++            const __m128i o7 = _mm_andnot_si128(_mm_cmpeq_epi32(ab, _mm_setzero_si128()),   /* 1106's test, per lane */
++                _mm_cmpgt_epi32(_mm_add_epi32(ab, _mm_set1_epi32(0x7F000000)), _mm_set1_epi32(-0x01800001)));
++            if (xm && !((unsigned)_mm_movemask_ps(_mm_castsi128_ps(o7)) & ~xm)) {
++                const __m128 v = spu__xrv_fma(r4, A, B, C, xm);
++                u128 r; memcpy(&r, &v, 16);
++                if (__builtin_expect(g_kz3_spu_xrq & 4, 0))   /* KZ2_SPU_XRV=c: against the old path's end */
++                    return spu__xrv_checku(r, spu__fma4_ref(a, b, c, negb, negc, cgm), a, b, c, xm,
++                                           SPU_XR_FMA | negb << 4 | negc << 5);
++                return r;
++            }
++        }
+     }
+ #endif
+     __m128 A0, B0, C0; memcpy(&A0, &a, 16); memcpy(&B0, &b, 16); memcpy(&C0, &c, 16);
+@@ -1035,8 +1189,8 @@
+ #else
+ #  define SPU__FC(r, a, b, ps, abs, sc) for (int i = 0; i < 4; i++) (r)._u32[i] = (sc) ? 0xFFFFFFFFu : 0
+ #endif
+-SPU_HOT u128 spu_fceq(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpeq_ps, 0, a._f32[i] == b._f32[i]); SPU_XR_RET(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCEQ, 0); }
+-SPU_HOT u128 spu_fcgt(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpgt_ps, 0, a._f32[i] > b._f32[i]); SPU_XR_RET(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCGT, 0); }
++SPU_HOT u128 spu_fceq(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpeq_ps, 0, a._f32[i] == b._f32[i]); SPU_XR_RET_C(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCEQ); }
++SPU_HOT u128 spu_fcgt(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpgt_ps, 0, a._f32[i] > b._f32[i]); SPU_XR_RET_C(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCGT); }
+ 
+ /* ---- SPU double-precision (2 doubles/reg; dword i = words 2i(high),2i+1(low)).
+  * Reassemble via _u32 -- our u128 is host-LE, so a naive _f64[i] would SWAP the
+@@ -1227,8 +1381,8 @@
+ #else
+ static inline u128 spu_mpyui(u128 a, int32_t imm) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(uint32_t)a._u16[2*i]*(uint32_t)(uint16_t)imm; return r; }
+ #endif
+-SPU_HOT u128 spu_fcmeq(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpeq_ps, 1, fabsf(a._f32[i]) == fabsf(b._f32[i])); SPU_XR_RET(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCMEQ, 0); }   /* patch 1079 */
+-SPU_HOT u128 spu_fcmgt(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpgt_ps, 1, fabsf(a._f32[i]) > fabsf(b._f32[i])); SPU_XR_RET(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCMGT, 0); }   /* patch 1079 */
++SPU_HOT u128 spu_fcmeq(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpeq_ps, 1, fabsf(a._f32[i]) == fabsf(b._f32[i])); SPU_XR_RET_C(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCMEQ); }   /* patch 1079 */
++SPU_HOT u128 spu_fcmgt(u128 a, u128 b) { u128 r; SPU__FC(r, a, b, _mm_cmpgt_ps, 1, fabsf(a._f32[i]) > fabsf(b._f32[i])); SPU_XR_RET_C(spu__xr_mask3(a, b, a), r, a, b, SPU_XR_FCMGT); }   /* patch 1079 */
+ static const uint32_t spu_frest_fraction_lut[32] = {
+     0x7FFBE0, 0x7F87A6, 0x70EF72, 0x708B40, 0x638B12, 0x633AEA, 0x5792C4, 0x574AA0,
+     0x4CCA7E, 0x4C9262, 0x430A44, 0x42D62A, 0x3A2E12, 0x39FDFA, 0x3215E4, 0x31F1D2,
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -71,6 +71,8 @@
+ #define XRS_WORDS 512
+ static unsigned long long s_xrs_key[32 * 216], s_xrs_lanes, s_xrs_vec;
+ static uintptr_t s_xrs_ra[XRS_SITES]; static unsigned long long s_xrs_ran[XRS_SITES];
++/* KZ2 patch 7021: per site, the lanes (0-3) of the recomputed words and the last op seen there */
++static unsigned long long s_xrs_sl[XRS_SITES][4]; static int s_xrs_sop[XRS_SITES];
+ static uint32_t s_xrs_w[XRS_WORDS]; static unsigned long long s_xrs_wn[XRS_WORDS];
+ static int xrs_cls(uint32_t x)
+ {
+@@ -112,7 +114,8 @@
+         int bi = -1; unsigned long long bn = 0;
+         for (int i = 0; i < XRS_SITES; i++) if (!(s_xrs_ran[i] >> 62) && s_xrs_ran[i] > bn) { bn = s_xrs_ran[i]; bi = i; }
+         if (bi < 0) break;
+-        fprintf(stderr, "[spu-xr]  site rva=0x%llx n=%llu\n", (unsigned long long)(s_xrs_ra[bi] - base), bn);
++        fprintf(stderr, "[spu-xr]  site rva=0x%llx n=%llu op=%d lanes=%llu/%llu/%llu/%llu\n", (unsigned long long)(s_xrs_ra[bi] - base),
++                bn, s_xrs_sop[bi], s_xrs_sl[bi][0], s_xrs_sl[bi][1], s_xrs_sl[bi][2], s_xrs_sl[bi][3]);   /* 7021: op, lanes */
+         s_xrs_ran[bi] |= 1ull << 62;
+     }
+     for (int i = 0; i < XRS_SITES; i++) s_xrs_ran[i] &= ~(1ull << 62);
+@@ -129,6 +132,30 @@
+                      const void* ra)
+ {
+     (void)r;
++    if (op & 0x80) {   /* KZ2 patch 7021: KZ2_SPU_XRV=c, a checked vector (0x80) or its lanes that differ (0xC0) */
++        static unsigned long long s_chk_vec, s_chk_lanes, s_chk_bad, s_chk_op[64];
++        static volatile int s_chk_logged;
++        if ((op & 0xC0) == 0xC0) {
++            for (int i = 0; i < 4; i++) {
++                if (!(m >> i & 1)) continue;
++                __atomic_fetch_add(&s_chk_bad, 1, __ATOMIC_RELAXED);
++                if (__atomic_fetch_add(&s_chk_logged, 1, __ATOMIC_RELAXED) < 40)
++                    fprintf(stderr, "[spu-xrv-check] DIFF op=%d lane %d a=0x%08X b=0x%08X c=0x%08X new=0x%08X site=%p\n",
++                            op & 0x3F, i, a[i], b[i], c ? c[i] : 0, r[i], ra);
++            }
++            return;
++        }
++        const unsigned nl = (unsigned)__builtin_popcount(m);
++        __atomic_fetch_add(&s_chk_op[op & 0x3F], 1, __ATOMIC_RELAXED);
++        __atomic_fetch_add(&s_chk_lanes, nl, __ATOMIC_RELAXED);
++        const unsigned long long v = __atomic_add_fetch(&s_chk_vec, 1, __ATOMIC_RELAXED);
++        if ((v & ((1ull << 22) - 1)) == 0)
++            fprintf(stderr, "[spu-xrv-check] vectors=%llu lanes=%llu differ=%llu (fa %llu fs %llu fm %llu fceq %llu fcgt %llu "
++                    "fcmeq %llu fcmgt %llu fma %llu fms %llu fnms %llu)\n", v, s_chk_lanes, s_chk_bad, s_chk_op[0],
++                    s_chk_op[1], s_chk_op[2], s_chk_op[3], s_chk_op[4], s_chk_op[5], s_chk_op[6], s_chk_op[11],
++                    s_chk_op[11 | 32], s_chk_op[11 | 16]);   /* spu_helpers.h's SPU_XR_* numbers (FMA = 11, negc 32, negb 16) */
++        return;
++    }
+     unsigned nl = 0;
+     for (int i = 0; i < 4; i++) {
+         if (!(m >> i & 1)) continue;
+@@ -144,7 +171,12 @@
+     for (int k = 0; k < 32; k++, h = (h + 1) & (XRS_SITES - 1)) {
+         uintptr_t cur = __atomic_load_n(&s_xrs_ra[h], __ATOMIC_RELAXED);
+         if (cur == 0 && __atomic_compare_exchange_n(&s_xrs_ra[h], &cur, p, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) cur = p;
+-        if (cur == p) { __atomic_fetch_add(&s_xrs_ran[h], nl, __ATOMIC_RELAXED); break; }
++        if (cur == p) {
++            __atomic_fetch_add(&s_xrs_ran[h], nl, __ATOMIC_RELAXED);
++            for (int i = 0; i < 4; i++) if (m >> i & 1) __atomic_fetch_add(&s_xrs_sl[h][i], 1, __ATOMIC_RELAXED);   /* 7021 */
++            __atomic_store_n(&s_xrs_sop[h], op, __ATOMIC_RELAXED);
++            break;
++        }
+     }
+     __atomic_fetch_add(&s_xrs_vec, 1, __ATOMIC_RELAXED);
+     const unsigned long long before = __atomic_fetch_add(&s_xrs_lanes, nl, __ATOMIC_RELAXED);
+@@ -157,6 +189,22 @@
+ {
+     g_kz3_xr_stats = getenv("KZ3_SPU_XRSTATS") && *getenv("KZ3_SPU_XRSTATS") == '1';   /* patch 1088 */
+     g_kz3_spu_xrq = !(getenv("KZ3_SPU_XRQ") && *getenv("KZ3_SPU_XRQ") == '0');   /* patch 1089 */
++    /* KZ2 patch 7021: bit 1 = the exact vector exponent-255 paths of spu_helpers.h, on by default since an earlier change
++     * (bit-exact; VertexJob's cost per load lower, an earlier change). KZ2_SPU_XRV=0 turns them off; "t": the same-run toggle of
++     * port/kz2/spu/kz2_ab_toggle.c sets and clears the bit (off until its first phase); "c" (diagnostic) also runs the
++     * old path on each such vector and keeps its result ([spu-xrv-check]). */
++    {
++        const char* x = getenv("KZ2_SPU_XRV");
++        const char k = x ? *x : 0;
++        if (k == 'c') {
++            g_kz3_spu_xrq |= 6;
++            fprintf(stderr, "[spu-xrv] KZ2_SPU_XRV=c: every 7021 vector checked against the old path ([spu-xrv-check])\n");
++        } else if (k == '0') {
++            fprintf(stderr, "[spu-xrv] KZ2_SPU_XRV=0: exact vector exponent-255 lanes off (the 1071/1089 paths)\n");
++        } else if (k != 't') {
++            g_kz3_spu_xrq |= 2;   /* the default */
++        }
++    }
+     const char* e = getenv("KZ3_SPU_FASTCG");
+     if (e && *e >= '0' && *e <= '9') g_kz3_spu_fastcg_level = atoi(e);
+     if (e && *e == '1' && !e[1]) g_kz3_spu_fastcg_level = 1 << 30;   /* "1" = on (earlier runs used 0/1) */

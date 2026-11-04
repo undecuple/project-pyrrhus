@@ -1,4 +1,4 @@
-KZ2 patch 6059 (ENHANCEMENT, off by default until proven: LD_TILE_POOL=1): the 8x8 main-memory A8R8G8B8 tiles get
+KZ2 patch 6059 (ENHANCEMENT, on by default since an earlier change, LD_TILE_POOL=0 turns it off): the 8x8 main-memory A8R8G8B8 tiles get
 their own pool outside the hashed texture cache, keyed by address with an exact byte compare, and their uploads are
 batched per submit into the copy list that runs before the draws.
 
@@ -18,7 +18,8 @@ SRV write, and pushed a real texture out of the 8,192-entry LRU. No cache size r
   ResourceBarrier call to COPY_DEST, the copies, one call back. Each slot is a fixed 8x8 R8G8B8A8 texture made
   once, with its own SRV in the CPU heap (SRV_TILE_BASE, LD_TILE_SLOTS_MAX 16,384) holding the guest's A,R,G,B bytes
   with the remap in the component mapping (patch 2046's ld_argb_raw_mapping).
-- LD_TILE_POOL=1 on; LD_TILE_SLOTS=N (64..16384, default 4096). [tex-tile] every 256 frames
+- On by default (checked by hand play on a real display at the Corinth River bridge, lighting right);
+  LD_TILE_POOL=0 off; LD_TILE_SLOTS=N (64..16384, default 4096). [tex-tile] every 256 frames
   with RSX_PERF (binds, hits, copies, descriptors, FULL submits, batches, ms in the bind).
 
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
@@ -56,7 +57,7 @@ index a19f4d1..bd79588 100644
 + * just before the chunk's draw list: one barrier call into COPY_DEST, the copies, one barrier call back. The draw
 + * list itself gets no copy or barrier for them, the cache keeps its slots for real textures. Each slot is a fixed
 + * 8x8 R8G8B8A8 texture with its own SRV (the guest's A,R,G,B bytes, remap in the component mapping, as patch 2046's
-+ * direct upload). LD_TILE_POOL=1 turns it on (off by default until proven); LD_TILE_SLOTS (default 4096) sizes it.
++ * direct upload). On by default; LD_TILE_POOL=0 turns it off; LD_TILE_SLOTS (default 4096) sizes it.
 + * The copy list cycles through LD_TILE_ALLOCS allocators, each reset only after the fence of the submit that used
 + * it has passed. [tex-tile] every 256 frames with RSX_PERF. */
 +#define LD_TILE_ALLOCS 8u
@@ -82,7 +83,7 @@ index a19f4d1..bd79588 100644
 +    if (g_ld_tile_state >= 0) return g_ld_tile_state;
 +    const char* e = getenv("LD_TILE_POOL");
 +    g_ld_tile_state = 0;
-+    if (!(e && e[0] == '1')) return 0;
++    if (e && e[0] == '0') return 0;
 +    for (u32 i = 0; i < LD_TILE_ALLOCS; i++)
 +        if (FAILED(g.dev->lpVtbl->CreateCommandAllocator(g.dev, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
 +                                                         (void**)&g_ld_tile_alloc[i]))) {

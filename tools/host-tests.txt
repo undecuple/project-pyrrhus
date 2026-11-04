@@ -90,3 +90,10 @@ nix develop --command tools/sandbox.sh -- tools/spu/test_native_skin.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjlight.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_park_kick.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_raycast.sh
+nix develop --command tools/sandbox.sh -- tools/runtime/test_dsu.sh
+nix develop .#re --command tools/sandbox.sh -- python3 tools/spu/test_post_map.py
+nix develop .#win --command tools/sandbox.sh -- tools/spu/test_gpu_post.sh
+nix develop .#re --command tools/sandbox.sh -- python3 tools/spu/test_ab_phase.py
+nix develop --command tools/sandbox.sh -- tools/runtime/test_walker73.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_native_skin2.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_spu_xrv.sh
