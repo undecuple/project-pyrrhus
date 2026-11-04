@@ -4,7 +4,7 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.9] - 2026-11-04 (pre-release)
 
 ### Fixed
 - Russian text: letters the game's own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a Russian game showed only punctuation (#39).

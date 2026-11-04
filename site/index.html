@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.8<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.9<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -141,6 +141,17 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.9</h2>
+<p class="meta">4 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Fixed</span>Russian text: letters the game&#x27;s own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a Russian game showed only punctuation (#39).</li>
+<li><span class="sec">Added</span><code>gameplay.ini</code> is created next to <code>keybinds.ini</code> with every setting the game reads (aim assist, crouch and cover toggle, motion, the <code>[mouse]</code> keys) at its default, when the installer or the launcher finds none; an existing file is never changed.</li>
+<li><span class="sec">Added</span>Keyboard: Z and X (<code>tilt_left</code> / <code>tilt_right</code> in <code>keybinds.ini</code>) turn valves and arm demolition charges: hold one to grab and tilt, then the other; they do nothing anywhere else.</li>
+<li><span class="sec">Changed</span>An optional path for the game&#x27;s small light-probe textures, which no longer fill the texture cache: about 40 % less GPU work per draw in a heavy scene (off by default, LD_TILE_POOL=1 turns it on; not yet checked on a real display).</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.9">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.8</h2>
 <p class="meta">3 Nov 2026 · pre-release</p>
 <ul class="rlist">
@@ -168,19 +179,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.7">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.6</h2>
-<p class="meta">30 Oct 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Added</span>Mouse look: the mouse turns the view directly through raw input, with no acceleration or smoothing. Sensitivity, zoomed sensitivity and inverted Y are set in <code>gameplay.ini</code> under <code>[mouse]</code> (<code>mouse_look</code>, <code>mouse_sensitivity</code>, <code>mouse_zoom_sensitivity</code>, <code>mouse_invert_y</code>). The pointer stays inside the window while you play and is let go in menus, when paused, or when you switch to another window. It does not work in vehicles or on mounted guns yet. Only checked in scripted test runs so far, not yet by hand. Adapted from Project Helghast.</li>
-<li><span class="sec">Added</span>The first lines of the game&#x27;s log name the port version, when it was built, its patch set and whether it is an installed or portable copy.</li>
-<li><span class="sec">Changed</span>The README is shorter: what you need, how to get it and the known problems first; the details moved to linked pages.</li>
-<li><span class="sec">Changed</span>With <code>aim_assist = auto</code> (the default), aim assist turns off while you aim with the mouse and comes back when you use a controller&#x27;s stick.</li>
-<li><span class="sec">Fixed</span>After updating over an older version, the game could keep using graphics pipelines saved by the older version, which lost the holographic sight&#x27;s reticle and glow (#25); a second report of missing effects and models (#27) fits this, not confirmed. The saved pipeline list is now tied to the build that made it and is discarded after an update, with one line in the log; the first start after updating builds them again and can stutter briefly. Shown in scripted runs under Proton with a deliberately different build&#x27;s cache; not yet confirmed on Windows.</li>
-<li><span class="sec">Fixed</span>A missing downloadable-content licence is logged in one short line.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.6">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -194,14 +192,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> Russian text: letters the game&#x27;s own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a...</span></li>
+<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> gameplay.ini is created next to keybinds.ini with every setting the game reads (aim assist, crouch and cover toggle...</span></li>
+<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> Keyboard: Z and X (tilt_left / tilt_right in keybinds.ini) turn valves and arm demolition charges: hold one to grab...</span></li>
+<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> An optional path for the game&#x27;s small light-probe textures, which no longer fill the texture cache: about 40 % less...</span></li>
 <li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The game&#x27;s internal clock reads the real date on Windows (it read January 1970); save dates were already correct.</span></li>
 <li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> If the window&#x27;s back buffer cannot be fetched, the present skips its copy and resizes the window at the next present...</span></li>
 <li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> Options &gt; Display has a VSync row (on by default; off allows tearing), and a frame that the screen is not ready for is...</span></li>
 <li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The texture cache size is a setting; the default stays at 8,192 entries.</span></li>
-<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> FSR 1 now runs before the HUD: the HUD, crosshair and subtitles are drawn at the window&#x27;s resolution, not upscaled.</span></li>
-<li><time datetime="2026-11-03">11-03</time><span><b>0.1.8</b> The game folder can be read in place: with a new install the launcher makes no folder link (writes go to the install&#x27;s...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> gameplay.ini motion = auto|on|off: auto uses the controller&#x27;s own tilt when it has a working accelerometer and the...</span></li>
-<li><time datetime="2026-11-02">11-02</time><span><b>0.1.7</b> Demolition charges could not be armed, and valves turned only part way, with a controller that has no motion sensor or...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -234,9 +232,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">v0.1.8</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">3 Nov 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">Download v0.1.8</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.9">v0.1.9</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">4 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.9">Download v0.1.9</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>
