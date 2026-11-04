@@ -80,7 +80,7 @@ and the newest log file).
   (seen after Mission Select or Continue, not yet reproduced); the load into the first level shows a black, frozen
   picture with the last subtitle still up for several seconds. That freeze is the shader wait above: with the shader
   list it fell from about 10 s to 2-3 s in scripted runs.
-- Other languages than the default are not tried; menu pages and subtitles were checked in one language.
+- Other languages than the default are not tried; menu pages and subtitles were checked in one language. Russian (#39): letters the game's fonts lack are drawn in a bundled Noto Sans, lighter than the game's own face; the language is chosen in the game's first-boot list, not taken from Windows; only the gamma page was checked.
 
 ## Display
 
@@ -114,7 +114,7 @@ and the newest log file).
   default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
   aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
   with `aim_assist = auto` the aim assist turns off while the mouse aims.
-- **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks and push the right stick to one side (more than half way) and then the other; a controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. `motion = off` in `gameplay.ini` always uses the stick. The real motion sensor reaches the game (the loading screen tilts). A pad reached over XInput has no motion sensors, so the stick is used. Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
+- **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks and push the right stick to one side (more than half way) and then the other; a controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. `motion = off` in `gameplay.ini` always uses the stick. With a keyboard, hold Z (or X) at the valve or charge, then switch to the other key (`tilt_left` / `tilt_right` in `keybinds.ini`). The real motion sensor reaches the game (the loading screen tilts). A pad reached over XInput has no motion sensors, so the stick is used. Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
 - **Keyboard and mouse:** the game can be played with a keyboard and mouse: the mouse looks and aims, and its buttons fire and zoom by default (`keybinds.ini`). Mouse look has only been checked in scripted test runs, not yet by hand, and it does not work in vehicles or on mounted guns yet.
 
 ## Game data and version

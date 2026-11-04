@@ -121,4 +121,11 @@ fi
 t0=$(date +%s); rc=0
 cmake --build "$DIR" -j"$jobs" "$@" || rc=$?
 echo "build-kz2: done in $(( $(date +%s) - t0 )) s (-j$jobs, exit $rc)" >&2
+# An earlier change (patch 6061, issue #39): the system-fontset face next to the exe, <build dir>/fonts/NotoSans-Regular.ttf,
+# made from nixpkgs' noto-fonts by tools/runtime/mkfont_noto.py (never committed). Only when missing or older than the
+# script; without the store path a warning, not a failure (Cyrillic and Greek are then blank).
+NF="$DIR/fonts/NotoSans-Regular.ttf"
+if [[ $rc == 0 && ( ! -f "$NF" || "$ROOT/tools/runtime/mkfont_noto.py" -nt "$NF" ) ]]; then
+  python3 "$ROOT/tools/runtime/mkfont_noto.py" "$NF" >&2 || echo "build-kz2: WARNING: no $NF (Cyrillic and Greek text will be blank)" >&2
+fi
 exit $rc

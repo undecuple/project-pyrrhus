@@ -159,17 +159,30 @@ static void on_alarm(int s) { (void)s; why = R_TIMEOUT; siglongjmp(jb, 1); }
 
 static fn_t g_stop_fn;             /* a "continue at" gate's lifted run ends at this function */
 static uint32_t g_end = SENTINEL;   /* where the interpreter's planted stop sits */
+/* An earlier change, a computed continuation (cont KZ2_NATIVE_CONT_PC): the native side runs first; the lifted run then ends
+ * at the first transfer to the native exit's pc (g_end) after as many passes through the gate's own address (the loop
+ * head) as the native code made (g_kz2_native_heads, set by the native code in harness builds), the first one being
+ * the call itself. */
+static int g_pc_mode;
+static uint32_t g_pc_head, g_heads, g_heads_want;
+unsigned g_kz2_native_heads;
 
 static int run_lifted(spu_context* c, fn_t f)
 {
     spu_context* ctx = c; /* g_spu_trampoline_fn is per context (patch 1017) */
     why = R_NONE;
+    g_heads = 1;
     if (sigsetjmp(jb, 1) == 0) {
         arm(1);
         f(c);
         while (g_spu_trampoline_fn) {
             if (g_spu_trampoline_fn == spu_indirect_branch && (c->pc & SPU_LS_MASK) == SENTINEL) { why = R_RET; break; }
             if (g_stop_fn && g_spu_trampoline_fn == g_stop_fn) { why = R_RET; break; }
+            if (g_pc_mode) {
+                const uint32_t pc = c->pc & SPU_LS_MASK;
+                if (pc == g_pc_head) g_heads++;
+                if (pc == g_end && g_heads == g_heads_want) { why = R_RET; break; }
+            }
             fn_t t = g_spu_trampoline_fn;
             g_spu_trampoline_fn = 0;
             t(c);
@@ -944,6 +957,160 @@ static void synth_skin(spu_context* c, uint64_t seed)
     }
 }
 
+
+/* Physics.Raycast's MOPP ray machine at its loop head 0xCA40 (slot 82, a computed continuation). A random
+ * program of MOPP opcodes (mostly the ones the native code takes: rescales, jumps, splits, single splits, splits
+ * with jumps, double cuts of both widths, chunk jumps; now and then a diagonal split, a terminal or a return, where
+ * it hands over) at a random 16-byte-aligned code pointer; children and jumps a few bytes ahead; the ray from/to in
+ * MOPP space mostly in [0, 256) (equal ends, ends on a plane, negative ones now and then; odd floats -- huge,
+ * denormal, exponent 255 -- a quarter of the trials); the scale state and the query's 24-bit scale; a 4-way code
+ * cache at [0x11AD0] whose tags hold half the chunks the program jumps to (hits continue at a line of random code).
+ * 1 in 32 trials misaligns r1 (declined on purpose). */
+static uint32_t mopp_float(int odd)
+{
+    union { float f; uint32_t u; } x;
+    const uint32_t k = rnd() % 16;
+    if (odd && k < 4) {
+        static const uint32_t w[4] = { 0x7F800000u, 0x00012345u, 0x7FFFFFFFu, 0x80000000u };
+        return w[k] ^ (k < 3 && (rnd() & 1) ? 0x80000000u : 0);
+    }
+    if (k < 3) x.f = (float)(rnd() % 256);   /* on a plane */
+    else if (k < 4) x.f = -(float)(rnd() % 64) - (float)(rnd() % 1000) / 1000.0f;
+    else x.f = (float)(rnd() % 256000) / 1000.0f;
+    return x.u;
+}
+/* rf/rt: the ray's ends as the program goes (rescales applied), so that most splits are not crossed and most cuts
+ * keep the ray: children follow each other (offset 0) and the run goes on */
+static uint8_t mopp_clamp(float v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
+static uint32_t mopp_prog(uint8_t* ls, uint32_t a, int nops, const uint16_t* chunks, int nch, float* rf, float* rt)
+{
+    for (int i = 0; i < nops; i++) {
+        const uint32_t k = rnd() % 100, ax = rnd() % 3, near = rnd() % 4 != 0;
+        const float lo = rf[ax] < rt[ax] ? rf[ax] : rt[ax], hi = rf[ax] < rt[ax] ? rt[ax] : rf[ax];
+        uint8_t b[8];
+        int n;
+        for (int j = 0; j < 8; j++) b[j] = (uint8_t)rnd();
+        if (k < 10) {                                                                  /* rescale */
+            b[0] = 1 + rnd() % 4;
+            for (int j = 0; j < 3; j++) {
+                const float m = rf[j] < rt[j] ? rf[j] : rt[j];
+                if (near) b[1 + j] = mopp_clamp(m);
+                const float s = (float)(1 << b[0]);
+                rf[j] = (rf[j] - b[1 + j]) * s;
+                rt[j] = (rt[j] - b[1 + j]) * s;
+            }
+            n = 4;
+        } else if (k < 14) { b[0] = 5; b[1] %= 4; n = 2; }                             /* jumps, a little ahead */
+        else if (k < 16) { b[0] = 6; b[1] = 0; b[2] %= 4; n = 3; }
+        else if (k < 18) { b[0] = 7; b[1] = 0; b[2] = 0; b[3] %= 4; n = 4; }
+        else if (k < 21) { b[0] = 12; const uint16_t c = chunks[rnd() % nch]; b[1] = (uint8_t)(c >> 8); b[2] = (uint8_t)c; n = 3; }
+        else if (k < 23) { b[0] = 13; n = 5; }
+        else if (k < 38) {                                                             /* split: b1 high, b2 low */
+            b[0] = 16 + ax;
+            if (near) {
+                if (rnd() & 1) { b[2] = mopp_clamp(hi + 1 + rnd() % 3); b[1] = mopp_clamp(b[2] + rnd() % 4); }
+                else { b[1] = mopp_clamp(lo - 1 - rnd() % 3); b[2] = b[1]; }
+            }
+            b[3] = rnd() % 4 ? 0 : b[3] % 4;
+            n = 4;
+        } else if (k < 53) {                                                           /* single split */
+            b[0] = 32 + ax;
+            if (near) b[1] = rnd() & 1 ? mopp_clamp(hi + 1 + rnd() % 3) : mopp_clamp(lo - 2 - rnd() % 3);
+            b[2] = rnd() % 4 ? 0 : b[2] % 4;
+            n = 3;
+        } else if (k < 60) {                                                           /* split with jumps */
+            b[0] = 35 + ax;
+            if (near) {
+                if (rnd() & 1) { b[2] = mopp_clamp(hi + 1 + rnd() % 3); b[1] = b[2]; }
+                else { b[1] = mopp_clamp(lo - 1 - rnd() % 3); b[2] = b[1]; }
+            }
+            b[3] = 0; b[4] %= 4; b[5] = 0; b[6] %= 4;
+            n = 7;
+        } else if (k < 75) {                                                           /* double cut */
+            b[0] = 38 + ax;
+            if (near) { b[1] = mopp_clamp(lo - rnd() % 3); b[2] = mopp_clamp(hi + 1 + rnd() % 3); }
+            else if (b[1] > b[2]) { const uint8_t s = b[1]; b[1] = b[2]; b[2] = s; }
+            n = 3;
+        } else if (k < 83) {                                                           /* double cut 24 (x 1/256) */
+            b[0] = 41 + ax;
+            uint32_t p0 = (uint32_t)(lo < 0 ? 0 : lo * 256.0f), p1 = (uint32_t)(hi < 0 ? 0 : hi * 256.0f) + 256;
+            if (near) p0 = p0 > 300 ? p0 - rnd() % 300 : 0;
+            else p0 = rnd() % 0x10000, p1 = p0 + rnd() % 0x10000;
+            b[1] = (uint8_t)(p0 >> 16); b[2] = (uint8_t)(p0 >> 8); b[3] = (uint8_t)p0;
+            b[4] = (uint8_t)(p1 >> 16); b[5] = (uint8_t)(p1 >> 8); b[6] = (uint8_t)p1;
+            n = 7;
+        } else if (k < 86) { b[0] = 19 + rnd() % 10; n = 4; }                          /* hands over */
+        else if (k < 88) { b[0] = 48 + rnd() % 32; n = 1; }
+        else if (k < 89) { b[0] = 0; n = 1; }
+        else if (k < 90) { b[0] = 96 + rnd() % 12; n = 3; }
+        else { b[0] = 13; n = 5; }
+        for (int j = 0; j < n; j++) ls[(a++) & SPU_LS_MASK] = b[j];
+    }
+    return a;
+}
+static void synth_mopp(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    const int odd = (rnd() % 4) == 0;
+    uint8_t* ls = c->ls;
+    uint16_t chunks[8];
+    for (int i = 0; i < 8; i++) chunks[i] = (uint16_t)(rnd() % 4096);
+    const uint32_t code = 0x30000u + 16u * (rnd() % 64), ray = 0x31000u, st = 0x31100u, q = 0x31200u;
+    const uint32_t cache = 0x31400u, tags = 0x31500u, lines = 0x32000u, ea0 = 0x00400000u + 512u * (rnd() % 64);
+    float rf[3], rt[3];
+    const int longray = rnd() % 4 == 0;
+    for (int i = 0; i < 3; i++) {
+        rf[i] = (float)(rnd() % 250000) / 1000.0f;
+        rt[i] = longray ? (float)(rnd() % 256000) / 1000.0f : rf[i] + (float)((int)(rnd() % 6000) - 3000) / 1000.0f;
+        if (rnd() % 8 == 0) rt[i] = rf[i];   /* equal ends */
+        union { float f; uint32_t u; } x;
+        x.f = rf[i]; be32w(ls + ray + 4 * i, odd && rnd() % 6 == 0 ? mopp_float(1) : x.u);
+        x.f = rt[i]; be32w(ls + ray + 16 + 4 * i, odd && rnd() % 6 == 0 ? mopp_float(1) : x.u);
+    }
+    be32w(ls + ray + 12, rnd() % 4 ? 0 : mopp_float(odd));
+    be32w(ls + ray + 28, rnd() % 4 ? 0 : mopp_float(odd));
+    float tf[3] = { rf[0], rf[1], rf[2] }, tt[3] = { rt[0], rt[1], rt[2] };
+    mopp_prog(ls, code, 40, chunks, 8, tf, tt);
+    for (int i = 0; i < 4; i++) be32w(ls + st + 4 * i, rnd() % 4 ? 0 : mopp_float(odd));   /* the offset */
+    be32w(ls + st + 16, rnd() % 8);   /* the accumulated shift */
+    be32w(ls + st + 20, rnd() % 4 ? 0x3F800000u : mopp_float(odd));   /* the scale */
+    be32w(ls + st + 24, rnd());
+    be32w(ls + st + 28, rnd());
+    be32w(ls + q + 0x40, rnd() % 4 ? 0x3B800000u : 0x3B800000u + (rnd() % 0x100000));   /* 1/256 */
+    be32w(ls + q + 0xF0, ea0);
+    be32w(ls + 0x11AD0, cache);
+    for (int i = 0; i < 4; i++) {
+        be32w(ls + cache + 0x20 + 4 * i, 0xC0);
+        be32w(ls + cache + 0x50 + 4 * i, tags);
+    }
+    for (int s = 0; s < 4; s++)
+        for (int w = 0; w < 4; w++) {
+            const uint32_t line = lines + 512u * (4u * s + w);
+            be32w(ls + tags + 0x40 * s + 4 * w, line);
+            be32w(ls + tags + 0x40 * s + 0x10 + 4 * w, rnd() % 4);   /* a tag that matches nothing */
+            be32w(ls + tags + 0x40 * s + 0x20 + 4 * w, rnd() % 16);
+            float lf[3] = { rf[0], rf[1], rf[2] }, lt[3] = { rt[0], rt[1], rt[2] };
+            mopp_prog(ls, line, 24, chunks, 8, lf, lt);
+        }
+    for (int i = 0; i < 4; i++) {   /* half the program's chunks are in the cache, in their set */
+        const uint32_t ea = ea0 + 512u * chunks[2 * i];
+        const uint32_t set = (ea >> 3) & 0xC0, way = rnd() % 4;
+        be32w(ls + tags + set + 0x10 + 4 * way, ea);
+    }
+    setreg(c, 80, code);
+    for (int k = 1; k < 4; k++) c->gpr[80]._u32[k] = rnd();   /* the code pointer's other lanes, as the VM's adds leave them */
+    setreg(c, 86, ray);
+    setreg(c, 89, st);
+    setreg(c, 91, q);
+    setreg(c, 93, rnd() % 4096);
+    setreg(c, 94, 0xCA6C);
+    for (int k = 0; k < 4; k++) {   /* lqr r96, 0x10EF0 (the prologue's): the cache's LRU step */
+        const uint8_t* w = ls + 0x10EF0 + 4 * k;
+        c->gpr[96]._u32[k] = (uint32_t)w[0] << 24 | (uint32_t)w[1] << 16 | (uint32_t)w[2] << 8 | w[3];
+    }
+    if (rnd() % 32 == 0) setreg(c, 1, 0x3F008);
+}
+
 static const struct {
     const char* kind;
     void (*synth)(spu_context*, uint64_t);
@@ -960,6 +1127,7 @@ static const struct {
     {"bss_clear", synth_bss},         {"vj_memcpy", synth_vjcopy},
     {"vj_vertex", synth_vjvert},     {"sk_skin", synth_skin},
     {"vj_light", synth_vjvert},   /* slot 81, the emitter with the SSE relight */
+    {"mopp_vm", synth_mopp},      /* slot 82, the MOPP ray machine's loop head (a computed continuation) */
 };
 
 static const char* g_image;   /* the image under test (the .bin's base name) */
@@ -972,6 +1140,16 @@ static long n_case, n_match, n_mis, n_fb, n_imis, n_bad, n_puts;
 static int kind_r3(const kz2_native_entry* e)
 {
     return e->kind && (!strcmp(e->kind, "vj_vertex") || !strcmp(e->kind, "vj_light"));   /* slots 79, 81 */
+}
+
+/* registers a computed-continuation gate does not keep: dead at its loop head on every path
+ * (tools/spu/vm_live.py; native_raycast.c's header). Counted with the scratch registers, not compared. */
+static int kind_dead(const kz2_native_entry* e, int r)
+{
+    if (!e->kind || strcmp(e->kind, "mopp_vm")) return 0;
+    if (r <= 9 || r == 14 || r == 80 || r == 86 || r == 89 || r == 91 || r == 93 || r == 94 || r == 95 || r == 96)
+        return 0;
+    return r < 98;
 }
 
 /* HARNESS_MFC_MUTATE=ea|data|tag|drop|order (the harness's own test, test_native_vjvert.sh): change the native side's
@@ -1013,19 +1191,45 @@ static void one(const char* name, int slot, uint32_t entry)
     }
     S.gpr[0] = spu_splat_u32(SENTINEL);
     S.pc = entry;
-    g_stop_fn = e->cont ? spu_lookup(e->cont, 0) : NULL;
-    g_end = e->cont ? e->cont : SENTINEL;
-    if (e->cont && !g_stop_fn) { printf("C %s no lifted function at the continue address 0x%05X\n", name, e->cont); n_bad++; return; }
+    g_pc_mode = e->cont == KZ2_NATIVE_CONT_PC;
+    g_stop_fn = e->cont && !g_pc_mode ? spu_lookup(e->cont, 0) : NULL;
+    g_end = e->cont && !g_pc_mode ? e->cont : SENTINEL;
+    if (e->cont && !g_pc_mode && !g_stop_fn) { printf("C %s no lifted function at the continue address 0x%05X\n", name, e->cont); n_bad++; return; }
     if (S.ls != S.ls_store) { printf("C %s state LS not in its context\n", name); n_bad++; return; }
     ctx_copy(&A, &S);
     ctx_copy(&B, &S);
     hmfc_reset(&LA);
     hmfc_reset(&LB);
-    uint64_t t0 = now_ns();
-    int ra = run_lifted(&A, lf);
-    uint64_t t1 = now_ns();
-    int nb = kz2_native_run(&B, e);
-    uint64_t t2 = now_ns();
+    uint64_t t0, t1, t2;
+    int ra, nb;
+    if (g_pc_mode) {   /* the native side first, for its exit */
+        g_kz2_native_heads = 0;
+        const uint64_t n0 = now_ns();
+        nb = kz2_native_run(&B, e);
+        const uint64_t tn = now_ns() - n0;
+        if (!nb) {
+            printf("C %s fallback (the native code declined: lifted runs)\n", name);
+            n_fb++;
+            return;
+        }
+        g_end = B.pc & SPU_LS_MASK;
+        g_pc_head = entry;
+        g_heads_want = g_kz2_native_heads;
+        static int pcm = -1;   /* HARNESS_PC_MUTATE=1 (the harness's own test): stop the lifted run one head late */
+        if (pcm < 0) pcm = getenv("HARNESS_PC_MUTATE") && atoi(getenv("HARNESS_PC_MUTATE"));
+        g_heads_want += (unsigned)pcm;
+        if (!spu_lookup(g_end, 0)) { printf("C %s MISMATCH no lifted function at the native exit 0x%05X\n", name, g_end); n_mis++; return; }
+        t0 = now_ns();
+        ra = run_lifted(&A, lf);
+        t1 = now_ns();
+        t2 = t1 + tn;   /* t1 - t0 the lifted run, t2 - t1 the native one */
+    } else {
+        t0 = now_ns();
+        ra = run_lifted(&A, lf);
+        t1 = now_ns();
+        nb = kz2_native_run(&B, e);
+        t2 = now_ns();
+    }
     if (ra != R_RET) {
         printf("C %s lifted did not return (%d)\n", name, ra);
         n_bad++;
@@ -1036,7 +1240,7 @@ static void one(const char* name, int slot, uint32_t entry)
         n_fb++;
         return;
     }
-    if (e->cont) B.pc = e->cont;   /* the gate line's SPU_HOP */
+    if (e->cont && !g_pc_mode) B.pc = e->cont;   /* the gate line's SPU_HOP (a computed continuation set B.pc itself) */
     t_lift += t1 - t0;
     t_nat += t2 - t1;
     char diff[200] = "";
@@ -1062,7 +1266,7 @@ static void one(const char* name, int slot, uint32_t entry)
             snprintf(diff, sizeof diff, "r%d", keep[i]);
         }
     for (int r = e->cont ? 2 : 80; r < 128 && !bad; r++)   /* a "continue at" gate: every register */
-        if (memcmp(&A.gpr[r], &B.gpr[r], 16)) {
+        if (!kind_dead(e, r) && memcmp(&A.gpr[r], &B.gpr[r], 16)) {
             bad = 1;
             snprintf(diff, sizeof diff, "r%d", r);
         }
@@ -1080,13 +1284,14 @@ static void one(const char* name, int slot, uint32_t entry)
         snprintf(diff, sizeof diff, "int_enable lifted %u native %u", A.int_enable, B.int_enable);
     }
     int scratch = 0;
-    for (int r = 2; r < 80; r++) scratch += memcmp(&A.gpr[r], &B.gpr[r], 16) != 0;
+    for (int r = 2; r < 128; r++) scratch += (r < 80 || kind_dead(e, r)) && memcmp(&A.gpr[r], &B.gpr[r], 16) != 0;
     if ((A.pc & SPU_LS_MASK) != g_end || (e->cont && (B.pc & SPU_LS_MASK) != g_end)) {
         bad = 1;
         snprintf(diff, sizeof diff, "pc lifted 0x%05X native 0x%05X", A.pc, B.pc);
     }
     int ib = 0;
-    if (do_interp) {
+    if (do_interp && !g_pc_mode) {   /* not for a computed continuation: a stop planted at its exit would end the
+                                     * interpreter at an earlier pass through that handler */
         ctx_copy(&C, &S);
         hmfc_reset(&LC);
         C.ls[g_end] = 0; C.ls[g_end + 1] = 0; C.ls[g_end + 2] = 0x3F; C.ls[g_end + 3] = 0xFF;
@@ -1151,9 +1356,11 @@ static void one(const char* name, int slot, uint32_t entry)
         b_nat += bn;
     }
     n_puts += hmfc_puts(&LA);
-    printf("C %s %s scratch_regs_differ=%d mfc_puts=%d lifted_us=%.1f native_us=%.1f%s%s%s\n", name,
-           bad ? "MISMATCH" : "ok", scratch, hmfc_puts(&LA), (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, do_interp ? (ib ? " interp=MISMATCH" : " interp=ok") : "",
-           diff[0] ? " " : "", diff);
+    char pcx[48] = "";
+    if (g_pc_mode) snprintf(pcx, sizeof pcx, " heads=%u exit=0x%05X", g_heads_want, g_end);   /* an earlier change */
+    printf("C %s %s scratch_regs_differ=%d mfc_puts=%d lifted_us=%.1f native_us=%.1f%s%s%s%s\n", name,
+           bad ? "MISMATCH" : "ok", scratch, hmfc_puts(&LA), (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, pcx,
+           do_interp && !g_pc_mode ? (ib ? " interp=MISMATCH" : " interp=ok") : "", diff[0] ? " " : "", diff);
 }
 
 static int load_record(const char* path, int* slot, uint32_t* addr)

@@ -56,7 +56,8 @@ A first run or rebuild that ends with rc != 0: the dialog shows firstrun.py's RE
 <root>/logs/firstrun-status.txt (--status-file; only when this run wrote it), then where the log is (failure_text).
 
 version.ini (for the game's menu; the game side that draws it is not in yet): at each game start, written whole into
-the player's data folder (the working folder above, where keybinds.ini, display.ini and gameplay.ini live) as
+the player's data folder (the working folder above, where keybinds.ini, display.ini and gameplay.ini live; gameplay.ini
+is created with the defaults at a start when missing, ensure_gameplay_ini, an existing one is never touched) as
 [version] current=<this port's version>, plus newer=<version> and page=<release page> only while [online]
 check_updates=1 and the last check's result names a release newer than current (write_version_ini). The game never
 connects. A failure is logged and the start goes on.
@@ -685,6 +686,59 @@ def newer_from_result(path, dismissed):
 # The version block in the game's menu: the launcher writes what the game's menu version block will show, so the
 # game itself never connects. Written whole at each start (a fresh small file, not the line writer: the launcher owns
 # every line, and a stale newer= goes with the rest).
+GAMEPLAY_INI = "gameplay.ini"
+# The default gameplay.ini: every key port/kz2/kz2_gameplay.c parses today (kz2_gp_defaults), written live at its
+# default so the keys are visible and behaviour does not change. test_gameplay_ini.py derives the key list from that
+# source and compares.
+GAMEPLAY_INI_TEXT = """; Project Pyrrhus gameplay settings. Created with the defaults when this file was missing; the launcher
+; never overwrites it. The game reads it at start. An environment variable (KZ2_AIM_ASSIST, KZ2_CROUCH_TOGGLE,
+; KZ2_COVER_TOGGLE, KZ2_MOTION, KZ2_MOUSE_*) wins over this file for one run. A wrong value is ignored (the default stays).
+; Booleans: 1/0, on/off, true/false, yes/no.
+
+[gameplay]
+; aim_assist = auto | on | off. auto: assist while a pad drives the look, none while the mouse does.
+aim_assist = auto
+; crouch_toggle = 0 | 1. 1: the crouch button toggles instead of being held.
+crouch_toggle = 0
+; cover_toggle = 0 | 1. 1: the cover button toggles instead of being held.
+cover_toggle = 0
+; motion = auto | on | off. The motion-controlled actions (valves, charges): auto picks by the input device.
+motion = auto
+
+[mouse]
+; mouse_look = 0 | 1. 0: the mouse does not drive the look.
+mouse_look = 1
+; mouse_sensitivity: a positive number up to 1000, a factor on mouse_yaw.
+mouse_sensitivity = 2.5
+; mouse_zoom_sensitivity: a positive number up to 1000, an extra factor while zoomed.
+mouse_zoom_sensitivity = 1.0
+; mouse_yaw: degrees per mouse count at sensitivity 1 (0.022 is the Quake/Source value).
+mouse_yaw = 0.022
+; mouse_invert_y = 0 | 1. 1: moving the mouse up looks down.
+mouse_invert_y = 0
+"""
+
+
+def ensure_gameplay_ini(folder):
+    """Write <folder>/gameplay.ini with the defaults when it is not there (never touches an existing file, even an
+    empty one or a folder of that name; exclusive create, so a file made meanwhile survives). -> "" or the reason it
+    could not be written; never raises (a missing settings file is never a reason to stop the start)."""
+    path = os.path.join(folder, GAMEPLAY_INI)
+    try:
+        if os.path.lexists(path):
+            return ""
+        os.makedirs(folder, exist_ok=True)
+        try:
+            f = open(path, "x", encoding="ascii", newline="\r\n")
+        except FileExistsError:   # made meanwhile: theirs stays
+            return ""
+        with f:
+            f.write(GAMEPLAY_INI_TEXT)
+        return ""
+    except (OSError, ValueError) as e:
+        return f"could not write {path} ({e})"
+
+
 VERSION_INI = "version.ini"
 _PLAIN = re.compile(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 
@@ -1093,6 +1147,9 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                 f"and in {cwd}: the build, the link to your game files and the caches live there. Install it in a "
                 f"folder your user can write to (the default is fine).{REPORT}")
         return 1
+    gerr = ensure_gameplay_ini(cwd)
+    if gerr:
+        note(root, "gameplay.ini: " + gerr)
     info = version_info(root, ini["check_updates"])
     verr = write_version_ini(cwd, info)
     note(root, "version.ini: " + (verr or ", ".join(f"{k} {v}" for k, v in info)))

@@ -1,0 +1,53 @@
+KZ2 patch 7013 (diagnostic): GCM park events for patch 1085's trace hook (KZ2_FRAME_TRACE,
+port/kz2/spu/kz2_frame_trace.c; tools/spu/park_trace.py): 42 = the walker stopped on a park (site = IO offset),
+41 = an SPU put covered the park word (site = its EA, on the SPU's host thread), 43 = the walker went past the park. kz2_park_ea_peek() gives the armed park EA to the trace's sampler (44 = the word changed).
+A park without a 41 was patched by a PPU store or before patch 6038's arm. Off: one load of the hook pointer.
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1103,6 +1103,21 @@
+  * and cellGcm_walker_wait is the frame thread's sleep. A PPU store that patches a park is not seen: that wait still
+  * ends at its timeout, as before. KZ2_PARK_WAKE=0 = off (the frame thread sleeps as before). */
+ static volatile u32 s_park_wake_ea = 0;
++/* KZ2 patch 7013 (diagnostic): park events for patch 1085's trace hook (KZ2_FRAME_TRACE,
++ * port/kz2/spu/kz2_frame_trace.c): 42 = the walker stopped on a park (site = its IO offset), 41 = an SPU put covered
++ * the park word (site = its EA; on the SPU's host thread, so the job is the one running there), 43 = the walker
++ * went past the park (site = IO offset). A park with no 41 was patched by a PPU store (or before the arm). Off: one
++ * load of the hook pointer. */
++uint32_t kz2_park_ea_peek(void);   /* KZ2 patch 7013: the armed park word's EA (0 = none), for the trace's sampler */
++uint32_t kz2_park_ea_peek(void) { return __atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE); }
++static inline void kz2_park_trace(int kind, u32 site)
++{
++    extern void (*g_kz3_wtrace)(const char*, int, uint32_t, uint64_t, uint64_t);
++    if (__builtin_expect(g_kz3_wtrace != 0, 0)) {
++        extern uint64_t kz3_wacct_now(void); extern void kz3_wacct_trace(int, uint32_t, uint64_t, uint64_t);
++        const uint64_t n = kz3_wacct_now(); kz3_wacct_trace(kind, site, n, n);
++    }
++}
+ #ifdef _WIN32
+ static HANDLE s_walker_wake;   /* auto-reset; created by cellGcm_walker_wait's first call */
+ #endif
+@@ -3200,6 +3215,7 @@
+                       u64 now = get_timestamp_ns();
+                       if (s_park_off != s_fifo_getoff) { s_park_off = s_fifo_getoff; s_park_t0 = now;
+                                                          s_park_put = put; s_park_putchg = 0;
++                          kz2_park_trace(42, s_fifo_getoff);   /* KZ2 patch 7013 */
+                           if (kz3_ft_on()) fprintf(stderr, "[ft] %llu park io=0x%08X ea=0x%08X put=0x%08X\n", ps3_ms_now(),
+                                                    s_fifo_getoff, gcm_io2ea(s_fifo_getoff), put); }
+                       else if (put != s_park_put) { s_park_put = put; s_park_putchg++; }
+@@ -3288,6 +3304,7 @@
+                   if (ms > s_pmax) s_pmax = ms;
+                   { extern void kz3_wacct_note(int, uint32_t, uint64_t);   /* patch 1032: KZ3_WA_PARK = 9 */
+                     extern int g_kz3_wacct; if (g_kz3_wacct > 0) kz3_wacct_note(9, 0, get_timestamp_ns() - s_park_t0); }
++                  kz2_park_trace(43, s_fifo_getoff);   /* KZ2 patch 7013 */
+                   if (kz3_ft_on()) fprintf(stderr, "[ft] %llu unpark io=0x%08X after %llu ms -> 0x%08X\n", ps3_ms_now(),
+                                            s_fifo_getoff, (unsigned long long)ms, tgt);
+               }
+@@ -4725,6 +4742,7 @@
+         __atomic_thread_fence(__ATOMIC_SEQ_CST);
+         const u32 pe = __atomic_load_n(&s_park_wake_ea, __ATOMIC_RELAXED);
+         if (pe && ((u32)(ea - pe) < 4u || (u32)(pe - ea) < size)) gcm_walker_kick();   /* [ea, ea+size) meets [pe, pe+4) */
++        if (pe && ((u32)(ea - pe) < 4u || (u32)(pe - ea) < size)) kz2_park_trace(41, pe);   /* KZ2 patch 7013 */
+     }
+     /* KZ2: through cellGcm_note_guest_write_pages_ea, which KZ2 patch 6008 extends with the SPU-local bitmap */
+     rsx_live_draw_set_write_source(1u); cellGcm_note_guest_write_pages_ea(ea, size); rsx_live_draw_set_write_source(0u);

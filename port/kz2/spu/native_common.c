@@ -23,6 +23,8 @@ const kz2_native_entry* kz2_native_find(int slot)
         if (kz2_native_particles[i].slot == slot) return &kz2_native_particles[i];
     for (unsigned i = 0; i < kz2_native_skinning_n; i++)
         if (kz2_native_skinning[i].slot == slot) return &kz2_native_skinning[i];
+    for (unsigned i = 0; i < kz2_native_raycast_n; i++)
+        if (kz2_native_raycast[i].slot == slot) return &kz2_native_raycast[i];
     return NULL;
 }
 

@@ -61,7 +61,7 @@ your RPCS3 install ("Use my RPCS3 install"). What each must contain:
 3. It translates and builds the game's code on your machine; no game code, assets or keys are shipped or downloaded.
 4. Start the game from the launcher.
 
-Do not install into a OneDrive folder. The settings files (`keybinds.ini`, `gameplay.ini`) are in `%APPDATA%\Project Pyrrhus`, or next to `kz2.exe` in the portable zip. More: [docs/INSTALL.md](docs/INSTALL.md), [CHANGELOG.md](CHANGELOG.md).
+Do not install into a OneDrive folder. The settings files (`keybinds.ini`, `gameplay.ini`; the latter is created with its defaults on the first start, and an existing one is never changed) are in `%APPDATA%\Project Pyrrhus`, or next to `kz2.exe` in the portable zip. More: [docs/INSTALL.md](docs/INSTALL.md), [CHANGELOG.md](CHANGELOG.md).
 
 ## Settings and known issues
 

@@ -11,7 +11,7 @@
 # The maintainer reads the draft and publishes it.
 #
 # Jobs: nix-parts (Linux, Nix; a Windows runner has none) builds the two LGPL FFmpeg decoder DLLs from
-# tools/runtime/ffmpeg-lgpl-win.nix and stages SDL3.dll from the flake's nixpkgs (the same SDL3 the local build ships);
+# tools/runtime/ffmpeg-lgpl-win.nix and stages SDL3.dll from the flake's nixpkgs (the same SDL3 the local build ships) and the Noto Sans face (tools/runtime/mkfont_noto.py);
 # installer (Windows) builds everything else and the two assets, with a read-only token; publish
 # (Linux, tag pushes only) is the one job that may write: it creates the draft release from the installer job's
 # artifact. Artifacts move between jobs with the gh CLI on the runner image (no extra action).
@@ -61,6 +61,14 @@ jobs:
             "import ./tools/runtime/ffmpeg-lgpl-win.nix { pkgs = import (builtins.getFlake \"path:$PWD\").inputs.nixpkgs { system = \"x86_64-linux\"; }; }"
           mkdir -p nix-parts/ffmpeg-win
           cp -rL work/ffmpeg-win/bin work/ffmpeg-win/share work/ffmpeg-win/include nix-parts/ffmpeg-win/   # include: the first run builds against the headers
+      - name: Noto Sans face (patch 6061, issue #39; nixpkgs noto-fonts cut down by mkfont_noto.py, output SHA-256 pinned in assemble_payload.py)
+        run: |
+          set -euo pipefail
+          # mkfont_noto.py reads the store path offline, so realise the locked noto-fonts first
+          nix build --no-link --impure --expr \
+            "(import (builtins.getFlake \"path:$PWD\").inputs.nixpkgs { system = \"x86_64-linux\"; }).noto-fonts"
+          mkdir -p nix-parts/fonts
+          python3 tools/runtime/mkfont_noto.py nix-parts/fonts/NotoSans-Regular.ttf
       - name: SDL3 (the .#win shell's SDL3.dll and licence, as the local build stages it)
         run: |
           nix develop .#win --command python3 tools/release/stage_sdl3.py --out nix-parts/sdl3
@@ -164,7 +172,10 @@ jobs:
           # stage_sdl3.py checks the DLL (PE x64) and the zlib licence text again on this side
           python3 tools/release/stage_sdl3.py --dll "$RUNNER_TEMP/nix-parts/sdl3/SDL3.dll" \
             --license "$RUNNER_TEMP/nix-parts/sdl3/LICENSE.txt"
-          ls -l work/ffmpeg-win/bin work/ffmpeg-win/include work/release/sdl3
+          # the Noto Sans face (assemble_payload.py checks its SHA-256 pin and refuses the payload without it)
+          mkdir -p work/release/fonts
+          cp "$RUNNER_TEMP/nix-parts/fonts/NotoSans-Regular.ttf" work/release/fonts/
+          ls -l work/ffmpeg-win/bin work/ffmpeg-win/include work/release/sdl3 work/release/fonts/NotoSans-Regular.ttf
 
       - name: Assemble the payload
         env:

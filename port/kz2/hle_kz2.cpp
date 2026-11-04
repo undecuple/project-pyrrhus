@@ -1,8 +1,8 @@
 /* Killzone 2 port: HLE for the imports ps3recomp leaves unresolved. From Project Helghast port/kz3/hle_kz3.cpp: the four
  * handlers whose NIDs KZ2 v1.01 also imports (EBOOT.imports.json of the first lift: cellKbRead in sys_io,
- * cellFontInitializeWithRevision in cellFont, cellFontInitLibraryFreeTypeWithRevision in cellFontFT, cellSpurs
- * 0x94034C95); KZ3's cellCameraSetNotifyEventQueue2 is left out (KZ2 imports no cellCamera). The behaviour is what
- * KZ3's call sites needed: ASSUMPTION for KZ2 until its call sites are read. */
+ * cellFontInitializeWithRevision in cellFont (removed in an earlier change, see below), cellFontInitLibraryFreeTypeWithRevision in
+ * cellFontFT, cellSpurs 0x94034C95); KZ3's cellCameraSetNotifyEventQueue2 is left out (KZ2 imports no cellCamera). The
+ * behaviour is what KZ3's call sites needed: ASSUMPTION for KZ2 until its call sites are read. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,9 +38,10 @@ void cellKbRead(ppu_context* ctx)
     ctx->gpr[3] = 0;
 }
 
-/* 0xF03DCC29 cellFontInitializeWithRevision(u64 revisionFlags, CellFontConfig*): a non-zero return aborts KZ3's
- * whole font init. The font calls that follow (OpenFontset, ...) are the runtime's cellFont HLE. */
-void cellFontInitializeWithRevision(ppu_context* ctx) { ctx->gpr[3] = 0; }
+/* 0xF03DCC29 cellFontInitializeWithRevision is the runtime's (libs/font/cellFont.c -> cellFontInit). This file had a
+ * handler that returned 0 without initialising the library (from KZ3), so cellFontOpenFontset failed with
+ * CELL_FONT_ERROR_UNINITIALIZED and KZ2 gave up on the system font for good (@0x00044550): no Cyrillic or Greek
+ * (issue #39). Removed in an earlier change with patch 6061. */
 
 /* 0x7A0A83C4 cellFontInitLibraryFreeTypeWithRevision(u64, CellFontLibraryConfigFT*, const CellFontLibrary**):
  * KZ3 keeps the handle at 0x1331960 and passes it on. A zeroed library object; real glyphs are later work. */
@@ -67,7 +68,6 @@ void cellSpurs_94034C95(ppu_context* ctx)
 extern "C" void kz2_hle_register(void)
 {
     ps3_hle_register_ctx(0xFF0A21B7u, "cellKbRead", cellKbRead);
-    ps3_hle_register_ctx(0xF03DCC29u, "cellFontInitializeWithRevision", cellFontInitializeWithRevision);
     ps3_hle_register_ctx(0x7A0A83C4u, "cellFontInitLibraryFreeTypeWithRevision", cellFontInitLibraryFreeTypeWithRevision);
     ps3_hle_register_ctx(0x94034C95u, "cellSpurs_94034C95", cellSpurs_94034C95);
 }

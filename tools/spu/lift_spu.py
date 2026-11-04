@@ -263,8 +263,9 @@ def native_gates(sub, name):
     is the first statement of the function: `if (g_kz2_native_gate[slot] && g_kz2_native_gate[slot](ctx))
     SPU_RET(ctx);` (a native implementation that ran the whole subroutine returns 1). An earlier change: a row with a 7th column
     (a hex LS address) is a "continue at" gate for code that is no subroutine: on 1 the gate hops to that address's
-    lifted function (`SPU_HOP`, as the lifted code's own branch there would) instead of returning. Returns the gates
-    inserted."""
+    lifted function (`SPU_HOP`, as the lifted code's own branch there would) instead of returning. An earlier change: column 7
+    "pc" is a computed continuation (the native code sets ctx->pc; the gate line is `SPU_IB_HOP(ctx, ctx->pc)`, as the
+    lifted code's own `bi` would hop). Returns the gates inserted."""
     import re
     tsv = os.path.join(ROOT, "re", "spu", "native_gates.tsv")
     rows = []
@@ -274,7 +275,8 @@ def native_gates(sub, name):
                 continue
             f = line.rstrip("\n").split("\t")
             if f[0] == name:
-                cont = int(f[6], 16) if len(f) > 6 and f[6].strip() else 0
+                c7 = f[6].strip() if len(f) > 6 else ""
+                cont = -1 if c7 == "pc" else int(c7, 16) if c7 else 0
                 rows.append((int(f[1], 16), int(f[2]), f[3], cont))
     p = os.path.join(sub, "spu_recomp.c")
     if not rows or not os.path.exists(p):
@@ -286,7 +288,9 @@ def native_gates(sub, name):
         if head not in t:
             raise SystemExit(f"native gate: no lifted function {name} 0x{addr:X}")
         then = "SPU_RET(ctx);"
-        if cont:
+        if cont == -1:   # a computed continuation, the native code leaves ctx->pc at the target
+            then = "SPU_IB_HOP(ctx, ctx->pc);"
+        elif cont:
             fn = f"{name}_spu_func_{cont:08X}"
             if f"SPU_ABI void {fn}(spu_context* ctx) {{\n" not in t:
                 raise SystemExit(f"native gate: continue address 0x{cont:X} of {name} 0x{addr:X} is no lifted function")

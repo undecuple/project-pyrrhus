@@ -245,4 +245,5 @@ __attribute__((constructor)) static void kz2_native_jobs_init(void)
     add(kz2_native_edgeanim, kz2_native_edgeanim_n);
     add(kz2_native_particles, kz2_native_particles_n);
     add(kz2_native_skinning, kz2_native_skinning_n);
+    add(kz2_native_raycast, kz2_native_raycast_n);
 }

@@ -1,0 +1,146 @@
+KZ2 patch 7014: the GCM walker wakes on any write to the park word it waits at (on by default,
+KZ2_PARK_WATCH=0 turns it off; KZ2_PARK_WATCH_TOGGLE=<s> = the same-run A/B). Patch 6038 woke the frame thread only
+for an SPU DMA put covering the park word, through patch 2033's write hook, which runs before the put's copy; in play
+no park ended that way (an earlier change's trace: 0 of 86 parks, every park a whole number of the frame thread's 4 ms
+sleeps, the word changing a mean 2.7 ms before the walker saw it). Arming a park now marks the word's 128-byte line
+in the SPU coherency bitmap and names it the coherency "kick" line: spu_coh_notify_write and
+spu_coh_notify_write_except (which every PPU store/atomic to a marked line, every SPU PUT, PUTLLC and PUTLLUC that
+writes one already call, after the bytes land) call g_spu_coh_kick_fn, which sets the frame thread's event when the park word itself changed (Edge holes take ~200 puts
+to the word's line per park before the word is patched). Off: one
+relaxed load per notify. Lines stay marked. Read-not-copied: nothing; written from this tree's own 6038/1056 code.
+
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1152,11 +1152,66 @@
+ /* KZ2 patch 6038: a drain pass stopped on the park at IO `io` holding word `w`. Publish its EA for the SPU write hook,
+  * then read the word again: a put that landed before the EA was visible would not wake the frame thread, so its
+  * change is caught here instead (seq_cst on both sides: the hook fences between its copy and its read of the EA). */
++/* KZ2 patch 7014: patch 6038 woke the frame thread only for an SPU DMA put that covers the park
++ * word, and its write hook (patch 2033's) runs before the put's copy. In play no park was ended that way: the word
++ * changes (Edge holes, the post stage) arrive through paths that hook does not see, and the frame thread found them
++ * only at its 4 ms timeout, so every park lasted a whole number of 4 ms sleeps (KZ2_FRAME_TRACE).
++ * The RSX re-reads a parked JUMP continuously. With the watch on: arming a park also marks the park word's 128-byte
++ * line in the SPU coherency bitmap (spu_coh_reserve with no context, as spu_coh_watch_add does) and names it as the
++ * coherency kick line (patch 7014, spu_coherency.c), so every write to it -- a PPU store or atomic, an SPU PUT,
++ * PUTLLC or PUTLLUC -- takes the notify path and wakes the frame thread after the bytes have landed. Lines stay
++ * marked (a later store to them takes the locked path). A PPU store whose bitmap test ran before the mark and whose
++ * write lands after the arm's re-read is still found only at the timeout (a window of a few instructions).
++ * KZ2_PARK_WATCH_TOGGLE=<s>: the same-run A/B, off and on in alternating phases of <s> seconds (even = off), each
++ * switch printed as `[park-watch] t=<wacct s> phase=N on|off` (tools/spu/park_ab.py). On by default; KZ2_PARK_WATCH=0 turns it off. */
++static int gcm_park_watch_on(void)
++{
++    static int on = -1;
++    static double per = 0; static uint64_t t0;
++    if (on < 0) {
++        const char* e = getenv("KZ2_PARK_WATCH");
++        const char* t = getenv("KZ2_PARK_WATCH_TOGGLE");
++        per = (t && *t) ? atof(t) : 0;
++        on = (e && e[0] == '0') ? 0 : 1;
++        if (per > 0) { extern uint64_t kz3_wacct_now(void); t0 = kz3_wacct_now(); on = 2; }
++        fprintf(stderr, "[park-watch] KZ2_PARK_WATCH %s%s\n", on == 2 ? "toggled every " : on ? "on" : "off",
++                on == 2 ? (t ? t : "") : "");
++    }
++    if (on < 2) return on;
++    extern uint64_t kz3_wacct_now(void); extern uint64_t kz3_wacct_base(void);
++    const uint64_t n = kz3_wacct_now();
++    const long ph = (long)((double)(n - t0) / (per * 1e9));
++    static long s_ph = -1;
++    if (ph != s_ph) {
++        s_ph = ph;
++        const uint64_t b = kz3_wacct_base();
++        fprintf(stderr, "[park-watch] t=%.3fs phase=%ld %s\n", b ? (double)(n - b) / 1e9 : (double)n / 1e9, ph,
++                (ph & 1) ? "on" : "off");
++    }
++    return (int)(ph & 1);
++}
++static volatile u32 s_park_watch_w;   /* the park word as the walker last read it (set before the kick line) */
++static void gcm_park_watch_kick(uint32_t line)
++{
++    /* Only a change of the park word itself ends the wait: Edge command-buffer holes are filled by many puts into
++     * the same line before the word is patched (~200 writes per park), and waking the frame thread for each
++     * would only make it re-read the same word. Called after the write landed. */
++    const u32 pe = __atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE);
++    if (!pe || (pe & ~127u) != line || vm_read32(pe) == __atomic_load_n(&s_park_watch_w, __ATOMIC_RELAXED)) return;
++    gcm_walker_kick();
++    kz2_park_trace(47, line);   /* patch 7013's trace: the writer's thread */
++}
+ static void gcm_park_wake_arm(u32 io, u32 w)
+ {
+     if (!gcm_park_wake_on()) return;
+     const u32 ea = gcm_io2ea(io);
+     __atomic_store_n(&s_park_wake_ea, ea, __ATOMIC_SEQ_CST);
++    if (ea && gcm_park_watch_on()) {   /* KZ2 patch 7014 */
++        if (!__atomic_load_n(&g_spu_coh_kick_fn, __ATOMIC_RELAXED)) __atomic_store_n(&g_spu_coh_kick_fn, gcm_park_watch_kick, __ATOMIC_RELEASE);
++        __atomic_store_n(&s_park_watch_w, w, __ATOMIC_RELAXED);
++        spu_coh_reserve(NULL, ea);
++        __atomic_store_n(&g_spu_coh_kick_line, ea & ~127u, __ATOMIC_SEQ_CST);
++    }
+     if (ea && vm_read32(ea) != w) gcm_walker_kick();
+ }
+ /* KZ2 patch 6008 (diagnostic): command words the walker reports when it reaches them (cellGcm_watch_cmd_ea). The
+@@ -3227,6 +3282,7 @@
+                           gcm_park_wake_arm(s_fifo_getoff, w); break; }   /* patch 6038 */
+                       s_park_off = 0xFFFFFFFFu;
+                       __atomic_store_n(&s_park_wake_ea, 0u, __ATOMIC_RELEASE);   /* patch 6038: given up on */
++                      __atomic_store_n(&g_spu_coh_kick_line, 0u, __ATOMIC_RELEASE);   /* KZ2 patch 7014 */
+                       park_off = 0;
+                       if (kz3_ft_on()) fprintf(stderr, "[ft] %llu park-timeout io=0x%08X put=0x%08X\n", ps3_ms_now(), s_fifo_getoff, put);
+                       { static int pn = 0; if (pw > 0 && pn++ < 8)
+@@ -3310,6 +3366,7 @@
+               }
+               s_park_off = 0xFFFFFFFFu;
+               __atomic_store_n(&s_park_wake_ea, 0u, __ATOMIC_RELEASE);   /* patch 6038: past the park */
++              __atomic_store_n(&g_spu_coh_kick_line, 0u, __ATOMIC_RELEASE);   /* KZ2 patch 7014 */
+               kz3_pt_jump(s_fifo_getoff, tgt, put);   /* KZ3 patch 1009 diagnostic */
+               s_fifo_getoff = tgt;
+               /* get is the RSX's fetch pointer: a title polling it sees the
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -403,6 +403,16 @@
+         return;
+     }
+ }
++/* KZ2 patch 7014: see spu_coherency.h. Off (0): one relaxed load per notify. */
++volatile uint32_t g_spu_coh_kick_line = 0;
++void (*volatile g_spu_coh_kick_fn)(uint32_t line) = 0;
++static inline void spu_coh_kick_check(uint32_t line)
++{
++    if (__builtin_expect(__atomic_load_n(&g_spu_coh_kick_line, __ATOMIC_RELAXED) == line, 0) && line) {
++        void (*f)(uint32_t) = __atomic_load_n(&g_spu_coh_kick_fn, __ATOMIC_ACQUIRE);
++        if (f) f(line);
++    }
++}
+ static void spu_coh_wake_watches(uint32_t line)
+ {
+     for (spu_coh_watch* w = __atomic_load_n(&s_coh_watches, __ATOMIC_ACQUIRE); w; w = w->next)
+@@ -567,6 +577,7 @@
+     uint32_t line = ea & ~127u;
+     ppu_resv_break_line(ea);
+     spu_coh_wake_watches(line);
++    spu_coh_kick_check(line);   /* KZ2 patch 7014 */
+     SPU_COH_FOR_EACH(ch, i) {
+         spu_context* c = __atomic_load_n(&ch->slot[i], __ATOMIC_ACQUIRE);
+         if (!c || (const void*)c == self) continue;
+@@ -583,6 +594,7 @@
+     uint32_t line = ea & ~127u;
+     ppu_resv_break_line(ea);
+     spu_coh_wake_watches(line);
++    spu_coh_kick_check(line);   /* KZ2 patch 7014 */
+     SPU_COH_FOR_EACH(ch, i) {
+         spu_context* c = __atomic_load_n(&ch->slot[i], __ATOMIC_ACQUIRE);
+         if (!c) continue;
+--- a/runtime/spu/spu_coherency.h
++++ b/runtime/spu/spu_coherency.h
+@@ -85,6 +85,12 @@
+  * Expects the lock-line lock held, so that the store this is reporting and the
+  * reservation state it clears are seen by an SPU's PUTLLC as one transaction. */
+ void spu_coh_notify_write(uint32_t ea);
++/* KZ2 patch 7014: one "kick" line. While g_spu_coh_kick_line holds a line address (non-zero), every notify of that line
++ * (a PPU store or atomic, an SPU PUT, PUTLLC or PUTLLUC that wrote it, the line already marked in the bitmap so the
++ * writer takes the notify path) calls g_spu_coh_kick_fn(line) after the bytes have landed. The GCM walker sets it to
++ * the line of the park word it waits at (libs/video/cellGcmSys.c, KZ2_PARK_WATCH). */
++extern volatile uint32_t g_spu_coh_kick_line;
++extern void (*volatile g_spu_coh_kick_fn)(uint32_t line);
+ /* Remove a context from the reserving set. MUST be called before a
+  * transient (stack-allocated) spu_context goes out of scope. */
+ void spu_coh_unregister(spu_context* ctx);

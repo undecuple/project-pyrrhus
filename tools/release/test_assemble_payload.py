@@ -151,6 +151,10 @@ def fake_repo(root):
         data = b"\0\1\0\0" + fn.encode() + bytes(64)
         put(root, "work/release/fonts/" + fn, data)
         pins[fn] = hashlib.sha256(data).hexdigest()
+    noto = b"\0\1\0\0noto" + bytes(64)         # patch 6061's face; the pin is a constant, so the test swaps it (below)
+    put(root, "work/release/fonts/NotoSans-Regular.ttf", noto)
+    ap.NOTO_SHA256 = hashlib.sha256(noto).hexdigest()
+    put(root, "public/licenses/NotoSans-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1 (Noto)\n")
     put(root, "work/release/fonts/OFL-rajdhani.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
     put(root, "work/release/sdl3/SDL3.dll", fake_dll(3 << 20))   # over the 2 MiB binary cap on purpose
     put(root, "work/release/sdl3/LICENSE.txt", "Copyright (C) 1997-2026 Sam Lantinga\n")
@@ -236,6 +240,7 @@ def main():
                 "licenses/ps3recomp-LICENSE.txt", "licenses/at3_standalone-COPYING.LGPLv2.1.txt",
                 "README.md", "NOTICE.md", "run.cmd", "manifest.json", "VERSION.txt",
                 "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
+                "fonts/NotoSans-Regular.ttf", "licenses/NotoSans-OFL.txt",
                 "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
                 "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
                 "licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt",
@@ -446,6 +451,28 @@ def main():
         check(rc == 1 and "OFL text" in txt, "fonts without their OFL text are refused", txt)
         with open(medium, "wb") as f:
             f.write(orig)
+
+        # NotoSans-Regular.ttf (patch 6061, issue #39): required, SHA-256 pinned, its OFL text from public/licenses
+        npath = os.path.join(fdir, "NotoSans-Regular.ttf")
+        with open(npath, "rb") as f:
+            norig = f.read()
+        os.remove(npath)
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSans-Regular.ttf" in txt and "mkfont_noto.py" in txt,
+              "a payload without NotoSans-Regular.ttf is refused with the fix", txt)
+        with open(npath, "wb") as f:
+            f.write(norig + b"x")
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSans-Regular.ttf: SHA-256 differs" in txt, "a Noto face that differs from its pin is refused", txt)
+        with open(npath, "wb") as f:
+            f.write(norig)
+        nlic = os.path.join(repo, "public", "licenses", "NotoSans-OFL.txt")
+        os.rename(nlic, nlic + ".off")
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSans-OFL.txt" in txt, "a payload without Noto Sans' OFL text is refused", txt)
+        os.rename(nlic + ".off", nlic)
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 0, "the Noto face and licence restored: the payload passes again", txt)
 
         # SDL3.dll (pads, patch 4010): required, 64-bit PE DLL, own size cap, its licence text beside it
         sdir = os.path.join(repo, "work", "release", "sdl3")

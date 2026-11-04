@@ -1,0 +1,169 @@
+KZ2 patch 6060 (ENHANCEMENT): keyboard tilt keys for the valves and demolition charges (Discord
+tester on 0.1.7: "breach charge still won't work, requires controller tilt").
+
+Without a motion sensor the valves and charges take the tilt from the right stick X (patch 6049 + the title port's
+motion hook) while the game's grab (GrabLeftHand/GrabRightHand, L1 + R1, which no pad layout moves) is held. With a
+keyboard that took four keys at once: the two grab keys (F and Mouse1 under the Standard layouts; under Modern the
+keys follow their Standard action on foot, patch 6050, so L1 came from Mouse2) plus J or L for the stick, and nothing
+told a player so. Now:
+- keybinds.ini inputs tilt_left / tilt_right (defaults Z / X; file only, the Keyboard page keeps its 24 rows):
+  stick-direction bits 8 / 9 (PadKbState.dirs is 16 bits now).
+- pad_kb_tilt (pure): a held tilt key gives the grab (L1 + R1, raw, after 6050's roles) and the right stick X at
+  0 / 255, only while a valve or charge controller reads the tilt; both held, the one pressed last wins (roll from one
+  to the other without letting go of the grab, as a charge's two arm windows want).
+- cellPad.c: pad_motion_tilt_note() (called by the motion hook each time it feeds a valve or charge controller), the
+  keys act within 300 ms of the last note, so outside those they never fire or melee; one "[keys] tilt left/right/off"
+  line per change.
+Host test tools/runtime/test_kb_tilt.sh; tools/runtime/test_kb_rows.py allows the two file-only inputs.
+
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index ef7b4d7..5356060 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -118,6 +118,16 @@ int pad_motion_port(unsigned port, unsigned char* rx)
+     return s_motion_live[port];
+ }
+ #ifdef _WIN32
++/* KZ2 patch 6060: the title port's motion hook notes each time a valve or charge controller reads the tilt from the
++ * stick; the tilt keys (pad_kb_tilt) act only within PAD_TILT_LIVE_MS of the last note. */
++#define PAD_TILT_LIVE_MS 300ull
++static volatile unsigned long long s_tilt_note_ms;
++void pad_motion_tilt_note(void) { s_tilt_note_ms = GetTickCount64(); }
++static int pad_motion_tilt_live(void)
++{
++    const unsigned long long t = s_tilt_note_ms;
++    return t && GetTickCount64() - t < PAD_TILT_LIVE_MS;
++}
+ /* 6050: the keys' role table (pad_kb_roles.h), set by the title port while the player is on foot; used until
+  * s_kb_roles_until (GetTickCount64 ms), so it lapses by itself in menus. Read and written under s_kb_roles_lock. */
+ static unsigned short     s_kb_roles[16];
+@@ -585,6 +595,21 @@ static void pad_merge_keyboard(void)
+         was_on = on;
+         keys = pad_kb_roles_latch(&latch, on ? roles : NULL, k->buttons);
+     }
++    {   /* 6060: the tilt keys: grab + full tilt, only while a valve or charge reads the tilt (after the roles: the
++         * grab is the game's L1 + R1 under every layout) */
++        static PadKbTilt tilt;
++        static int said, last = -1;
++        unsigned char trx = 128; unsigned short tb = 0;
++        const int on = pad_kb_tilt(&tilt, k->dirs, pad_motion_tilt_live(), &trx, &tb);
++        if (on) { hs->buttons |= tb; hs->analog_rx = trx; }
++        const int now = on ? trx : -1;
++        if (now != last && said < 400) {   /* each change: tilt left / right / released */
++            said++; last = now;
++            printf("[keys] tilt %s\n", now < 0 ? "off" : now ? "right: grab (L1+R1), right stick X 255"
++                                                            : "left: grab (L1+R1), right stick X 0");
++            fflush(stdout);
++        }
++    }
+     if (!k->buttons && !k->dirs) return;
+     hs->buttons |= (u16)keys;
+     if (k->dirs & ((1u << PKB_LS_LEFT) | (1u << PKB_LS_RIGHT)))
+@@ -1077,7 +1102,7 @@ static void pad_prompt_track(void)
+         printf("[pad] last input: %s%s (port %d)", pad_dev_name(s_last_dev.dev),
+                s_last_dev.port >= 0 && s_port_motion[s_last_dev.port] ? ", motion sensors" : "", s_last_dev.port);
+         if (s_last_dev.dev == PAD_DEV_KEYBOARD)   /* 4016: which bound buttons/directions went down */
+-            printf(" keys buttons 0x%04X dirs 0x%02X (%s)", s_keys_new_b, s_keys_new_d, s_keys_new_names);
++            printf(" keys buttons 0x%04X dirs 0x%03X (%s)", s_keys_new_b, s_keys_new_d, s_keys_new_names);
+         printf("\n");
+         fflush(stdout);
+     }
+diff --git a/libs/input/pad_keybinds.h b/libs/input/pad_keybinds.h
+index be021c5..835f9c1 100644
+--- a/libs/input/pad_keybinds.h
++++ b/libs/input/pad_keybinds.h
+@@ -34,7 +34,8 @@ enum {
+ };
+ 
+ /* stick directions: bit index in PadKbState.dirs */
+-enum { PKB_LS_UP, PKB_LS_DOWN, PKB_LS_LEFT, PKB_LS_RIGHT, PKB_RS_UP, PKB_RS_DOWN, PKB_RS_LEFT, PKB_RS_RIGHT };
++enum { PKB_LS_UP, PKB_LS_DOWN, PKB_LS_LEFT, PKB_LS_RIGHT, PKB_RS_UP, PKB_RS_DOWN, PKB_RS_LEFT, PKB_RS_RIGHT,
++       PKB_TILT_LEFT, PKB_TILT_RIGHT };   /* KZ2 patch 6060: the valve/charge tilt keys (pad_kb_tilt) */
+ 
+ typedef struct { const char* name; unsigned short btn; signed char dir; const char* what; } PadKbInput;
+ 
+@@ -64,6 +65,10 @@ static const PadKbInput pad_kb_inputs[] = {
+     { "rs_down",  0, PKB_RS_DOWN,  "look down" },
+     { "rs_left",  0, PKB_RS_LEFT,  "turn left" },
+     { "rs_right", 0, PKB_RS_RIGHT, "turn right" },
++    /* KZ2 patch 6060 (ENHANCEMENT): only while a valve or a demolition charge reads the tilt; file only (the
++     * Keyboard page has the 24 rows above) */
++    { "tilt_left",  0, PKB_TILT_LEFT,  "valves and charges: grab and tilt left" },
++    { "tilt_right", 0, PKB_TILT_RIGHT, "valves and charges: grab and tilt right" },
+ };
+ #define PKB_N_INPUTS ((int)(sizeof pad_kb_inputs / sizeof pad_kb_inputs[0]))
+ 
+@@ -129,7 +134,7 @@ static void pad_kb_remap(const PadKeybinds* kb, int family, PadRemap* m)
+ }
+ 
+ /* What the keys add to the pad this poll. */
+-typedef struct { unsigned short buttons; unsigned char dirs; } PadKbState;
++typedef struct { unsigned short buttons; unsigned short dirs; } PadKbState;   /* 6060: dirs 10 bits */
+ 
+ typedef void (*PadKbLog)(void* ctx, const char* msg);
+ 
+@@ -203,6 +208,7 @@ static void pad_kb_defaults(PadKeybinds* kb)
+         { "select", 0x09, 0 },         /* Tab */
+         { "ls_up", 0x57, 0 }, { "ls_down", 0x53, 0 }, { "ls_left", 0x41, 0 }, { "ls_right", 0x44, 0 },
+         { "rs_up", 0x49, 0x68 }, { "rs_down", 0x4B, 0x62 }, { "rs_left", 0x4A, 0x64 }, { "rs_right", 0x4C, 0x66 },
++        { "tilt_left", 0x5A, 0 }, { "tilt_right", 0x58, 0 },   /* 6060: Z, X */
+     };
+     unsigned i;
+     memset(kb, 0, sizeof *kb);
+@@ -340,7 +346,7 @@ static PadKbState pad_kb_eval(const PadKeybinds* kb, PadKbDown down, void* ctx)
+     for (i = 0; i < PKB_N_INPUTS; i++)
+         for (s = 0; s < PKB_SLOTS; s++)
+             if (kb->key[i][s] && down(ctx, kb->key[i][s])) {
+-                if (pad_kb_inputs[i].dir >= 0) st.dirs |= (unsigned char)(1u << pad_kb_inputs[i].dir);
++                if (pad_kb_inputs[i].dir >= 0) st.dirs |= (unsigned short)(1u << pad_kb_inputs[i].dir);
+                 else st.buttons |= pad_kb_inputs[i].btn;
+                 break;
+             }
+@@ -365,7 +371,7 @@ static inline PadKbState pad_kb_edge(PadKbEdge* e, int in_front, PadKbState now)
+     if (!in_front) { e->held = fresh; e->baseline = 1; return fresh; }
+     if (e->baseline) { e->baseline = 0; e->held = now; return fresh; }
+     fresh.buttons = (unsigned short)(now.buttons & ~e->held.buttons);
+-    fresh.dirs = (unsigned char)(now.dirs & ~e->held.dirs);
++    fresh.dirs = (unsigned short)(now.dirs & ~e->held.dirs);
+     e->held = now;
+     return fresh;
+ }
+@@ -392,12 +398,37 @@ static inline void pad_kb_names(const PadKeybinds* kb, PadKbState st, PadKbDown
+ 
+ /* Stick axis from two opposite directions: both or neither = centre (128), else 0 or 255 (full deflection, also
+  * on a diagonal; ASSUMPTION: the game's own dead zone and response curve want the raw range like a DS3 corner). */
+-static unsigned char pad_kb_axis(unsigned char dirs, int neg, int pos)
++static unsigned char pad_kb_axis(unsigned short dirs, int neg, int pos)
+ {
+     int n = (dirs >> neg) & 1, q = (dirs >> pos) & 1;
+     return (unsigned char)(n == q ? 128 : n ? 0 : 255);
+ }
+ 
++/* KZ2 patch 6060 (ENHANCEMENT): the tilt keys. A valve or a demolition charge wants the grab (L1 + R1, the game's
++ * GrabLeftHand/GrabRightHand, which no pad layout moves) held while the pad tilts; without a motion sensor the right
++ * stick X is the tilt (patch 6049). With a keyboard that took four keys at once (the grab's two plus a right-stick
++ * key, which then depended on the layout). A held tilt key now gives both: the grab and the stick at full tilt to its
++ * side, and only while the game's valve or charge controller reads the tilt (`active`; the motion hook notes it),
++ * so the keys never fire or melee anywhere else. Both held: the one pressed last wins (roll from one key to the
++ * other without letting go of the grab, as a charge's two arm windows want). Returns 1 and sets *rx and *buttons
++ * (CELL_PAD_CTRL_L1 | R1 as packed in PadHostState.buttons) when it applies. */
++typedef struct { unsigned short prev; unsigned char side; } PadKbTilt;   /* side: 0 none, 1 left, 2 right */
++static inline int pad_kb_tilt(PadKbTilt* t, unsigned short dirs, int active, unsigned char* rx, unsigned short* buttons)
++{
++    const unsigned short L = (unsigned short)(1u << PKB_TILT_LEFT), R = (unsigned short)(1u << PKB_TILT_RIGHT);
++    const unsigned short now = (unsigned short)(dirs & (L | R)), went = (unsigned short)(now & ~t->prev);
++    t->prev = now;
++    if (went == L) t->side = 1;
++    else if (went == R) t->side = 2;
++    else if (now == L) t->side = 1;
++    else if (now == R) t->side = 2;
++    else if (!now) t->side = 0;
++    if (!active || !now || !t->side) return 0;
++    *rx = t->side == 1 ? 0 : 255;
++    *buttons = PKB_L1 | PKB_R1;
++    return 1;
++}
++
+ /* Write the bindings as the file's text. Returns the length (like snprintf; > n-1 = truncated). */
+ static int pad_kb_format(const PadKeybinds* kb, char* buf, size_t n)
+ {

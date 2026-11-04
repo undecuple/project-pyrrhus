@@ -140,7 +140,7 @@ There is no ini file for the program itself. It reads these environment variable
 | `KZ2_PROMPTS` | Button prompt symbols: `ps3`, `ps4`, `xbox` or `keyboard`. Unset: chosen from the pad in use. |
 | `KZ2_DISPLAY` | `borderless`, `windowed` or `fullscreen`. Unset: the game's `display.ini` decides; with no `display.ini` a new install starts borderless (Alt+Enter switches to a window and back). |
 
-The same three gameplay choices can be kept in `gameplay.ini` next to `keybinds.ini` (the file is optional and the game only reads it):
+The same three gameplay choices can be kept in `gameplay.ini` next to `keybinds.ini` (the installer and the launcher create it with the defaults when it is missing and never overwrite it; the game only reads it):
 `[gameplay]` then `aim_assist = auto|on|off`, `crouch_toggle = 0|1`, `cover_toggle = 0|1`. The variables win for one run.
 
 The installer and the portable zip set these for you. They keep their choices in `kz2-install.ini` in the install

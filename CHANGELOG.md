@@ -4,6 +4,20 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Fixed
+- Russian text: letters the game's own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a Russian game showed only punctuation (#39).
+
+### Added
+- `gameplay.ini` is created next to `keybinds.ini` with every setting the game reads (aim assist, crouch and cover toggle, motion, the `[mouse]` keys) at its default, when the installer or the launcher finds none; an existing file is never changed.
+- Keyboard: Z and X (`tilt_left` / `tilt_right` in `keybinds.ini`) turn valves and arm demolition charges: hold one to grab and tilt, then the other; they do nothing anywhere else.
+
+### Changed
+- The physics ray-cast job's bytecode loop has a native version, the same output bit for bit (off by default, KZ2_NATIVE_JOB_RAYCAST=1 turns it on; no measured fps change yet).
+- An optional path for the game's small light-probe textures, which no longer fill the texture cache: about 40 % less GPU work per draw in a heavy scene (off by default, LD_TILE_POOL=1 turns it on; not yet checked on a real display).
+- When a frame's GPU commands are filled in late, the renderer now continues as soon as they arrive instead of at its next 4 ms check: these waits are about 40 % shorter in a heavy scene, for a small fps gain (on by default; KZ2_PARK_WATCH=0 turns it off).
+
 ## [0.1.8] - 2026-11-03 (pre-release)
 
 ### Fixed

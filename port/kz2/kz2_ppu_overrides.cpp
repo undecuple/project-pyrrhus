@@ -1773,10 +1773,14 @@ void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifte
  * Lines: one "[motion] ... right stick" per controller kind the first time the stick drives it; every arm step of a
  * charge (@0x001174A8: entity +0x244 steps, resource +0xC4 -> +0x1F0 range count, +0x1F4 the {min, max} pairs in
  * fractions of 45 deg, hand +0x25C); a valve's angle (@0x00125BF0: rep +0x240, radians) each time it has moved 30 deg.
- * KZ2_MOTION_LOG=1 adds the stick, the tilt and the hand of every getter call (at most 4000 lines). */
+ * KZ2_MOTION_LOG=1 adds the stick, the tilt and the hand of every getter call (at most 4000 lines).
+ * each fed call also tells cellPad (pad_motion_tilt_note) that a tilt controller is reading, so the
+ * keyboard's tilt_left / tilt_right keys (keybinds.ini, Z / X by default; patch 6060) give the grab and the tilt
+ * only then. */
 #include "kz2_motion.h"
 extern "C" int  pad_motion_port(unsigned port, unsigned char* rx);   /* cellPad.c (patch 6049) */
 extern "C" void pad_motion_set_mode(int mode);
+extern "C" void pad_motion_tilt_note(void);   /* cellPad.c (patch 6060): the tilt keys act while this is fresh */
 static int kz2_motion_log_on(void)
 {
     static int v = -1;
@@ -1811,6 +1815,7 @@ extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
     unsigned char rx = 128;
     const int live = pad_motion_port(0, &rx);
     if (!kz2_motion_feed(kz2_gameplay_get()->motion, live)) return;
+    pad_motion_tilt_note();   /* a valve or charge reads the tilt now (keyboard tilt keys, patch 6060) */
     const float s = kz2_motion_unit(rx), deg = kz2_motion_deg(s);
     float v[3];
     kz2_motion_vec(deg, v);

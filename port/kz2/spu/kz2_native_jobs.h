@@ -52,8 +52,10 @@ typedef struct {
     uint32_t cont;         /* 0: a subroutine (the gate returns to r0); else a "continue at" gate: the
                             * native code did the code from addr up to this LS address, and the gate line hops there
                             * (native_gates.tsv column 7 names the same address; tools/spu/test_native_vjclear.sh
-                            * checks the lifted gate line) */
+                            * checks the lifted gate line); KZ2_NATIVE_CONT_PC (column 7 "pc"): a computed
+                            * continuation, the native code sets ctx->pc and the gate line hops there (SPU_IB_HOP) */
 } kz2_native_entry;
+#define KZ2_NATIVE_CONT_PC 1u   /* no SPU instruction address (they are 4-byte aligned) */
 
 extern const kz2_native_entry kz2_native_dof[];
 extern const unsigned kz2_native_dof_n;
@@ -71,6 +73,8 @@ extern const kz2_native_entry kz2_native_particles[];  /* native_particles.c */
 extern const unsigned kz2_native_particles_n;
 extern const kz2_native_entry kz2_native_skinning[];   /* native_skinning.c */
 extern const unsigned kz2_native_skinning_n;
+extern const kz2_native_entry kz2_native_raycast[];    /* native_raycast.c */
+extern const unsigned kz2_native_raycast_n;
 
 /* native_common.c: the entry of a slot (NULL: none), and one gated call (count, debug gate, pool, kernel; counts a
  * fallback when it returns 0). */

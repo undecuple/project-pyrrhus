@@ -1,0 +1,458 @@
+KZ2 patch 6059 (ENHANCEMENT, off by default until proven: LD_TILE_POOL=1): the 8x8 main-memory A8R8G8B8 tiles get
+their own pool outside the hashed texture cache, keyed by address with an exact byte compare, and their uploads are
+batched per submit into the copy list that runs before the draws.
+
+An earlier change (the RE notes): in Corinth Sands' heavy view 99.6 % of the texture cache's new entries are one shape,
+8x8 A8R8G8B8 pitch-linear, 256 bytes, in main memory (io offsets 0x63680..0x11D3180), ~400-500 binds a frame,
+rewritten between binds (70 % of new entries re-add an evicted key; kept, they need in-place refreshes). Each bind
+paid a key lookup, a content hash, a decode, an upload-ring copy with a barrier pair recorded between the draws, an
+SRV write, and pushed a real texture out of the 8,192-entry LRU. No cache size removes that (an earlier change's A/B).
+- libs/video/rsx_tile_pool.h (new, pure): slots keyed by io offset (open addressing, backward-shift delete), exact
+  256-byte compare (hit = no copy), ring order reuse; a slot that a draw of the current chunk reads is never
+  rewritten in that chunk (a changed tile gets another slot; FULL when every slot is read by the chunk). Host test
+  tools/runtime/test_tile_pool.sh.
+- rsx_live_draw.c: texture_srv_slot sends a bind of exactly that shape (location 1, A8R8G8B8 | LINEAR, 8x8, pitch
+  0/32, 2D, not cube) to ld_tile_bind; a copy is staged in the upload ring (8 rows at a 256-byte pitch) and recorded
+  at the next submit by ld_tile_record into the pool's own copy list, executed just before the chunk's draw list
+  (ld_tile_submit at both submit sites; LD_TILE_ALLOCS 8 allocators, each reset after its submit's fence): one
+  ResourceBarrier call to COPY_DEST, the copies, one call back. Each slot is a fixed 8x8 R8G8B8A8 texture made
+  once, with its own SRV in the CPU heap (SRV_TILE_BASE, LD_TILE_SLOTS_MAX 16,384) holding the guest's A,R,G,B bytes
+  with the remap in the component mapping (patch 2046's ld_argb_raw_mapping).
+- LD_TILE_POOL=1 on; LD_TILE_SLOTS=N (64..16384, default 4096). [tex-tile] every 256 frames
+  with RSX_PERF (binds, hits, copies, descriptors, FULL submits, batches, ms in the bind).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index a19f4d1..bd79588 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -218,6 +218,7 @@ static uint8_t* ld_prompt_remap_cells(const uint8_t* cur, uint32_t w, uint32_t h
+ #include "rsx_upload_ring.h"   /* patch 6048: a texture level that does not fit submits the list first */
+ #include "rsx_pace.h"           /* patch 2072 */
+ #include "rsx_tex_lru.h"        /* patch 2075 */
++#include "rsx_tile_pool.h"      /* KZ2 patch 6059 */
+ #include "rsx_gpupass.h"        /* patch 2086 */
+ #include "rsx_vertex_formats.h"
+ #include "rsx_keycaps.h"   /* patch 2091 (KZ3 2039): keycap prompts */
+@@ -297,7 +298,10 @@ extern volatile unsigned long long g_yz_auto_start_tick;
+ /* Patch 2065: per-surface R16G16_FLOAT reinterpretation of an RGBA8 surface read as Y16_X16_FLOAT (SRV + UAV). */
+ #define SRV_SURF_RG16_BASE (SRV_ZWIN_BASE + MAX_SURFACES * LD_ZWIN_PER)
+ #define UAV_SURF_RG16_BASE (SRV_SURF_RG16_BASE + MAX_SURFACES)
+-#define SRV_CPU_HEAP_SLOTS (UAV_SURF_RG16_BASE + MAX_SURFACES)
++/* KZ2 patch 6059: one SRV per slot of the 8x8 tile pool (rsx_tile_pool.h). */
++#define LD_TILE_SLOTS_MAX  16384u
++#define SRV_TILE_BASE      (UAV_SURF_RG16_BASE + MAX_SURFACES)
++#define SRV_CPU_HEAP_SLOTS (SRV_TILE_BASE + LD_TILE_SLOTS_MAX)
+ #define SRV_TABLE_SIZE   16
+ #define SRV_RING_TABLES  4096
+ 
+@@ -2876,6 +2880,132 @@ static void ld_vbd_init(void)
+     g.vbd = g.fr[g.fr_cur].vbd; g.ibd = g.fr[g.fr_cur].ibd; g.calloc = g.fr[g.fr_cur].calloc;
+     fprintf(stderr, "[live-draw] device vertex rings: vb %u MB, ib %u MB per frame slot\n", g.vbd_size >> 20, g.ibd_size >> 20);
+ }
++/* KZ2 patch 6059: the 8x8 main-memory A8R8G8B8 tiles (Killzone 2's per-object ring, ~400-500 binds in a heavy
++ * frame, rewritten between binds) bypass the texture cache. A bind compares the tile's 256 bytes with the pool slot
++ * of its address (rsx_tile_pool.h: keyed by address, exact compare, no hash); a changed or new tile is staged in the
++ * upload ring, and every copy staged in a chunk is recorded at its submit into the pool's own copy list, executed
++ * just before the chunk's draw list: one barrier call into COPY_DEST, the copies, one barrier call back. The draw
++ * list itself gets no copy or barrier for them, the cache keeps its slots for real textures. Each slot is a fixed
++ * 8x8 R8G8B8A8 texture with its own SRV (the guest's A,R,G,B bytes, remap in the component mapping, as patch 2046's
++ * direct upload). LD_TILE_POOL=1 turns it on (off by default until proven); LD_TILE_SLOTS (default 4096) sizes it.
++ * The copy list cycles through LD_TILE_ALLOCS allocators, each reset only after the fence of the submit that used
++ * it has passed. [tex-tile] every 256 frames with RSX_PERF. */
++#define LD_TILE_ALLOCS 8u
++static ID3D12GraphicsCommandList* g_ld_tile_list;
++static ID3D12CommandAllocator* g_ld_tile_alloc[LD_TILE_ALLOCS];
++static u64 g_ld_tile_alloc_fence[LD_TILE_ALLOCS];
++static u32 g_ld_tile_alloc_i;
++#define LD_TILE_SLOTS_DEFAULT 4096u
++#define LD_TILE_ROW_PITCH     256u   /* D3D12_TEXTURE_DATA_PITCH_ALIGNMENT: 8 rows of 32 bytes staged at 256 */
++static rsx_tile_pool g_ld_tile;
++static ID3D12Resource** g_ld_tile_tex;
++static struct ld_tile_pend { u32 slot, start; }* g_ld_tile_pend;
++static u32 g_ld_tile_npend;
++static int g_ld_tile_state = -1;   /* -1 not decided, 0 off, 1 on */
++static struct { unsigned long long binds, hits, copies, fulls, srvs, fails, recorded, batches; long long ns; } g_ld_tile_st;
++static double ld_tile_qpc_ms(long long ticks)   /* g_ld_tile_st.ns holds QPC ticks (rsx_perf_now) */
++{
++    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
++    return f.QuadPart ? (double)ticks * 1000.0 / (double)f.QuadPart : 0.0;
++}
++static int ld_tile_on(void)
++{
++    if (g_ld_tile_state >= 0) return g_ld_tile_state;
++    const char* e = getenv("LD_TILE_POOL");
++    g_ld_tile_state = 0;
++    if (!(e && e[0] == '1')) return 0;
++    for (u32 i = 0; i < LD_TILE_ALLOCS; i++)
++        if (FAILED(g.dev->lpVtbl->CreateCommandAllocator(g.dev, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
++                                                         (void**)&g_ld_tile_alloc[i]))) {
++            fprintf(stderr, "[tex-tile] command allocator failed: off\n");
++            return 0;
++        }
++    if (FAILED(g.dev->lpVtbl->CreateCommandList(g.dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_ld_tile_alloc[0], NULL,
++                                                &IID_ID3D12GraphicsCommandList, (void**)&g_ld_tile_list))) {
++        fprintf(stderr, "[tex-tile] command list failed: off\n");
++        return 0;
++    }
++    g_ld_tile_list->lpVtbl->Close(g_ld_tile_list);
++    const char* n_e = getenv("LD_TILE_SLOTS");
++    u32 n = n_e && *n_e ? (u32)strtoul(n_e, NULL, 0) : LD_TILE_SLOTS_DEFAULT;
++    if (n < 64u) n = 64u;
++    if (n > LD_TILE_SLOTS_MAX) n = LD_TILE_SLOTS_MAX;
++    u32 mapn = 1; while (mapn < 2u * n) mapn <<= 1;
++    rsx_tile_slot* sl = (rsx_tile_slot*)malloc((size_t)n * sizeof *sl);
++    u32* map = (u32*)malloc((size_t)mapn * sizeof *map);
++    g_ld_tile_tex = (ID3D12Resource**)calloc(n, sizeof *g_ld_tile_tex);
++    g_ld_tile_pend = (struct ld_tile_pend*)malloc((size_t)n * sizeof *g_ld_tile_pend);
++    if (!sl || !map || !g_ld_tile_tex || !g_ld_tile_pend) {
++        free(sl); free(map); free(g_ld_tile_tex); free(g_ld_tile_pend); g_ld_tile_tex = NULL; g_ld_tile_pend = NULL;
++        fprintf(stderr, "[tex-tile] out of memory: off\n");
++        return 0;
++    }
++    rsx_tile_init(&g_ld_tile, sl, n, map, mapn);
++    g_ld_tile_state = 1;
++    fprintf(stderr, "[tex-tile] 8x8 main-memory ARGB8 tiles in their own pool: %u slots (patch 6059)\n", n);
++    return 1;
++}
++static void ld_tile_barriers(ID3D12GraphicsCommandList* cl, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
++{
++    enum { B = 256 };
++    D3D12_RESOURCE_BARRIER b[B];
++    for (u32 i0 = 0; i0 < g_ld_tile_npend; i0 += B) {
++        const u32 m = g_ld_tile_npend - i0 < B ? g_ld_tile_npend - i0 : B;
++        for (u32 i = 0; i < m; i++) {
++            memset(&b[i], 0, sizeof b[i]);
++            b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++            b[i].Transition.pResource = g_ld_tile_tex[g_ld_tile_pend[i0 + i].slot];
++            b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++            b[i].Transition.StateBefore = from; b[i].Transition.StateAfter = to;
++        }
++        cl->lpVtbl->ResourceBarrier(cl, m, b);
++    }
++}
++/* At every submit, into the copy list (open, before the draw list runs): the chunk's staged tile copies. A slot is
++ * staged at most once per chunk (rsx_tile_pick), so each resource appears once in the barrier lists. */
++static void ld_tile_record(ID3D12GraphicsCommandList* cl)
++{
++    ld_tile_barriers(cl, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
++    for (u32 i = 0; i < g_ld_tile_npend; i++) {
++        D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
++        src.pResource = g.upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++        src.PlacedFootprint.Offset = g_ld_tile_pend[i].start;
++        src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        src.PlacedFootprint.Footprint.Width = 8; src.PlacedFootprint.Footprint.Height = 8;
++        src.PlacedFootprint.Footprint.Depth = 1;
++        src.PlacedFootprint.Footprint.RowPitch = LD_TILE_ROW_PITCH;
++        dst.pResource = g_ld_tile_tex[g_ld_tile_pend[i].slot];
++        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
++        cl->lpVtbl->CopyTextureRegion(cl, &dst, 0, 0, 0, &src, NULL);
++    }
++    ld_tile_barriers(cl, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++    g_ld_tile_st.recorded += g_ld_tile_npend;
++    g_ld_tile_st.batches++;
++    g_ld_tile_npend = 0;
++}
++/* Every submit, just before the draw list's ExecuteCommandLists: the chunk's tile copies go first (the queue runs
++ * them before the draws; the submit's fence signal comes after both). The next binds belong to the next chunk. */
++static void ld_tile_submit(void)
++{
++    if (g_ld_tile_state != 1) return;
++    if (g_ld_tile_npend) {
++        const u32 i = g_ld_tile_alloc_i;
++        g_ld_tile_alloc_i = (i + 1u) % LD_TILE_ALLOCS;
++        if (!ld_wait_fence(g_ld_tile_alloc_fence[i])) return;
++        g_ld_tile_alloc[i]->lpVtbl->Reset(g_ld_tile_alloc[i]);
++        g_ld_tile_list->lpVtbl->Reset(g_ld_tile_list, g_ld_tile_alloc[i], NULL);
++        ld_tile_record(g_ld_tile_list);
++        if (FAILED(g_ld_tile_list->lpVtbl->Close(g_ld_tile_list))) {
++            fprintf(stderr, "[d3d-fail] tile copy list Close frame=%u\n", g_ld_frames);
++            g.ready = 0;
++            return;
++        }
++        ID3D12CommandList* cl[] = {(ID3D12CommandList*)g_ld_tile_list};
++        g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, cl);
++        g_ld_tile_alloc_fence[i] = g.fence_value + 1u;   /* the caller signals ++g.fence_value after the draw list */
++    }
++    rsx_tile_next_chunk(&g_ld_tile);
++}
+ /* Called by every submit before the draw list executes: copies the byte ranges the list's draws read. */
+ static void ld_vbd_submit(void)
+ {
+@@ -2939,6 +3069,7 @@ static void ld_flush_body(ld_flush_reason reason)
+     }
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
+     ld_vbd_submit();   /* patch 2053 */
++    ld_tile_submit();   /* KZ2 patch 6059 */
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
+     ld_gm_note(v);   /* patch 2051 */
+@@ -3930,6 +4061,13 @@ static void ld_td_flip(void)
+                 (unsigned long long)g_ld_th.wr_unchanged, (unsigned long long)g_ld_th.dyn_forced, g_ld_tex_inplace_n,
+                 g_ld_b8_direct_n, g_ld_argb_direct_n, g_ld_tex_evict_n, g_ld_tex_recycle_n, g.n_textures, ld_tex_cap(),
+                 ld_vram_used_mb(), g_ld_tex_new_n, g_ld_tex_readd_n, g_ld_gvm_n, g_ld_gvm_scan / 1000u);   /* patch 6058 */
++        if (g_ld_tile_state == 1) {   /* KZ2 patch 6059 */
++            fprintf(stderr, "[tex-tile] frame=%u binds=%llu hits=%llu copies=%llu srv=%llu full=%llu fail=%llu batches=%llu"
++                            " recorded=%llu bind-ms=%.2f\n", g_ld_frames, g_ld_tile_st.binds, g_ld_tile_st.hits,
++                    g_ld_tile_st.copies, g_ld_tile_st.srvs, g_ld_tile_st.fulls, g_ld_tile_st.fails, g_ld_tile_st.batches,
++                    g_ld_tile_st.recorded, ld_tile_qpc_ms(g_ld_tile_st.ns));
++            memset(&g_ld_tile_st, 0, sizeof g_ld_tile_st);
++        }
+         memset(&g_ld_th, 0, sizeof g_ld_th);
+         g_ld_tex_evict_n = g_ld_tex_recycle_n = 0;   /* patch 2075 */
+         g_ld_tex_new_n = g_ld_tex_readd_n = g_ld_gvm_n = g_ld_gvm_scan = 0;   /* patch 6058 */
+@@ -4329,6 +4467,74 @@ static u32 ld_argb_raw_mapping(u32 remap)
+     }
+     return m;
+ }
++/* KZ2 patch 6059: a bind of an 8x8 pitch-linear A8R8G8B8 texture in main memory goes to the tile pool (see
++ * ld_tile_on). Returns the SRV slot, or UINT32_MAX to take the texture cache's path (not such a tile, pool off,
++ * memory not readable, a resource that could not be made). */
++static int ld_tile_shape(const rsx_dsp_texture* t)
++{
++    const u32 base_fmt = t->format & TEX_FMT_BASE_MASK & ~(u32)TEX_FMT_UNNORM;
++    return t->location == 1u && base_fmt == TEX_FMT_A8R8G8B8 && (t->format & TEX_FMT_LINEAR) && t->width == 8u &&
++           t->height == 8u && !t->cubemap && t->dimension == 2u && (t->pitch == 0u || t->pitch == 32u);
++}
++static u32 ld_tile_bind(const rsx_dsp_texture* t, u32 remap)
++{
++    const u8* src = guest_ptr(1u, t->offset, RSX_TILE_BYTES);
++    if (!src) return UINT32_MAX;
++    const long long t0 = rsx_perf_enabled() ? rsx_perf_now() : 0;
++    u32 slot = 0; int srv = 0, r;
++    while ((r = rsx_tile_pick(&g_ld_tile, t->offset, remap, src, &slot, &srv)) == RSX_TILE_FULL) {
++        g_ld_tile_st.fulls++;   /* every slot is read by this chunk: submit it (the copies go with it) */
++        ld_flush(LD_FLUSH_UPLOAD_RING);
++        if (!g.ready) return UINT32_MAX;
++    }
++    g_ld_tile_st.binds++;
++    rsx_tile_slot* e = &g_ld_tile.s[slot];
++    if (!g_ld_tile_tex[slot]) {
++        D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++        D3D12_RESOURCE_DESC rd = {0};
++        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = 8; rd.Height = 8; rd.DepthOrArraySize = 1;
++        rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
++        if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++                                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, NULL,
++                                                          &IID_ID3D12Resource, (void**)&g_ld_tile_tex[slot]))) {
++            g_ld_tile_tex[slot] = NULL;
++            e->used = 0; e->chunk = 0;
++            if (e->mapped) rsx_tile_map_remove(&g_ld_tile, rsx_tile_find(&g_ld_tile, e->offset));
++            g_ld_tile_st.fails++;
++            return UINT32_MAX;
++        }
++        e->srv_ok = 0; srv = 1;
++        r = RSX_TILE_COPY;   /* a new resource has no texels yet */
++    }
++    if (srv) {
++        D3D12_SHADER_RESOURCE_VIEW_DESC desc = {0};
++        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++        desc.Shader4ComponentMapping = ld_argb_raw_mapping(remap);   /* patch 2046's mapping */
++        desc.Texture2D.MipLevels = 1;
++        ld_create_srv(g.dev, g_ld_tile_tex[slot], &desc, srv_cpu(SRV_TILE_BASE + slot));
++        e->srv_ok = 1;
++        g_ld_tile_st.srvs++;
++    }
++    if (r == RSX_TILE_COPY) {
++        u32 start;
++        if (!ld_upload_take((u64)LD_TILE_ROW_PITCH * 8u, 8u, 8u, &start)) {   /* cannot happen for 2 KB; be safe */
++            e->used = 0; e->chunk = 0;
++            if (e->mapped) rsx_tile_map_remove(&g_ld_tile, rsx_tile_find(&g_ld_tile, e->offset));
++            g_ld_tile_st.fails++;
++            return UINT32_MAX;
++        }
++        /* ld_upload_take may have submitted the chunk: the copy belongs to the chunk being recorded now */
++        e->chunk = g_ld_tile.chunk;
++        for (u32 y = 0; y < 8u; y++) memcpy(g.upload_mapped + start + (size_t)y * LD_TILE_ROW_PITCH, e->bytes + y * 32u, 32u);
++        g.upload_used = start + LD_TILE_ROW_PITCH * 8u;
++        g_ld_tile_pend[g_ld_tile_npend].slot = slot; g_ld_tile_pend[g_ld_tile_npend].start = start;
++        g_ld_tile_npend++;
++        g_ld_tile_st.copies++;
++    } else g_ld_tile_st.hits++;
++    if (t0) g_ld_tile_st.ns += rsx_perf_now() - t0;
++    return SRV_TILE_BASE + slot;
++}
+ static ID3D12Resource* decode_guest_texture(const rsx_dsp_texture* t, u32 remap)
+ {
+     const u32 base_fmt = t->format & TEX_FMT_BASE_MASK & ~(u32)TEX_FMT_UNNORM;
+@@ -5440,6 +5646,10 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+     if (g_gv_watch[0].armed | g_gv_watch[1].armed | g_gv_watch[2].armed | g_gv_watch[3].armed |
+         g_gv_watch[4].armed | g_gv_watch[5].armed | g_gv_watch[6].armed | g_gv_watch[7].armed)
+         ld_gv_watch_bind(t->location, t->offset, texture_source_span(t));
++    if (g_ld_tile_state != 0 && ld_tile_shape(t) && ld_tile_on()) {   /* KZ2 patch 6059: the 8x8 tiles' own pool */
++        const u32 ts = ld_tile_bind(t, remap);
++        if (ts != UINT32_MAX) return ts;
++    }
+ 
+     for (u32 i = ld_tex_index_find(t, remap); i != UINT32_MAX; i = UINT32_MAX) {   /* patch 2033: indexed */
+         texcache_t* entry = &g.textures[i];
+@@ -13562,6 +13772,7 @@ static void ld_submit_nowait(void)
+     }
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
+     ld_vbd_submit();   /* patch 2053 */
++    ld_tile_submit();   /* KZ2 patch 6059 */
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
+     ld_gm_note(v);   /* patch 2051 */
+@@ -19364,6 +19575,10 @@ void rsx_live_draw_shutdown(void)
+     shader_blob_cache_release(&g.vs_blobs);
+     shader_blob_cache_release(&g.ps_blobs);
+     for (u32 i = 0; i < g.n_textures; i++) if (g.textures[i].tex) g.textures[i].tex->lpVtbl->Release(g.textures[i].tex);
++    if (g_ld_tile_tex)   /* patch 6059 */
++        for (u32 i = 0; i < g_ld_tile.n; i++) if (g_ld_tile_tex[i]) { g_ld_tile_tex[i]->lpVtbl->Release(g_ld_tile_tex[i]); g_ld_tile_tex[i] = NULL; }
++    if (g_ld_tile_list) { g_ld_tile_list->lpVtbl->Release(g_ld_tile_list); g_ld_tile_list = NULL; }
++    for (u32 i = 0; i < LD_TILE_ALLOCS; i++) if (g_ld_tile_alloc[i]) { g_ld_tile_alloc[i]->lpVtbl->Release(g_ld_tile_alloc[i]); g_ld_tile_alloc[i] = NULL; }
+     for (u32 i = 0; i < g.n_vtex; i++) if (g.vtex[i].tex) g.vtex[i].tex->lpVtbl->Release(g.vtex[i].tex);
+     for (u32 i = 0; i < g.n_surfaces; i++) if (g.surfaces[i].tex) g.surfaces[i].tex->lpVtbl->Release(g.surfaces[i].tex);
+     for (u32 i = 0; i < g.n_zdepths; i++) {
+diff --git a/libs/video/rsx_tile_pool.h b/libs/video/rsx_tile_pool.h
+new file mode 100644
+index 0000000..d5c4a11
+--- /dev/null
++++ b/libs/video/rsx_tile_pool.h
+@@ -0,0 +1,145 @@
++/* KZ2 patch 6059: the small main-memory ARGB8 tiles get their own pool, outside the hashed texture cache.
++ *
++ * Killzone 2 writes per-object 8x8 A8R8G8B8 linear tiles (256 bytes each) into a ring in main memory (io offsets
++ * 0x63680..0x11D3180 in Corinth Sands) and binds ~400-500 of them in a heavy frame; the same addresses are rewritten
++ * with new bytes between binds (99.6 % of the cache's new entries, 70 % of them re-adds). In the
++ * texture cache each such bind paid a key lookup, a content hash, a decode, an upload copy with two barriers in the
++ * middle of the draw list, an SRV write and the eviction of a real texture.
++ *
++ * This pool keys a tile by its address only and compares its 256 bytes exactly (no hash): an unchanged tile is a
++ * hit (no copy); a changed one is copied again. Slots are reused in ring order. Copies are recorded at the end of a
++ * chunk (the caller's batch, executed before the chunk's draws), so a slot that a draw of the current chunk reads is
++ * never overwritten in that chunk: a changed tile already used in this chunk gets a new slot (the next one in ring
++ * order that this chunk does not read), and when every slot is read by this chunk the pick says FULL (the caller
++ * submits the chunk and asks again).
++ *
++ * Pure C, no allocation, no locking (the walker thread owns it). Host test: tools/runtime/test_tile_pool.sh. */
++#ifndef RSX_TILE_POOL_H
++#define RSX_TILE_POOL_H
++
++#include <stdint.h>
++#include <string.h>
++
++#define RSX_TILE_BYTES 256u
++
++typedef struct {
++    uint32_t offset;     /* the tile's io offset (main memory) */
++    uint32_t remap;      /* the remap its descriptor was made for (srv_ok) */
++    uint32_t chunk;      /* the last chunk a draw used it in */
++    uint8_t  used;       /* holds a tile */
++    uint8_t  mapped;     /* the map points at it (the newest copy of its address) */
++    uint8_t  srv_ok;     /* the caller made a descriptor for this slot with `remap` */
++    uint8_t  pad_;
++    uint8_t  bytes[RSX_TILE_BYTES];
++} rsx_tile_slot;
++
++typedef struct {
++    rsx_tile_slot* s;    /* n slots */
++    uint32_t n;
++    uint32_t cur;        /* ring cursor: the next slot to fill */
++    uint32_t chunk;      /* the current chunk (starts at 1; rsx_tile_next_chunk at every submit) */
++    uint32_t* map;       /* open addressing, linear probe: slot + 1, 0 = empty; mask + 1 entries, >= 2 n */
++    uint32_t mask;
++} rsx_tile_pool;
++
++enum { RSX_TILE_HIT = 0, RSX_TILE_COPY = 1, RSX_TILE_FULL = 2 };
++
++static inline uint32_t rsx_tile_home(const rsx_tile_pool* p, uint32_t offset)
++{
++    return ((offset >> 8) * 0x9E3779B1u >> 7) & p->mask;
++}
++
++static inline void rsx_tile_init(rsx_tile_pool* p, rsx_tile_slot* s, uint32_t n, uint32_t* map, uint32_t map_entries)
++{
++    memset(s, 0, (size_t)n * sizeof *s);
++    memset(map, 0, (size_t)map_entries * sizeof *map);
++    p->s = s; p->n = n; p->cur = 0; p->chunk = 1; p->map = map; p->mask = map_entries - 1u;
++}
++
++static inline uint32_t rsx_tile_find(const rsx_tile_pool* p, uint32_t offset)   /* map index, or UINT32_MAX */
++{
++    for (uint32_t i = rsx_tile_home(p, offset);; i = (i + 1u) & p->mask) {
++        const uint32_t v = p->map[i];
++        if (!v) return UINT32_MAX;
++        if (p->s[v - 1u].offset == offset) return i;
++    }
++}
++
++static inline void rsx_tile_map_remove(rsx_tile_pool* p, uint32_t i)   /* backward-shift deletion */
++{
++    p->s[p->map[i] - 1u].mapped = 0;
++    for (uint32_t j = i;;) {
++        j = (j + 1u) & p->mask;
++        const uint32_t v = p->map[j];
++        if (!v) break;
++        const uint32_t k = rsx_tile_home(p, p->s[v - 1u].offset);
++        /* the entry at j may move to i when its home is not in (i, j] (cyclically) */
++        const int stays = i <= j ? (i < k && k <= j) : (i < k || k <= j);
++        if (!stays) { p->map[i] = v; i = j; }
++    }
++    p->map[i] = 0;
++}
++
++static inline void rsx_tile_map_insert(rsx_tile_pool* p, uint32_t slot)
++{
++    uint32_t i = rsx_tile_home(p, p->s[slot].offset);
++    while (p->map[i]) i = (i + 1u) & p->mask;
++    p->map[i] = slot + 1u;
++    p->s[slot].mapped = 1;
++}
++
++/* Which slot a bind of the tile at `offset` (its current 256 bytes, remap) reads. HIT: the slot holds these bytes
++ * already. COPY: the slot now holds them (bytes copied into the slot); the caller uploads them in this chunk's batch.
++ * With either, *srv = 1 asks the caller for the slot's descriptor with `remap` (then it sets srv_ok). FULL: the
++ * slot is read by this chunk: submit the chunk (rsx_tile_next_chunk) and call again. */
++static inline int rsx_tile_pick(rsx_tile_pool* p, uint32_t offset, uint32_t remap, const uint8_t* bytes,
++                                uint32_t* slot, int* srv)
++{
++    *srv = 0;
++    const uint32_t mi = rsx_tile_find(p, offset);
++    if (mi != UINT32_MAX) {
++        const uint32_t k = p->map[mi] - 1u;
++        rsx_tile_slot* e = &p->s[k];
++        if (memcmp(e->bytes, bytes, RSX_TILE_BYTES) == 0) {
++            /* Same texels. Another remap needs only a new descriptor: a draw copies its descriptors into the
++             * shader-visible ring when it is recorded, so earlier draws keep the old one. */
++            *slot = k;
++            if (!e->srv_ok || e->remap != remap) { e->remap = remap; *srv = 1; }
++            e->chunk = p->chunk;
++            return RSX_TILE_HIT;
++        }
++        if (e->chunk != p->chunk) {   /* no draw of this chunk reads it: refresh it in place */
++            memcpy(e->bytes, bytes, RSX_TILE_BYTES);
++            if (!e->srv_ok || e->remap != remap) *srv = 1;
++            e->remap = remap; e->chunk = p->chunk;
++            *slot = k;
++            return RSX_TILE_COPY;
++        }
++        /* read by a draw of this chunk and changed since: the new bytes need another slot */
++    }
++    uint32_t v = p->cur, tries = 0;   /* the next slot in ring order that no draw of this chunk reads */
++    while (p->s[v].used && p->s[v].chunk == p->chunk) {
++        if (++tries == p->n) return RSX_TILE_FULL;
++        v = (v + 1u) % p->n;
++    }
++    rsx_tile_slot* e = &p->s[v];
++    if (mi != UINT32_MAX) rsx_tile_map_remove(p, mi);   /* the old copy stays for this chunk's earlier draws */
++    if (e->mapped) rsx_tile_map_remove(p, rsx_tile_find(p, e->offset));
++    if (!e->srv_ok || e->remap != remap) *srv = 1;
++    e->offset = offset; e->remap = remap; e->chunk = p->chunk; e->used = 1;
++    memcpy(e->bytes, bytes, RSX_TILE_BYTES);
++    rsx_tile_map_insert(p, v);
++    p->cur = (v + 1u) % p->n;
++    *slot = v;
++    return RSX_TILE_COPY;
++}
++
++static inline void rsx_tile_next_chunk(rsx_tile_pool* p)
++{
++    if (++p->chunk == 0) {   /* wrapped (2^32 submits): no slot may look current */
++        for (uint32_t i = 0; i < p->n; i++) p->s[i].chunk = 0;
++        p->chunk = 1;
++    }
++}
++
++#endif /* RSX_TILE_POOL_H */

@@ -109,6 +109,14 @@ def test_release():
     check(re.search(r"^permissions:\n  contents: read", t, re.M) is not None, "release.yml: read-only by default")
     check("work/ffmpeg-win/include" in t, "release.yml: the FFmpeg headers reach the installer job (the first run builds against them)")
     js = jobs(t)
+    # patch 6061 (issue #39): the Noto Sans face is made in nix-parts and must reach the installer job (the v0.1.3 lesson)
+    npart, inst0 = js.get("nix-parts", ""), js.get("installer", "")
+    check("nix build --no-link" in npart and "noto-fonts" in npart and "tools/runtime/mkfont_noto.py nix-parts/fonts/NotoSans-Regular.ttf" in npart
+          and npart.index("noto-fonts") < npart.index("mkfont_noto.py") < npart.index("upload-artifact"),
+          "release.yml: nix-parts realises noto-fonts, makes NotoSans-Regular.ttf and uploads it with the artifact")
+    check("nix-parts/fonts/NotoSans-Regular.ttf" in inst0 and "work/release/fonts/" in inst0
+          and inst0.index("NotoSans-Regular.ttf") < inst0.index("python3 tools/release/assemble_payload.py"),
+          "release.yml: the installer job copies the face to work/release/fonts before assembling the payload")
     writers = [j for j, b in js.items() if "contents: write" in b]
     check(writers == ["publish"], "release.yml: only the publish job can write", writers)
     pub = js.get("publish", "")

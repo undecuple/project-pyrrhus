@@ -722,11 +722,11 @@ def eboot_stat(path):
         return None
 
 
-NOTICE_FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf", "OFL.txt")   # the licence travels with the fonts
+NOTICE_FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf", "OFL.txt", "NotoSans-Regular.ttf")   # the licence travels with the fonts
 
 
 def place_fonts(root, build):
-    """Copy <root>/fonts/Rajdhani-*.ttf and OFL.txt (shipped in the payload, assemble_payload FONTS) to <build>/fonts/, next to
+    """Copy <root>/fonts/Rajdhani-*.ttf, OFL.txt and NotoSans-Regular.ttf (patch 6061, the system-fontset face) (shipped in the payload, assemble_payload FONTS) to <build>/fonts/, next to
     kz2.exe: KZ3's runtime error notice loads them privately from <exe dir>\\fonts (ASSUMPTION: KZ2's runtime takes
     over that notice; until then the copy is unused and harmless). Copies only a missing or different-size file; -> names copied. Called after
     every build and by the launcher before each start (an install from before the fonts shipped gets them too)."""
@@ -2141,6 +2141,13 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
                 log.write(line)
         except Exception as e:   # the save import never fails the setup
             log.write(f"# rpcs3 save import: error {type(e).__name__}")
+    if rc == 0:   # the default gameplay.ini beside keybinds.ini (never over an existing one); the launcher does the same at each start
+        try:
+            import launch
+            err = launch.ensure_gameplay_ini(launch.data_dir(root, a.portable, os.environ))
+            log.write(f"# gameplay.ini: {err or 'present'}")
+        except Exception as e:
+            log.write(f"# gameplay.ini: error {type(e).__name__}")
     log.close()
     copy_to_install_logs(log_path, os.path.join(root, "logs"))
     return rc

@@ -195,7 +195,8 @@ Name: "checkupdates"; Description: "&Check for new versions: one anonymous reque
 ; never installed on the system. First in the list, so InitializeSetup unpacks only this file before the wizard shows
 ; (with solid compression an extract unpacks every file before it in the stream; the font was last, after the whole
 ; payload). The payload itself carries fonts\Rajdhani-Medium.ttf and -Bold.ttf (KZ3's error notice fonts; firstrun.py
-; and the launcher copy them next to build\kz2.exe) and licenses\Rajdhani-OFL.txt (assemble_payload.py FONTS).
+; and the launcher copy them next to build\kz2.exe) and licenses\Rajdhani-OFL.txt (assemble_payload.py FONTS), plus fonts\NotoSans-Regular.ttf and
+; licenses\NotoSans-OFL.txt (patch 6061, issue #39; the same copy step; build\ goes whole on uninstall, fonts\ file by file).
 Source: "{#FontDir}\Rajdhani-Bold.ttf"; Flags: dontcopy
 ; For "Check now" on the welcome page, before anything is installed: the bundled Python and version_check.py,
 ; extracted to {tmp} on the click only. Listed next so they sit at the start of the solid stream (ASSUMPTION: entry
@@ -323,6 +324,7 @@ Type: filesandordirs; Name: "{app}\scratch"
 ; vkd3d-proton's own cache when the launcher's VKD3D_SHADER_CACHE_PATH is not used (an older launcher, a direct start):
 ; vkd3d-proton.cache, or vkd3d-proton.kz2.exe.cache in newer Proton builds (seen with Proton GE in a Wine test)
 Type: files; Name: "{userappdata}\{#AppDirName}\vkd3d-proton*.cache*"
+; gameplay.ini (launch.py ensure_gameplay_ini, firstrun.py, an earlier change) is the player's settings file like keybinds.ini: kept
 Type: files; Name: "{userappdata}\{#AppDirName}\version.ini"
 Type: files; Name: "{userappdata}\{#AppDirName}\version.ini.tmp"
 Type: files; Name: "{app}\vkd3d-proton*.cache*"
