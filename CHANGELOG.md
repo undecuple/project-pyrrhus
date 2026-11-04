@@ -4,17 +4,18 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.10] - 2026-11-04 (pre-release)
 
 ### Added
 - Optional DSU (cemuhook) motion: with `dsu_port = on` (or the server's port) in `gameplay.ini`, a pad whose gyro reaches Windows through DS4Windows, DualSenseX, BetterJoy, a Steam Deck or a phone DSU app turns the valves and arms the demolition charges by tilting, as a SIXAXIS does. Off by default; talks only to 127.0.0.1. Not yet tried with a real DSU server.
 
 ### Changed
+- The European and Asian discs, planned for this version, move to 0.1.11, still as untested support (#48); this version supports only the US disc (BCUS98116) with the 1.29 update.
 - SPU float values with an all-ones exponent take exact vector paths by default: the vertex job costs less per load, and the results are bit-identical to before (`KZ2_SPU_XRV=0` restores the old paths).
 - The 8x8 light-probe tiles have their own texture pool by default (it was off in 0.1.9 until checked on a real display; LD_TILE_POOL=0 turns it off): far fewer texture uploads in busy scenes, same picture.
 
 ### Fixed
-- Demolition charges now arm from the right stick (or Z/X) on a controller without a motion sensor: the arm windows are 42.5–47.5°, not the 33.4–37.3° assumed before, so the stick now tilts to 46° from a bit past half way (found and measured by Feralnet, #47).
+- Demolition charges now arm from the right stick (or Z/X) on a controller without a motion sensor: the arm windows are 42.5–47.5°, not the 33.4–37.3° assumed before, so the stick now tilts to 46° from a bit past half way (found and measured by Feralnet, #47). Checked by a test of the tilt maths only; not yet tried in the game.
 
 ## [0.1.9] - 2026-11-04 (pre-release)
 
