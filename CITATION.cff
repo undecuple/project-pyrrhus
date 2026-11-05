@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this work, please cite it as below and keep the MIT licence notice with any copied code."
 title: "Project Pyrrhus"
-version: "0.1.10"
-date-released: "2026-11-04"
+version: "0.1.11"
+date-released: "2026-11-05"
 type: software
 authors:
   - alias: undecuple

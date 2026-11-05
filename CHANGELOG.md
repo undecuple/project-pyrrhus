@@ -4,7 +4,7 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
-## [Unreleased]
+## [0.1.11] - 2026-11-05 (pre-release)
 
 ### Added
 - The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with the 1.29 update of its own region. The code is the same (the 1.29 EBOOT is identical in all four regions), the disc data differs, and no one has played them through yet. The first-run check says "untested" and goes on (#48).

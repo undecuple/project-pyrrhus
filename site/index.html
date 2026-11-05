@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.10<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.11<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -141,6 +141,22 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.11</h2>
+<p class="meta">5 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Added</span>The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with the 1.29 update of its own region. The code is the same (the 1.29 EBOOT is identical in all four regions), the disc data differs, and no one has played them through yet. The first-run check says &quot;untested&quot; and goes on (#48).</li>
+<li><span class="sec">Added</span><code>aim_assist_strength</code> in <code>gameplay.ini</code> (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and pull.</li>
+<li><span class="sec">Changed</span>The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names the disc&#x27;s and the update&#x27;s ids and warns when they differ.</li>
+<li><span class="sec">Changed</span>Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</li>
+<li><span class="sec">Changed</span>A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game archive belongs to another region&#x27;s disc fails the archive check (A1).</li>
+<li><span class="sec">Changed</span>&quot;Use my RPCS3 install&quot; finds any of the four discs and always pairs it with the update of its own id.</li>
+<li><span class="sec">Changed</span>With a controller and <code>aim_assist = off</code>, the game&#x27;s own stick smoothing stays; only the target help is removed. Mouse look is unchanged.</li>
+<li><span class="sec">Fixed</span>Japanese, Korean and Chinese text is no longer blank: the game&#x27;s system font now includes Noto Sans CJK (OFL), cut to the characters the game uses, with the Japanese, Korean, Simplified, Traditional and Hong Kong letterforms chosen by the game&#x27;s language (the PS3 drew all Han characters in Japanese style).</li>
+<li><span class="sec">Fixed</span>A crash with a stack overflow (0xC00000FD) when the game stopped itself after an internal error: the game now closes with a message and a log line instead (#49). The error that started it is not found yet; the log now records it.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.10</h2>
 <p class="meta">4 Nov 2026 · pre-release</p>
 <ul class="rlist">
@@ -162,19 +178,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.9">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.8</h2>
-<p class="meta">3 Nov 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Fixed</span>The game&#x27;s internal clock reads the real date on Windows (it read January 1970); save dates were already correct.</li>
-<li><span class="sec">Fixed</span>If the window&#x27;s back buffer cannot be fetched, the present skips its copy and resizes the window at the next present instead of using an empty buffer (this case was not reached in our runs).</li>
-<li><span class="sec">Changed</span>Options &gt; Display has a VSync row (on by default; off allows tearing), and a frame that the screen is not ready for is skipped instead of holding up the game.</li>
-<li><span class="sec">Changed</span>The texture cache size is a setting; the default stays at 8,192 entries.</li>
-<li><span class="sec">Changed</span>FSR 1 now runs before the HUD: the HUD, crosshair and subtitles are drawn at the window&#x27;s resolution, not upscaled.</li>
-<li><span class="sec">Changed</span>The game folder can be read in place: with a new install the launcher makes no folder link (writes go to the install&#x27;s vfs folder; saves and settings stay where they are).</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.8">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -188,14 +191,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.10</b> Optional DSU (cemuhook) motion: with dsu_port = on (or the server&#x27;s port) in gameplay.ini, a pad whose gyro reaches...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.10</b> The European and Asian discs, planned for this version, move to 0.1.11, still as untested support (#48); this version...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.10</b> The 8x8 light-probe tiles have their own texture pool by default (it was off in 0.1.9 until checked on a real display...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.10</b> Demolition charges now arm from the right stick (or Z/X) on a controller without a motion sensor: the arm windows are...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> Russian text: letters the game&#x27;s own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> gameplay.ini is created next to keybinds.ini with every setting the game reads (aim assist, crouch and cover toggle...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> Keyboard: Z and X (tilt_left / tilt_right in keybinds.ini) turn valves and arm demolition charges: hold one to grab...</span></li>
-<li><time datetime="2026-11-04">11-04</time><span><b>0.1.9</b> An optional path for the game&#x27;s small light-probe textures, which no longer fill the texture cache: about 40 % less...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> aim_assist_strength in gameplay.ini (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> &quot;Use my RPCS3 install&quot; finds any of the four discs and always pairs it with the update of its own id.</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> With a controller and aim_assist = off, the game&#x27;s own stick smoothing stays; only the target help is removed. Mouse...</span></li>
+<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> Japanese, Korean and Chinese text is no longer blank: the game&#x27;s system font now includes Noto Sans CJK (OFL), cut to...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -228,9 +231,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.10">v0.1.10</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">4 Nov 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.10">Download v0.1.10</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">v0.1.11</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">5 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">Download v0.1.11</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>
