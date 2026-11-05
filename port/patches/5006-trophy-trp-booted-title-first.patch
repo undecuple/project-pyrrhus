@@ -1,0 +1,37 @@
+KZ2 patch 5006: sceNpTrophy reads the booted title's own TROPHY.TRP (D53 regions).
+
+Patch 5004 looks for an installed update's TROPDIR under <hdd0>/game/<title>/ with <title> from $PS3_TITLE and, when
+that is unset, takes the first game directory readdir lists that holds TROPDIR/<commId>/. One dev_hdd0 can hold the
+updates of several regions of the same title: Killzone 2's US, European, Asian and Japanese 1.29 updates each carry
+TROPDIR/NPWR00153_00/TROPHY.TRP (same commId, same size in all four; the Asian and Japanese disc TRPs are larger), so the
+scan could read another region's set. Now, when $PS3_TITLE is unset, the title id cellGame read from the disc's
+PARAM.SFO (cellGame_get_title_id, weak so a host test without cellGame still links) is tried first; the scan stays as
+the last fallback. A tree with one title (the US-only layout) reads the same file as before.
+Upstream candidate (general: any title whose regions share a commId on one hdd0).
+
+diff -ruN a/libs/network/sceNpTrophy.c b/libs/network/sceNpTrophy.c
+--- a/libs/network/sceNpTrophy.c	2026-11-04 23:22:09.330801667 -0600
++++ b/libs/network/sceNpTrophy.c	2026-11-04 23:22:16.865046055 -0600
+@@ -358,7 +358,13 @@
+ 
+ /* Find and read the title's TROPHY.TRP. Order: $PS3_TROPHY_TRP (a host file),
+  * <hdd0>/game/<title>/TROPDIR/<commId>/ (an installed update; <title> from
+- * $PS3_TITLE, else every game dir), <vfs root>/PS3_GAME/TROPDIR/<commId>/. */
++ * $PS3_TITLE, else the booted title's id from cellGame, else every game dir),
++ * <vfs root>/PS3_GAME/TROPDIR/<commId>/.
++ * KZ2 patch 5006: the booted title's own update first. One dev_hdd0 can hold the
++ * updates of several regions of a title (Killzone 2: BCUS98116, BCES00081,
++ * BCAS20066, BCJS30032, each with its own TROPDIR/NPWR00153_00); the directory
++ * scan took whichever readdir listed first. */
++extern __attribute__((weak)) const char* cellGame_get_title_id(void);
+ static void trophy_load_trp(TrophyContext* ctx)
+ {
+     char path[1100], hdd0[512];
+@@ -375,6 +381,7 @@
+     }
+     trophy_hdd0_root(hdd0, sizeof(hdd0));
+     const char* title = getenv("PS3_TITLE");
++    if ((!title || !*title) && cellGame_get_title_id) title = cellGame_get_title_id();
+     if (!ok && title && *title) {
+         snprintf(path, sizeof(path), "%s/game/%s/TROPDIR/%s/TROPHY.TRP", hdd0, title, cid);
+         ok = is_file(path) && trophy_try_trp(ctx, path);

@@ -29,7 +29,7 @@ first-run check prints: [GETTING-FILES.md](GETTING-FILES.md)):
 
 | Item | Notes |
 |---|---|
-| Killzone 2, US disc **BCUS98116**, dumped as a folder | The folder that holds `PS3_GAME/`. Other regions are untested. |
+| Killzone 2, US disc **BCUS98116**, dumped as a folder | The folder that holds `PS3_GAME/`. The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted by the first run but untested; each needs its own region's 1.29 update. |
 | Update **1.29** | The port's target version. The build reads its added archive and patch files. |
 | The **decrypted EBOOT** | `EBOOT-129.elf`, the decrypted main program of the 1.29 update, from your own copy of the game. This project provides no tools or instructions for making it. |
 

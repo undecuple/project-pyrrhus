@@ -656,6 +656,41 @@ def main():
         finally:
             fc16.PSARC_HASHES_FILE, fc16.hash_file = real_known, real_hash
             fc16.check_psarc_hash.__defaults__ = defaults
+        # 16b: a Japanese disc ISO with the console update PS3_UPDATE/PS3UPDAT.PUP: the PUP is never copied,
+        # the multi-extent archive is checked against the per-disc pin form ("archives"), and another region's
+        # entry for the same archive (a mixed dump) fails A1
+        t16b = os.path.join(tmp, "t16b")
+        os.makedirs(os.path.join(t16b, "root"))
+        iso16b = os.path.join(t16b, "jp.iso")
+        files16b = dict(files16, **{"PS3_UPDATE/PS3UPDAT.PUP": b"SCEUF" + b"\0" * 60})
+        build_iso(iso16b, files16b, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 4096})
+        facts16b = py("import json; print(json.dumps({'ok': True, 'facts': {'disc': {'TITLE_ID': 'BCJS30032'}}}))")
+        steps16b = [fr.Step("check", "Check", 1, lambda c: [facts16b], always=True, after=fr.after_check)]
+        sha16 = hashlib.sha256(psarc16).hexdigest()
+        for name, archives, want in (
+                ("own entry", [{"discs": ["BCUS98116"], "sha256": "0" * 64, "size": 1},
+                               {"discs": ["BCJS30032"], "sha256": sha16, "size": len(psarc16)}], "OK   A1"),
+                ("another region's archive", [{"discs": ["BCUS98116"], "sha256": sha16, "size": len(psarc16)},
+                                              {"discs": ["BCJS30032"], "sha256": "0" * 64, "size": 1}],
+                 "FAIL A1: data_ps3.psarc is the archive of the US disc (BCUS98116), but PARAM.SFO is the Japanese disc")):
+            known16b = os.path.join(t16b, "known.json")
+            with open(known16b, "w") as f:
+                json.dump({"archives": archives}, f)
+            shutil.rmtree(os.path.join(t16b, "root", "game"), ignore_errors=True)
+            shutil.rmtree(os.path.join(t16b, "root", "build"), ignore_errors=True)
+            fc16.check_psarc_hash.__defaults__ = (known16b,) + defaults[1:]
+            try:
+                out16b = io.StringIO()
+                rc = fr.main(["--dump", iso16b, "--root", os.path.join(t16b, "root"), "--jobs", "1", "--log-dir",
+                              os.path.join(t16b, "dl")], steps=steps16b, out=out16b)
+            finally:
+                fc16.check_psarc_hash.__defaults__ = defaults
+            o16b = out16b.getvalue()
+            d16b = os.path.join(t16b, "root", "game", "disc")
+            check((rc == 0) == want.startswith("OK") and want in o16b
+                  and os.path.isfile(os.path.join(d16b, "PS3_GAME", "USRDIR", "data_ps3.psarc"))
+                  and not os.path.exists(os.path.join(d16b, "PS3_UPDATE")),
+                  f"16b Japanese ISO, {name}: {want[:12]}, PS3_UPDATE not copied: {o16b[-300:]}")
         build_iso(iso16, files16, multi={"PS3_GAME/USRDIR/data_ps3.psarc": 4096})
         shutil.rmtree(dest16)
         c16 = fr.Ctx(root=os.path.join(t16, "root"), build=os.path.join(t16, "b"), iso=iso16, dump=iso16)

@@ -9,7 +9,7 @@
 ;   iscc /DPayload=<payload dir> installer\kz2.iss      (output: installer\Output\; AppVersion = the payload's VERSION.txt)
 ;
 ; Silent install (no pages, no boxes): setup /VERYSILENT /SUPPRESSMSGBOXES /LOG=<file> [/DIR=<folder>]
-;   [/DUMP=<folder with PS3_GAME, or a decrypted .iso> /UPDATE=<BCUS98116 folder> /EBOOT=<EBOOT.elf> [/JOBS=N]]: with /DUMP= the build runs
+;   [/DUMP=<folder with PS3_GAME, or a decrypted .iso> /UPDATE=<update folder> /EBOOT=<EBOOT.elf> [/JOBS=N]]: with /DUMP= the build runs
 ;   in setup as in the wizard (firstrun.py; the log goes next to setup.exe); without it nothing is built and the
 ;   first start asks. Silent uninstall (unins000.exe /VERYSILENT) keeps the saves.
 ;
@@ -158,7 +158,7 @@ ButtonNewFolder=&Make new folder
 DirExistsTitle=Folder exists
 DirDoesntExistTitle=Folder does not exist
 WelcomeLabel1=Project Pyrrhus {#AppVersion}
-WelcomeLabel2=Built on your PC, from your own game.%n%nThis installs the port's sources, the patched ps3recomp toolkit and a compiler. Then it checks your Killzone 2 disc dump (BCUS98116), the 1.29 update and the decrypted EBOOT, and builds the game here: 5 to 30 minutes.%n%nNothing is downloaded. Nothing of the game is copied. What it builds holds the game's code in translated form: keep it to yourself.%n%nProject page: {#SiteText}
+WelcomeLabel2=Built on your PC, from your own game.%n%nThis installs the port's sources, the patched ps3recomp toolkit and a compiler. Then it checks your Killzone 2 disc dump (US BCUS98116; the European, Asian and Japanese discs are untested), the 1.29 update of the same region and the decrypted EBOOT, and builds the game here: 5 to 30 minutes.%n%nNothing is downloaded. Nothing of the game is copied. What it builds holds the game's code in translated form: keep it to yourself.%n%nProject page: {#SiteText}
 FinishedHeadingLabel=Setup is done
 FinishedLabel=Project Pyrrhus is installed. Start it from the desktop or the Start menu.
 FinishedLabelNoIcons=Project Pyrrhus is installed.
@@ -340,6 +340,7 @@ var
   DumpInfo: TNewStaticText;
   DumpIsoBtn: TNewButton;
   TrilogyNoted: Boolean;
+  RegionNoted: Boolean;
   AllowOutside, BuildSkipped: Boolean;
   BuildOK, BuildStopped: Boolean;
   StopBtn: TNewButton;
@@ -828,11 +829,22 @@ begin
   Result := SfoField(DiscSfo(Dump), 'VERSION') = '02.00';
 end;
 
-{ The title ids a folder hint may offer as the disc dump: only the US disc's (the Trilogy's PS3_GAME carries the same
-  id, VERSION 02.00), as firstrun_check.py TITLE_IDS }
+{ The Killzone 2 title ids, as firstrun_check.py TITLE_IDS (REGIONS): the US disc (tested; the Trilogy's PS3_GAME
+  carries the same id, VERSION 02.00) and the European, Asian and Japanese discs (D53: accepted, untested). A folder
+  hint offers only these as the disc dump }
 function KnownDiscId(Id: String): Boolean;
 begin
-  Result := Id = 'BCUS98116';
+  Result := (Id = 'BCUS98116') or (Id = 'BCES00081') or (Id = 'BCAS20066') or (Id = 'BCJS30032');
+end;
+
+{ 'US', 'European', 'Asian' or 'Japanese' for a Killzone 2 title id (firstrun_check.py REGIONS adj), else '' }
+function RegionAdj(Id: String): String;
+begin
+  if Id = 'BCUS98116' then Result := 'US'
+  else if Id = 'BCES00081' then Result := 'European'
+  else if Id = 'BCAS20066' then Result := 'Asian'
+  else if Id = 'BCJS30032' then Result := 'Japanese'
+  else Result := '';
 end;
 
 { The first subfolder of Dir whose PS3_GAME\PARAM.SFO has one of our title ids (KnownDiscId), else '': other games'
@@ -859,7 +871,7 @@ begin
   end;
 end;
 
-{ '' when the folder holds the Killzone 2 US disc (BCUS98116) with its archive, else the message; Id = the title id
+{ '' when the folder holds a Killzone 2 disc (KnownDiscId) with its archive, else the message; Id = the title id
   found ('' when none) }
 function DumpProblem(Dir: String; var Id: String): String;
 var
@@ -889,17 +901,18 @@ begin
     Title := SfoField(DiscSfo(Dir), 'TITLE');
     if Id = '' then
       Result := 'PS3_GAME\PARAM.SFO in this folder has no readable TITLE_ID, so it is not a game dump.'
-    else if Id <> 'BCUS98116' then
-      Result := 'This is ' + Id + ' (' + Title + '), not Killzone 2. The port needs the Killzone 2 US disc ' +
-        '(BCUS98116); other releases are not supported.'
+    else if not KnownDiscId(Id) then
+      Result := 'This is ' + Id + ' (' + Title + '), not Killzone 2. The port needs a Killzone 2 disc: ' +
+        'BCUS98116 (US), BCES00081 (Europe), BCAS20066 (Asia) or BCJS30032 (Japan); other releases are not supported.'
     else
       Result := ArchiveProblem(AddBackslash(Dir) + 'PS3_GAME\USRDIR\');
-    if (Id = 'BCUS98116') and (Result <> '') then
-      Result := 'This is Killzone 2 (BCUS98116) but the dump is incomplete: ' + Result + ' Copy the dump again.';
+    if KnownDiscId(Id) and (Result <> '') then
+      Result := 'This is Killzone 2 (' + Id + ') but the dump is incomplete: ' + Result + ' Copy the dump again.';
   end;
 end;
 
-{ '' when the update's PARAM.SFO names the disc's TITLE_ID (as firstrun_check.py U1), else the message }
+{ '' when the update's PARAM.SFO names the disc's TITLE_ID (as firstrun_check.py U1), else the message. A disc of
+  one region with another region's update is a mixed set: each disc needs its own region's update }
 function UpdateIdProblem(Dir, DiscId: String): String;
 var
   Id: String;
@@ -908,6 +921,10 @@ begin
   Id := SfoField(AddBackslash(Dir) + 'PARAM.SFO', 'TITLE_ID');
   if Id = '' then
     Result := 'The update''s PARAM.SFO has no readable TITLE_ID.'
+  else if (DiscId <> '') and (Id <> DiscId) and (RegionAdj(Id) <> '') and (RegionAdj(DiscId) <> '') then
+    Result := 'This is the ' + RegionAdj(Id) + ' update (' + Id + '), but the disc dump is the ' + RegionAdj(DiscId) +
+      ' disc (' + DiscId + '). Each disc needs the 1.29 update of its own region: pick the ' + RegionAdj(DiscId) +
+      ' update (dev_hdd0\game\' + DiscId + '), or use the ' + RegionAdj(Id) + ' disc with this update.'
   else if (DiscId <> '') and (Id <> DiscId) then
     Result := 'This update is for ' + Id + ', but the disc dump is ' + DiscId + '. Pick the Killzone 2 update ' +
       '(dev_hdd0\game\' + DiscId + ').';
@@ -1081,8 +1098,8 @@ begin
   if (V <> '') and (V <> '{#EbootTarget}') then begin
     { the usual place only beside a given update folder: without one (a silent /EBOOT= alone) it was named twice
       (VM kit pre-flight) }
-    if UpdateDir <> '' then Usr := AddBackslash(UpdateDir) + 'USRDIR' + #13#10 + '(usually dev_hdd0\game\BCUS98116\USRDIR)'
-    else Usr := 'dev_hdd0\game\BCUS98116\USRDIR';
+    if UpdateDir <> '' then Usr := AddBackslash(UpdateDir) + 'USRDIR' + #13#10 + '(usually dev_hdd0\game\<your disc''s title id, such as BCUS98116>\USRDIR)'
+    else Usr := 'dev_hdd0\game\<your disc''s title id, such as BCUS98116>\USRDIR';
     if V = '{#DiscEboot}' then Result := 'This is the disc''s {#DiscEboot} EBOOT.'
     else Result := 'This is the ' + V + ' EBOOT.';
     Result := Result + ' This release needs the EBOOT of the {#EbootTarget} update: EBOOT.elf, the decrypted form ' +
@@ -1146,18 +1163,19 @@ begin
   ApplyHeadingFonts;
   SourcePage := CreateInputOptionPage(wpSelectTasks, 'Your game files',
     'Where are your Killzone 2 files?',
-    'Setup needs your own disc dump (BCUS98116), the 1.29 update and the decrypted EBOOT. It reads them in ' +
+    'Setup needs your own disc dump (US BCUS98116; the European BCES00081, Asian BCAS20066 and Japanese BCJS30032 ' +
+    'discs are untested), the 1.29 update of the same region and the decrypted EBOOT. It reads them in ' +
     'place: never changed, never copied.', True, False);
   SourcePage.Add('Use my RPCS3 install (setup finds the disc, the update and the EBOOT for you)');
   SourcePage.Add('I will pick the folders myself');
   RpcsPage := CreateInputDirPage(SourcePage.ID, 'Your RPCS3 folder',
-    'Setup looks at Killzone 2 (BCUS98116) in your RPCS3.',
+    'Setup looks at Killzone 2 in your RPCS3.',
     'Pick the folder of your RPCS3 (the one with rpcs3.exe or its config folder). Leave it empty to look in ' +
-    'RPCS3''s usual places; setup asks before it uses one. Setup looks only at Killzone 2 (BCUS98116) in its files. If RPCS3 ' +
+    'RPCS3''s usual places; setup asks before it uses one. Setup looks only at Killzone 2 (BCUS98116, BCES00081, BCAS20066, BCJS30032) in its files. If RPCS3 ' +
     'keeps the disc outside this folder, setup asks before reading it there.', False, '');
   RpcsPage.Add('RPCS3 folder:');
   DumpPage := CreateInputDirPage(RpcsPage.ID, 'Your disc dump',
-    'Killzone 2, US disc (BCUS98116), decrypted.',
+    'Killzone 2: US disc (BCUS98116), or European, Asian or Japanese (untested), decrypted.',
     'Pick the folder that holds PS3_GAME (picking PS3_GAME itself also works), or a decrypted .iso file. Setup ' +
     'never changes it; a folder is read in place, the files of an ISO are copied out of it into the install folder ' +
     '(about 7 GB).', False, '');
@@ -1182,14 +1200,15 @@ begin
   DumpPage.Edits[0].OnChange := @DumpEditChange;
   UpdatePage := CreateInputDirPage(DumpPage.ID, 'Update 1.29',
     'The port is built on 1.29.',
-    'Pick the folder named BCUS98116 that holds the 1.29 update (the update uses the disc''s own id).' + #13#10 +
+    'Pick the folder that holds the 1.29 update of your disc''s region, named after the disc''s title id (BCUS98116 ' +
+    'for the US disc; BCES00081, BCAS20066 or BCJS30032 for the others).' + #13#10 +
     'RPCS3: once you install the update in RPCS3 (see its documentation), it is in RPCS3''s dev_hdd0\game folder.' + #13#10 +
-    'PS3: copy dev_hdd0\game\BCUS98116 from the console.', False, '');
-  UpdatePage.Add('1.29 update folder (BCUS98116):');
+    'PS3: copy dev_hdd0\game\<the title id> from the console.', False, '');
+  UpdatePage.Add('1.29 update folder (named after the disc''s title id):');
   EbootPage := CreateInputFilePage(UpdatePage.ID, 'Decrypted EBOOT',
     'The 1.29 update''s EBOOT, decrypted.',
     'The port cannot decrypt it. It needs EBOOT.elf, the decrypted form of EBOOT.BIN in the 1.29 update''s USRDIR ' +
-    'folder (dev_hdd0\game\BCUS98116\USRDIR), made from your own copy. Not the disc''s PS3_GAME\USRDIR\EBOOT: ' +
+    'folder (dev_hdd0\game\<title id>\USRDIR), made from your own copy. Not the disc''s PS3_GAME\USRDIR\EBOOT: ' +
     'that one is 1.01, and this release needs the 1.29 one. This project ships no decryption tools or instructions.');
   EbootPage.Add('EBOOT.elf:', 'ELF files (*.elf)|*.elf|All files|*.*', '.elf');
   { Install over an earlier version: the folders picked last time (RegisterPreviousData) }
@@ -1404,6 +1423,14 @@ begin
           'stand-alone US disc; the Trilogy copy is untested. The first-run check compares its game archive with ' +
           'the known one. Setup goes on.', mbInformation, MB_OK);
       end;
+      if (Id <> 'BCUS98116') and (RegionAdj(Id) <> '') and (not RegionNoted) then begin
+        { D53: the European, Asian and Japanese discs are accepted as untested (firstrun_check.py D1 WARN) }
+        RegionNoted := True;
+        MsgBox('This is the ' + RegionAdj(Id) + ' Killzone 2 disc (' + Id + '). It is supported but untested: the ' +
+          'port''s code is the same for every region, but this disc''s data differs from the US disc''s, and no one ' +
+          'has played it through on the port yet. It needs the ' + RegionAdj(Id) + ' 1.29 update (dev_hdd0\game\' +
+          Id + '). Setup goes on.', mbInformation, MB_OK);
+      end;
     end;
   end else if CurPageID = UpdatePage.ID then begin
     UpdatePage.Values[0] := ResolveUpdate(UpdatePage.Values[0]);
@@ -1419,11 +1446,12 @@ begin
         what is wrong there (Project Helghast PR #14).
         ASSUMPTION: the exact RPCS3/PS3 wording is to be checked against RPCS3's own docs before release. }
       MsgBox('The 1.29 update was not found in this folder: ' + UpdateProblem(UpdatePage.Values[0]) + #13#10 + #13#10 +
-        'The update folder is the installed update (dev_hdd0\game\BCUS98116) and holds PARAM.SFO, USRDIR\EBOOT.BIN, ' +
+        'The update folder is the installed update of your disc''s region (dev_hdd0\game\<the disc''s title id>, ' +
+        'such as BCUS98116) and holds PARAM.SFO, USRDIR\EBOOT.BIN, ' +
         'USRDIR\added_data_ps3.psarc and the folder USRDIR\patch_data_ps3. The port is built on 1.29.' + #13#10 + #13#10 +
         'To add it:' + #13#10 +
         '  - on your PS3: install the 1.29 update for Killzone 2, then copy the game''s update ' +
-        'folder from dev_hdd0\game\BCUS98116; or' + #13#10 +
+        'folder from dev_hdd0\game\<the disc''s title id>; or' + #13#10 +
         '  - with RPCS3: install the 1.29 update in RPCS3 (see its documentation).' + #13#10 + #13#10 +
         'Then select the folder again and press Next to check again.', mbError, MB_OK);
       Result := False;
@@ -1569,7 +1597,7 @@ begin
     end;
     RpcsRoot := KV(Lines, 'root');
     if MsgBox('Found RPCS3 at ' + RpcsRoot + #13#10#13#10 + 'Use it for the game files? Setup looks only at ' +
-        'Killzone 2 (BCUS98116) in it, in place.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
+        'Killzone 2 (BCUS98116, BCES00081, BCAS20066, BCJS30032) in it, in place.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
   end;
   Done := False;
   while not Done do begin
@@ -1586,7 +1614,7 @@ begin
     end else if KV(Lines, 'status') = 'approval' then begin
       if MsgBox('RPCS3''s own settings keep some of Killzone 2 outside that folder:' + #13#10 +
           KVAll(Lines, 'outside', #13#10) + #13#10#13#10 + 'Read it there too? Setup looks only at ' +
-          'Killzone 2 (BCUS98116) in it.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
+          'Killzone 2 (BCUS98116, BCES00081, BCAS20066, BCJS30032) in it.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
       AllowOutside := True;
     end else begin
       Probs := '';
@@ -1655,7 +1683,7 @@ begin
   EbootFile := EbootPage.Values[0];
   if WizardSilent then begin
     { Silent install (/SILENT, /VERYSILENT): no pages and no questions. The game paths come from the command line,
-      /DUMP=<folder with PS3_GAME> /UPDATE=<BCUS98116 folder> /EBOOT=<EBOOT.elf> (/JOBS=N limits the compile jobs);
+      /DUMP=<folder with PS3_GAME> /UPDATE=<update folder> /EBOOT=<EBOOT.elf> (/JOBS=N limits the compile jobs);
       without /DUMP= nothing is built and the first start of Project Pyrrhus asks. The RPCS3 lookup asks questions,
       so it is never used here. }
     DumpDir := ResolveDump(ExpandConstant('{param:DUMP|}'));

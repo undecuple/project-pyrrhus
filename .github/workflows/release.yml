@@ -69,6 +69,15 @@ jobs:
             "(import (builtins.getFlake \"path:$PWD\").inputs.nixpkgs { system = \"x86_64-linux\"; }).noto-fonts"
           mkdir -p nix-parts/fonts
           python3 tools/runtime/mkfont_noto.py nix-parts/fonts/NotoSans-Regular.ttf
+      - name: Noto Sans CJK collection (runtime 78; noto-fonts-cjk-sans cut to tools/runtime/cjk-codepoints.txt by mkfont_cjk.py, output SHA-256 pinned)
+        run: |
+          set -euo pipefail
+          # mkfont_cjk.py reads the locked store paths offline: realise the CJK fonts and fontTools (a build tool) first
+          for a in noto-fonts-cjk-sans python3Packages.fonttools; do
+            nix build --no-link --impure --expr \
+              "(import (builtins.getFlake \"path:$PWD\").inputs.nixpkgs { system = \"x86_64-linux\"; }).$a"
+          done
+          nix develop .#re --command python3 tools/runtime/mkfont_cjk.py nix-parts/fonts/NotoSansCJK-Regular.ttc
       - name: SDL3 (the .#win shell's SDL3.dll and licence, as the local build stages it)
         run: |
           nix develop .#win --command python3 tools/release/stage_sdl3.py --out nix-parts/sdl3
@@ -175,7 +184,8 @@ jobs:
           # the Noto Sans face (assemble_payload.py checks its SHA-256 pin and refuses the payload without it)
           mkdir -p work/release/fonts
           cp "$RUNNER_TEMP/nix-parts/fonts/NotoSans-Regular.ttf" work/release/fonts/
-          ls -l work/ffmpeg-win/bin work/ffmpeg-win/include work/release/sdl3 work/release/fonts/NotoSans-Regular.ttf
+          cp "$RUNNER_TEMP/nix-parts/fonts/NotoSansCJK-Regular.ttc" work/release/fonts/
+          ls -l work/ffmpeg-win/bin work/ffmpeg-win/include work/release/sdl3 work/release/fonts/NotoSans-Regular.ttf work/release/fonts/NotoSansCJK-Regular.ttc
 
       - name: Assemble the payload
         env:

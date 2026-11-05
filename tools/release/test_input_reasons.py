@@ -15,7 +15,7 @@ USRDIR (passes); the EBOOT: missing (GETTING-FILES link), the disc's 1.01 one (E
 with only the update's data (added_data_ps3.psarc or patch_data_ps3) as the disc; the disc's PS3_GAME as the update
 (U1 FAIL, category DG; the GD update passes U1, control); every line labelled; an earlier change's rules unchanged: a
 decrypted ISO with another title id names the file and keeps D1, a Trilogy disc (02.00) passes with no reasons,
-another region's folder dump keeps D1's id. Isolated import: `python3 -I firstrun_check.py --dump x.iso` from another
+another game's folder dump keeps D1's id; a mixed region set names both regions in the update's line. Isolated import: `python3 -I firstrun_check.py --dump x.iso` from another
 folder imports iso9660; a copy without the sys.path line fails the same way (negative control).
 """
 import json
@@ -157,7 +157,7 @@ def main():
         # Project Helghast PR #17: other games' dumps on a drive root are not candidates; ISOs are named beside
         # folder hints; a PARAM.SFO inside the update's USRDIR does not block the step up to the update folder
         g = os.path.join(tmp, "g")
-        for n, tid in (("Katamari", "BCUS98001"), ("GT5", "BCES00569"), ("KZ2EU", "BCES00081")):
+        for n, tid in (("Katamari", "BCUS98001"), ("GT5", "BCES00569"), ("OtherEU", "BCES01070")):
             shutil.copytree(make_dump(os.path.join(tmp, "o" + n), title_id=tid), os.path.join(g, n + "_dump"))
         shutil.copytree(os.path.join(tmp, "oKatamari", "dump"), os.path.join(g, "KatamariFlat"))
         kf = os.path.join(g, "KatamariFlat")
@@ -182,7 +182,7 @@ def main():
             fc.is_drive_root = real_root
         check("hint: the folder hint and both ISO files named together, no other game", rc == 1 and
               f"looks like {os.path.join(g, 'Games', 'KZ2')}: pick that folder" in rs[0] and "Katamari" not in rs[0]
-              and "GT5" not in rs[0] and "KZ2EU" not in rs[0] and "game.iso" in rs[0] and
+              and "GT5" not in rs[0] and "OtherEU" not in rs[0] and "game.iso" in rs[0] and
               os.path.join(g, "Isos", "kz2.iso") in rs[0] and "pick that file" in rs[0], rs)
         check("_isos: names in the root, full paths one level down", isos_root == ["game.iso",
               os.path.join(g, "Isos", "kz2.iso")], isos_root)
@@ -263,10 +263,19 @@ def main():
         rc, rs, j = run(["--dump", tri, "--update", u])
         check("Trilogy disc (02.00): passes with its D1 WARN and no reasons", rc == 0 and rs == [] and any(
             c["code"] == "D1" and c["level"] == "WARN" for c in j["checks"]), rs)
-        eu = make_dump(os.path.join(tmp, "eu"), title_id="BCES00081")
+        eu = make_dump(os.path.join(tmp, "eu"), title_id="BCES01070")
         rc, rs, _ = run(["--dump", eu, "--update", u])
-        check("another region's folder dump keeps D1's id", rc == 1 and rs[0].startswith(
-            f"Disc dump failed: {eu} holds PS3_GAME with PARAM.SFO") and "Found: disc dump: this is BCES00081" in rs[0], rs)
+        check("another game's folder dump keeps D1's id", rc == 1 and rs[0].startswith(
+            f"Disc dump failed: {eu} holds PS3_GAME with PARAM.SFO") and "Found: disc dump: this is BCES01070" in rs[0], rs)
+        # D53: a European disc with the US update is a mixed set: the update's line names both and the right folder
+        eu = make_dump(os.path.join(tmp, "eu53"), title_id="BCES00081")
+        rc, rs, _ = run(["--dump", eu, "--update", u])
+        s = os.sep
+        check("mixed set: the update's reason names both regions and dev_hdd0/game/<the disc's id>", rc == 1
+              and len(rs) == 2 and rs[0].startswith(f"1.29 update failed: {u} holds PARAM.SFO")
+              and f"(dev_hdd0{s}game{s}BCES00081)" in rs[0]
+              and "this is the US update (BCUS98116), but the disc dump is the European disc (BCES00081)" in rs[0]
+              and rs[1].startswith("Passed: the disc dump"), rs)
 
         # text output: the reasons follow "first-run checks: FAIL", indented (firstrun.text_reasons reads them)
         import contextlib

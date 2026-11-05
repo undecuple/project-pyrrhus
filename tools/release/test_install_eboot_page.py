@@ -63,7 +63,7 @@ check('#define DiscEboot "1.01"' in t and "1.01" in known, "the disc's EBOOT ver
 ep = func("EbootProblem")
 check("V <> '{#EbootTarget}'" in ep and "This is the disc''s {#DiscEboot} EBOOT." in ep and
       "EBOOT.BIN in the update''s USRDIR folder" in ep and "AddBackslash(UpdateDir) + 'USRDIR'" in ep and
-      "dev_hdd0\\game\\BCUS98116\\USRDIR" in ep,
+      "dev_hdd0\\game\\<your disc''s title id, such as BCUS98116>\\USRDIR" in ep,
       "EbootProblem: another known version refused, names the update's USRDIR and the usual folder")
 check("Result := '';" in ep and "if (V <> '') and" in ep, "EbootProblem: an unknown EBOOT passes")
 # without an update folder (a silent /EBOOT= alone) the usual folder was named twice (VM kit pre-flight, an earlier change):

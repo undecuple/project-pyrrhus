@@ -14,7 +14,7 @@ Built on rpcs3_locate.py (the shared RPCS3 helper, vendored unchanged; its fixes
 
 Command line (the wizard; results are `key=value` lines in --out, UTF-8 with BOM so Inno reads them):
   --detect [--rpcs3 DIR]                     root=, source= (first RPCS3 folder found; hint first)
-  --resolve --rpcs3 DIR [--allow-outside]    status=ok|problems|approval|not_found, dump=, update=, eboot=,
+  --resolve --rpcs3 DIR [--allow-outside]    status=ok|problems|approval|not_found, dump=, update=, eboot=, title=,
                                              outside= (one per line), problem=code|text, help=text, saves=N
   --eboot-kind PATH [--sha256]               status=encrypted|ok, help= (the wizard's manual EBOOT page; no RPCS3 folder);
                                              --sha256 adds size= and sha256= for a file that is not encrypted
@@ -30,10 +30,12 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import rpcs3_locate as loc  # noqa: E402  (the shared RPCS3 helper, vendored unchanged)
+import firstrun_check as fc  # noqa: E402  (REGIONS: the Killzone 2 title ids; standard library only, no side effects)
 
-TITLE = "BCUS98116"
+TITLE = fc.TITLE_ID      # the US disc, BCUS98116: the tested one, preferred when RPCS3 has several equally complete
+TITLES = tuple(fc.REGIONS)   # US, Europe, Asia, Japan: each disc with its own region's update, never mixed
 WANT_UPDATE = "01.29"
-WANTS = {TITLE: WANT_UPDATE}
+WANTS = {t: WANT_UPDATE for t in TITLES}
 SAVE_USER = "00000001"   # cellSaveData's user folder (ps3recomp cellSaveData.c: gamedata/dev_hdd0/home/00000001/savedata)
 
 # ---- user-facing texts (public prose: gated by the maintainer)
@@ -44,12 +46,12 @@ HELP_ENCRYPTED = ("This EBOOT is still encrypted. The port cannot decrypt it. It
                   "from your own copy, in the same folder.")
 # RPCS3 steps are named, never spelt out as menu paths: "install the update in RPCS3 (see its documentation)",
 # "add the game in RPCS3 (see its documentation)".
-HELP_UPDATE = ("RPCS3 has no Killzone 2 update 1.29 installed. Install the update in RPCS3 (see its documentation) "
-               "from the 1.29 package, then check again.")
+HELP_UPDATE = ("RPCS3 has no Killzone 2 update 1.29 installed for this disc. Install the update in RPCS3 (see its "
+               "documentation) from the 1.29 package of your disc's region, then check again.")
 HELP_VERSION = ("The update RPCS3 has for Killzone 2 is not 1.29. Install the update in RPCS3 (see its "
                 "documentation) from the 1.29 package, then check again.")
-HELP_DISC = ("RPCS3 does not list the Killzone 2 disc (BCUS98116), or its folder is gone. Add the game in RPCS3 (see "
-             "its documentation) from the disc dump, or pick the folders yourself.")
+HELP_DISC = ("RPCS3 does not list a Killzone 2 disc (BCUS98116, BCES00081, BCAS20066 or BCJS30032), or its folder is "
+             "gone. Add the game in RPCS3 (see its documentation) from the disc dump, or pick the folders yourself.")
 HELP_DISC_LAYOUT = ("RPCS3 lists Killzone 2, but not as a disc dump (no PS3_GAME folder). The port needs the disc "
                     "dump; pick the folders yourself.")
 HELP_BY_CODE = {"no_decrypted_eboot": HELP_DECRYPT, "missing_update": HELP_UPDATE, "wrong_version": HELP_VERSION,
@@ -103,18 +105,38 @@ def outside_paths(cand):
     """Folders RPCS3's own settings put outside the chosen folder (the disc, dev_hdd0). Reads only games.yml (which
     lives in the chosen folder); the disc's own files are not opened until the player has said yes."""
     out = []
-    disc = ""
+    kv = {}
     try:
         with open(os.path.join(cand["config_dir"], "games.yml"), encoding="utf-8", errors="replace") as f:
-            disc = loc.parse_kv(f.read()).get(TITLE, "")
+            kv = loc.parse_kv(f.read())
     except OSError:
         pass
-    disc = disc.replace("$(EmulatorDir)", cand["root"].rstrip("/\\") + os.sep).rstrip("/\\")
-    if disc and not _inside(disc, cand["root"]):
-        out.append(os.path.normpath(disc))
+    for t in TITLES:     # every Killzone 2 disc RPCS3 lists, each named once
+        disc = kv.get(t, "").replace("$(EmulatorDir)", cand["root"].rstrip("/\\") + os.sep).rstrip("/\\")
+        if disc and not _inside(disc, cand["root"]) and os.path.normpath(disc) not in out:
+            out.append(os.path.normpath(disc))
     if not _inside(cand["dev_hdd0"], cand["root"]):
         out.append(cand["dev_hdd0"])
     return out
+
+
+def _score(t):
+    """How complete one title is in RPCS3: (a disc dump with PS3_GAME, the 1.29 update, a decrypted EBOOT)."""
+    disc, upd, eb = t.get("disc") or {}, t.get("update") or {}, t.get("decrypted_eboot") or {}
+    return (bool(disc.get("ok") and disc.get("has_ps3_game")), bool(disc.get("ok")), bool(upd.get("ok")),
+            bool(eb.get("ok")))
+
+
+def pick_title(titles):
+    """The Killzone 2 title id to use from locate()'s titles: the one whose disc is there (then its update, then its
+    EBOOT); the US one on a tie, and when none is there (its problems say what is missing). A disc is only ever paired
+    with the update of its own id (RPCS3 installs each region's update under that region's id), so a European disc
+    with only the US update installed reports the missing European update, never the US one."""
+    best = TITLE
+    for tid in TITLES:
+        if tid in titles and _score(titles[tid]) > _score(titles.get(best) or {}):
+            best = tid
+    return best
 
 
 def resolve(root, allow_outside=False):
@@ -123,7 +145,7 @@ def resolve(root, allow_outside=False):
     status: ok | problems | approval (paths outside the chosen folder need a yes first; nothing more was read)
     | not_found. The paths are only what the player's own RPCS3 has; firstrun_check decides whether they are valid."""
     res = {"ok": False, "status": "not_found", "root": root, "dump": "", "update": "", "eboot": "", "outside": [],
-           "problems": [], "help": [], "saves": {}}
+           "problems": [], "help": [], "saves": {}, "title": ""}
     cand = pick_candidate(root)
     if cand is None:
         res["problems"].append({"code": "not_rpcs3", "text": f"{loc.redact(root)} is not an RPCS3 folder "
@@ -138,7 +160,9 @@ def resolve(root, allow_outside=False):
     if not r.get("ok"):
         res["problems"] += r.get("problems", [])
         return res
-    t = r["titles"][TITLE]
+    tid = pick_title(r["titles"])
+    res["title"] = tid
+    t = r["titles"][tid]
     probs = list(t["problems"])
     disc, upd = t["disc"], t["update"] or {}
     bad_upd = ""
@@ -180,6 +204,8 @@ def log_lines(res):
     def r(p):
         return loc.redact(p, roots) if p else "-"
     lines = [f"# rpcs3 import: root={r(res['root'])} status={res['status']}"]
+    if res.get("title"):
+        lines.append(f"# rpcs3 import: title={res['title']}")
     for k in ("dump", "update", "eboot"):
         lines.append(f"# rpcs3 import: {k}={r(res[k])}")
     for p in res["outside"]:
@@ -339,7 +365,7 @@ def _main(argv=None):
         return 0 if c else 1
     res = resolve(a.rpcs3, a.allow_outside)
     if a.resolve:
-        pairs = [("status", res["status"])] + [(k, res[k]) for k in ("dump", "update", "eboot")]
+        pairs = [("status", res["status"])] + [(k, res[k]) for k in ("dump", "update", "eboot", "title")]
         pairs += [("outside", p) for p in res["outside"]]
         pairs += [("problem", f"{p['code']}|{soft_wrap(loc.redact(p['text'], [res['root']]))}") for p in res["problems"]]
         pairs += [("help", h) for h in res["help"]]

@@ -8,7 +8,9 @@ Cases: a complete dump + update + 1.29-sized ELF passes; wrong TITLE_ID fails; m
 whose EBOOT.BIN is already an ELF passes; a v1.01-sized ELF fails E1 on the 1.29 build (naming the update's USRDIR); a wrong-machine ELF fails; a truncated psarc
 fails; no --update warns; --json has the documented shape; H1 (EBOOT SHA-256): the shipped hashes file
 with empty values warns "unknown yet", a matching hash is OK, a mismatch warns with the size and both hashes (exit 0),
-an unreadable hashes file warns, a failed E1 gives no H1.
+an unreadable hashes file warns, a failed E1 gives no H1. D53: the European, Asian and Japanese discs pass with a D1
+WARN "untested", each region's disc VERSION and disc EBOOT size, every mixed region pair fails U1 naming both,
+the shipped psarc_sha256.json has one entry per disc, A1 per disc (another disc's archive = a mixed dump, FAIL).
 """
 import json
 import os
@@ -164,8 +166,52 @@ def main():
         rc, out = run(["--dump", d, "--update", ux_id] + small)
         check("update of another title fails U1 naming it", rc == 1 and "FAIL" in levels(out, "U1")
               and "BCES00081" in out, out)
-        rc, out = run(["--dump", make_dump(os.path.join(tmp, "eu2"), title_id="BCES00081"), "--update", ux_id] + small)
-        check("a non-US disc with its own update still fails D1", rc == 1 and levels(out, "D1") == {"FAIL"}, out)
+        check("a mixed set names both regions and the disc's own update folder",
+              "this is the European update (BCES00081), but the disc dump is the US disc (BCUS98116)" in out
+              and os.path.join("dev_hdd0", "game", "BCUS98116") in out, out)
+        # D53: the European, Asian and Japanese discs are accepted as untested, each with its own region's update
+        for tid, g in fc.REGIONS.items():
+            if g["tested"]:
+                continue
+            rd = make_dump(os.path.join(tmp, "r" + tid), title_id=tid, version=g["version"])
+            ru = make_update(os.path.join(tmp, "ru" + tid), title_id=tid)
+            rc, out = run(["--dump", rd, "--update", ru, "--eboot", os.path.join(ru, "USRDIR", "EBOOT.elf")] + small)
+            check(f"{g['region']} disc {tid} with its own update passes with a D1 WARN 'untested'", rc == 0
+                  and levels(out, "D1") == {"OK", "WARN"} and levels(out, "U1") == {"OK"} and "untested" in out
+                  and f"the {g['adj']} disc ({tid})" in out and "another printing?" not in out, out)
+            rc, out = run(["--dump", make_dump(os.path.join(tmp, "rv" + tid), title_id=tid, version="09.99"),
+                           "--update", ru] + small)
+            check(f"{g['region']} disc: another VERSION than {g['version']} warns", rc == 0
+                  and f"the known {g['adj']} disc is {g['version']} (another printing?)" in out, out)
+        j = json.loads(run(["--dump", make_dump(os.path.join(tmp, "rj"), title_id="BCJS30032", version="01.00"),
+                            "--update", make_update(os.path.join(tmp, "ruj"), title_id="BCJS30032"), "--json"] + small)[1])
+        check("--json: the disc's region and untested flag", j["facts"]["disc"].get("region") == "Japan"
+              and j["facts"]["disc"].get("untested") is True, j["facts"]["disc"])
+        j = json.loads(run(["--dump", d, "--update", u, "--json"] + small)[1])
+        check("--json: the US disc is tested (no untested flag)", j["facts"]["disc"].get("region") == "US"
+              and "untested" not in j["facts"]["disc"]
+              and not any("untested" in c["message"] for c in j["checks"]), j["facts"]["disc"])
+        # every mixed pair (disc of one region, update of another) fails U1 naming both
+        mixed_ok = []
+        for dt in fc.REGIONS:
+            for ut in fc.REGIONS:
+                if dt == ut:
+                    continue
+                rep = fc.Report()
+                fc.check_update(rep, make_update(os.path.join(tmp, f"mx{dt}{ut}"), title_id=ut), dt)
+                u1 = [c for c in rep.checks if c["code"] == "U1" and c["level"] == "FAIL"]
+                mixed_ok.append(bool(u1) and fc.REGIONS[ut]["adj"] + " update" in u1[0]["message"]
+                                and fc.disc_label(dt) in u1[0]["message"])
+        check("all 12 mixed region pairs fail U1 naming both", len(mixed_ok) == 12 and all(mixed_ok), mixed_ok)
+        # D2: each region's disc EBOOT.BIN size (Japan's differs)
+        for tid, size, warn in (("BCJS30032", 16_385_320, False), ("BCJS30032", 16_384_360, True),
+                                ("BCAS20066", 16_384_360, False), (None, 16_384_360, False)):
+            rep = fc.Report()
+            fc.check_disc_eboot(rep, (size, fc.SELF_MAGIC), tid)
+            check(f"D2 disc EBOOT size {size:,} on {tid}: {'WARN' if warn else 'no WARN'}",
+                  any(c["level"] == "WARN" for c in rep.checks) == warn, rep.checks)
+        check("ACCEPTED_TEXT names the four discs", fc.ACCEPTED_TEXT == "BCUS98116 (US), BCES00081 (Europe), "
+              "BCAS20066 (Asia) or BCJS30032 (Japan)", fc.ACCEPTED_TEXT)
 
         # folder picks one or two levels too deep (Project Helghast v0.1.2)
         for sub in (("PS3_GAME",), ("PS3_GAME", "USRDIR"), ("ps3_game", "usrdir")):
@@ -380,9 +426,43 @@ def main():
         check("A1 on a disc not listed only warns", [c["level"] for c in rep.checks] == ["WARN"]
               and "not a known archive" in rep.checks[0]["message"], rep.checks)
         real_known = json.load(open(fc.PSARC_HASHES_FILE))
-        check("the shipped psarc_sha256.json: the US disc, one copy, WARN on mismatch",
-              real_known["discs"] == ["BCUS98116"] and len(real_known["sha256"]) == 64
-              and real_known["size"] == 6_998_576_922 and real_known["fail_on_mismatch"] is False, real_known)
+        arch = {e["discs"][0]: e for e in real_known["archives"]}
+        check("the shipped psarc_sha256.json: one entry per disc, WARN on mismatch",
+              [e["discs"] for e in real_known["archives"]] == [[t] for t in fc.REGIONS]
+              and all(len(e["sha256"]) == 64 and e["fail_on_mismatch"] is False for e in arch.values())
+              and arch["BCUS98116"]["size"] == 6_998_576_922
+              and arch["BCES00081"]["sha256"] == arch["BCUS98116"]["sha256"] == "063d3f157ec4d5b130808f70c22086bb0edaf0070a5aba407d20c200ee8a59e9"
+              and (arch["BCAS20066"]["size"], arch["BCAS20066"]["sha256"][:8]) == (7_023_155_305, "b0bfa59f")
+              and (arch["BCJS30032"]["size"], arch["BCJS30032"]["sha256"][:8]) == (7_120_891_686, "bf880e05"),
+              real_known)
+        # per-disc archives: the disc's own archive is OK, another disc's archive is a FAIL (a mixed dump)
+        other = make_dump(os.path.join(tmp, "a1asia"), title_id="BCAS20066", psarc_bytes=4096)
+        with open(psarc_of(other), "r+b") as f:
+            f.seek(200)
+            f.write(b"asia")
+        sha_us = hashlib.sha256(open(psarc_of(d), "rb").read()).hexdigest()
+        sha_as = hashlib.sha256(open(psarc_of(other), "rb").read()).hexdigest()
+        multi = os.path.join(tmp, "multi.json")
+        with open(multi, "w") as f:
+            json.dump({"archives": [{"discs": ["BCUS98116"], "sha256": sha_us, "size": 4096},
+                                    {"discs": ["BCES00081"], "sha256": sha_us, "size": 4096},
+                                    {"discs": ["BCAS20066"], "sha256": sha_as, "size": 4096, "fail_on_mismatch": True},
+                                    {"discs": ["BCJS30032"], "sha256": "0" * 64, "size": 9999}]}, f)
+        for name, path, tid, want, text in (
+                ("US archive on the US disc", psarc_of(d), "BCUS98116", "OK", "matches the known disc archive"),
+                ("US archive on the European disc (identical archives)", psarc_of(d), "BCES00081", "OK", "matches"),
+                ("Asian archive on the Asian disc", psarc_of(other), "BCAS20066", "OK", "matches"),
+                ("Asian archive with the US PARAM.SFO", psarc_of(other), "BCUS98116", "FAIL",
+                 "is the archive of the Asian disc (BCAS20066), but PARAM.SFO is the US disc (BCUS98116): the dump mixes two discs"),
+                ("US archive with the Asian PARAM.SFO", psarc_of(d), "BCAS20066", "FAIL", "the dump mixes two discs"),
+                ("damaged archive on the Asian disc (fail_on_mismatch)", psarc_of(dmg), "BCAS20066", "FAIL",
+                 "differs from the known disc archive (damaged or modified copy)"),
+                ("damaged archive on the Japanese disc (WARN entry)", psarc_of(dmg), "BCJS30032", "WARN",
+                 "differs from the known disc archive (4,096 bytes, SHA-256 ")):
+            rep = fc.Report()
+            fc.check_psarc_hash(rep, path, tid, multi)
+            check(f"A1 per disc: {name} -> {want}", [c["level"] for c in rep.checks] == [want]
+                  and text in rep.checks[0]["message"], rep.checks)
 
         # FAT32 split parts: data_ps3.psarc.66600, .66601, ... instead of data_ps3.psarc
         def split_dump(name, sizes, skip=()):

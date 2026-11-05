@@ -11,17 +11,37 @@ and at the root of each local drive and its Games, Emulators, Emulator or PS3 fo
 "rpcs3" in its name (such as `rpcs3-v0.0.34-...-win64`), one level deep, and only one that holds `rpcs3.exe` or
 RPCS3's settings; anywhere else, pick the folder with `rpcs3.exe` yourself.
 
+## Regions
+
+Four Killzone 2 discs are accepted. Each needs the 1.29 update of its own region, which a PS3 or RPCS3 installs in
+`dev_hdd0/game/<the disc's title id>`. The decrypted 1.29 EBOOT is the same file in all four regions.
+
+| Disc | Title id | Disc version | Update folder | Status |
+|---|---|---|---|---|
+| US | BCUS98116 | 01.01 | `dev_hdd0/game/BCUS98116` | Tested: the port is built and played on it |
+| Europe | BCES00081 | 01.01 | `dev_hdd0/game/BCES00081` | Untested |
+| Asia | BCAS20066 | 01.02 | `dev_hdd0/game/BCAS20066` | Untested |
+| Japan | BCJS30032 | 01.00 | `dev_hdd0/game/BCJS30032` | Untested |
+
+"Untested" means that the port's code is the same, but the disc's data differs and no one has played it through on
+the port yet. The European disc's game archive is the same as the US one; the Asian and Japanese archives and their
+updates' data are their own. The first-run check says "untested" (a D1 WARN) and goes on.
+
+Do not mix regions. A disc of one region with another region's update folder is refused (U1 names both), because
+the update's data is made for its own disc. Use the update that matches your disc. The `PS3_UPDATE` folder on a
+disc is a console system update: the setup never reads it.
+
 ## The three inputs
 
 | Input | What to pick in the setup | The folder or file must contain | It does not hold | Quick self-check |
 |---|---|---|---|---|
 | Disc dump | The folder that holds `PS3_GAME`, or a decrypted `.iso` file | `PS3_GAME/PARAM.SFO`, `PS3_GAME/USRDIR/EBOOT.BIN` and the game archive `PS3_GAME/USRDIR/data_ps3.psarc` (D3; about 6.5 GiB), or its parts `data_ps3.psarc.66600`, `.66601`, ... with no gap | The update's files | Open the folder: you see `PS3_GAME`, and inside it `PARAM.SFO` and `USRDIR` |
-| 1.29 update | The update folder (on a PS3 or in RPCS3 it is `dev_hdd0/game/BCUS98116`) | `PARAM.SFO` (U1) and `USRDIR/EBOOT.BIN` (U2). Also the update's own archive `USRDIR/added_data_ps3.psarc` and its folder `USRDIR/patch_data_ps3` (U3: the check only warns without them, the setup's update page asks for the archive) | The disc archive `data_ps3.psarc`: that one is only on the disc. Do not copy it into the update folder | `PARAM.SFO` sits next to `USRDIR`; its `APP_VER` is 01.29 |
-| Decrypted 1.29 EBOOT | The file `EBOOT.elf`, or the folder that holds it. It is made from the 1.29 update's `USRDIR/EBOOT.BIN` (in the update folder, for example `dev_hdd0/game/BCUS98116/USRDIR`), not from the disc's `PS3_GAME/USRDIR/EBOOT.BIN` | A 64-bit PowerPC ELF file, not the encrypted `EBOOT.BIN` (E1) | The disc's EBOOT, which is version 1.01: the setup's EBOOT page refuses it and names the update's `USRDIR` folder, and the first-run check stops on it (E1) | The file starts with the letters `ELF`; an encrypted file starts with `SCE`. The 1.29 one is 16,455,144 bytes, the disc's 1.01 one 16,381,928 |
+| 1.29 update | The update folder of your disc's region (on a PS3 or in RPCS3 it is `dev_hdd0/game/<the disc's title id>`, such as `dev_hdd0/game/BCUS98116`; see [Regions](#regions)) | `PARAM.SFO` (U1) and `USRDIR/EBOOT.BIN` (U2). Also the update's own archive `USRDIR/added_data_ps3.psarc` and its folder `USRDIR/patch_data_ps3` (U3: without them the game stops at the main menu, so the check stops there) | The disc archive `data_ps3.psarc`: that one is only on the disc. Do not copy it into the update folder | `PARAM.SFO` sits next to `USRDIR`; its `APP_VER` is 01.29 |
+| Decrypted 1.29 EBOOT | The file `EBOOT.elf`, or the folder that holds it. It is made from the 1.29 update's `USRDIR/EBOOT.BIN` (in the update folder, for example `dev_hdd0/game/BCUS98116/USRDIR`; the 1.29 EBOOT is the same file in every region), not from the disc's `PS3_GAME/USRDIR/EBOOT.BIN` | A 64-bit PowerPC ELF file, not the encrypted `EBOOT.BIN` (E1) | The disc's EBOOT, which is version 1.01: the setup's EBOOT page refuses it and names the update's `USRDIR` folder, and the first-run check stops on it (E1) | The file starts with the letters `ELF`; an encrypted file starts with `SCE`. The 1.29 one is 16,455,144 bytes, the disc's 1.01 one 16,381,928 |
 
 **Pick the folder or the file itself, not the drive that holds it.** If drive `E:` holds `Killzone 2.iso`, pick
 `E:\Killzone 2.iso`; `E:\` alone is a dump only when `PS3_GAME` sits right on that drive. The update is the
-`BCUS98116` folder, not the drive or the `dev_hdd0` folder above it. A drive picked by mistake fails D1 to D3 for the
+folder named after the disc's title id (such as `BCUS98116`), not the drive or the `dev_hdd0` folder above it. A drive picked by mistake fails D1 to D3 for the
 disc, or U1 and U2 for the update, even when the files on it are fine.
 
 When `USRDIR/EBOOT.elf` is already inside the update folder, the setup offers it as the EBOOT. When you give a folder
@@ -53,9 +73,9 @@ and a folder holding `PS3_GAME` given as the update is named as the disc dump.
 - **Split archive.** A dump copied to a FAT32 drive holds `data_ps3.psarc.66600`, `.66601`, ... instead of one
   `data_ps3.psarc`, because FAT32 cannot store a file over 4 GiB. The setup accepts the parts as they are. The numbers
   must run on without a gap; a missing part is named. The archive check (A1) reads the parts in order as one file.
-- **Region.** The US disc (BCUS98116) is the one the port is built and tested on. The setup reads the title id from
-  `PS3_GAME/PARAM.SFO` and shows it under the folder. Any other title id is refused, naming the id and the game found;
-  the update must carry the same id as the disc.
+- **Region.** See [Regions](#regions): the US disc is tested, the European, Asian and Japanese discs are accepted but
+  untested. The setup reads the title id from `PS3_GAME/PARAM.SFO` and shows it under the folder. Any other title id
+  is refused, naming the id and the game found; the update must carry the same id as the disc.
 - **Killzone Trilogy.** The Trilogy disc holds Killzone 2 itself in its `PS3_GAME` folder (title id BCUS98116, disc
   version 02.00). The setup names it and goes on, but it is untested: the port is built on the stand-alone disc
   (version 01.01). The archive check (A1) says whether its game archive is the same.
@@ -80,14 +100,14 @@ A `WARN` lets it go on. The full log is next to the installer (or in the install
 | D0 | OK / FAIL | FAIL: the dump folder was not found. OK: a note that the dump is a decrypted ISO file, or that `PS3_GAME` or `PS3_GAME/USRDIR` was picked and the folder above it is used | Pick the dump folder again |
 | I1 | FAIL | "this ISO is encrypted; use a decrypted dump": the ISO's file table or its files cannot be read as plain data | Use a decrypted dump (a folder or a decrypted ISO) |
 | I2 | FAIL | The ISO cannot be read: not an ISO image, damaged or cut short | Copy the ISO again |
-| D1 | OK / WARN / FAIL | FAIL: `PS3_GAME/PARAM.SFO` is missing or unreadable, or its title id is not BCUS98116 (the id and game found are named). WARN: the folder's category is not a disc game (maybe an installed copy), or the disc version is not 01.01 (02.00 is the Killzone Trilogy disc, untested) | Pick the folder that holds `PS3_GAME`. For a WARN you can go on |
+| D1 | OK / WARN / FAIL | FAIL: `PS3_GAME/PARAM.SFO` is missing or unreadable, or its title id is not one of the four Killzone 2 discs (the id and game found are named). WARN: a European, Asian or Japanese disc (untested), the folder's category is not a disc game (maybe an installed copy), or the disc version is not the region's (02.00 on the US id is the Killzone Trilogy disc, untested) | Pick the folder that holds `PS3_GAME`. For a WARN you can go on |
 | D2 | OK / WARN / FAIL | FAIL: `PS3_GAME/USRDIR/EBOOT.BIN` is missing, or is neither a SELF nor an ELF file. WARN: an unusual size (another version?) | Copy or dump the disc again if it is a FAIL |
 | D3 | OK / FAIL | The game archive is missing, too small, does not start with `PSAR` (not an archive, or still encrypted), or its parts have a gap (the missing part is named) | Copy or dump the disc again; check that all parts `.66600`, `.66601`, ... are there |
-| A1 | OK / WARN | The archive is compared with the known disc archive, taken from our copy of the disc (it reads the whole archive once; the result is kept, so later starts do not read it again). OK: it matches. WARN: it differs (a damaged or changed copy, or a printing of the disc not seen yet), or it could not be compared | If the game does not start or stops while loading, copy or dump the disc again |
+| A1 | OK / WARN / FAIL | The archive is compared with the known archive of the disc's region (it reads the whole archive once; the result is kept, so later starts do not read it again). OK: it matches. WARN: it differs (a damaged or changed copy, or a printing of the disc not seen yet), or it could not be compared. FAIL: it is another region's archive, so the dump mixes two discs | If the game does not start or stops while loading, copy or dump the disc again; for a FAIL, dump one disc again, all of it |
 | U0 | WARN / FAIL | No update folder was given (WARN), or it was not found (FAIL) | Pick the update folder |
-| U1 | OK / WARN / FAIL | FAIL: the update's `PARAM.SFO` is missing, unreadable, not BCUS98116 or not the disc's title id, or it is the disc's own (category DG: the disc's `PS3_GAME` folder was given as the update). WARN: its version is not 01.29 | Pick the 1.29 update folder |
+| U1 | OK / WARN / FAIL | FAIL: the update's `PARAM.SFO` is missing or unreadable, its title id is not the disc's (another region's update: both are named), or it is the disc's own (category DG: the disc's `PS3_GAME` folder was given as the update). WARN: its version is not 01.29 | Pick the 1.29 update folder of the disc's region |
 | U2 | OK / FAIL | `USRDIR/EBOOT.BIN` is missing in the update folder | Pick the folder that holds `PARAM.SFO` and `USRDIR` |
-| U3 | OK / WARN | `USRDIR/added_data_ps3.psarc` is missing or does not start with `PSAR`, or the `USRDIR/patch_data_ps3` folder is missing: the update's data would be missing | Use a complete update folder |
+| U3 | OK / FAIL | `USRDIR/added_data_ps3.psarc` is missing or does not start with `PSAR`, or the `USRDIR/patch_data_ps3` folder is missing: the update's data would be missing | Use a complete update folder |
 | E1 | OK / WARN / FAIL | FAIL: no decrypted `EBOOT.elf` was found, it is not a 64-bit PowerPC ELF, or it is the disc's 1.01 EBOOT (or another known version). WARN: an unknown size | Pick the decrypted EBOOT of the 1.29 update, from the update's `USRDIR` folder |
 | H1 | OK / WARN | The EBOOT is compared with the known 1.29 one. A WARN means it differs or could not be compared | The build may still work if it is a 1.29 EBOOT; if the build fails, check the file |
 

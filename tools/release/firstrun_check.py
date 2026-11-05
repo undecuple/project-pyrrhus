@@ -12,8 +12,8 @@ file sizes and the hashes (H1: the decrypted EBOOT; A1: the disc archive, unless
             (iso9660.py) with the same D1-D3 checks and an INFO line "dump: decrypted ISO <name>". I1 FAIL: the ISO is
             encrypted ("this ISO is encrypted; use a decrypted dump"); I2 FAIL: the ISO cannot be read (not an ISO,
             damaged, truncated). No A1 here: firstrun.py hashes the archive while copying it out of the image.
-  --update  the installed 1.29 update folder, where a PS3 or RPCS3 keeps it: .../dev_hdd0/game/BCUS98116 (the update
-            installs under the disc's own title id; holds PARAM.SFO and USRDIR/EBOOT.BIN)
+  --update  the installed 1.29 update folder, where a PS3 or RPCS3 keeps it: .../dev_hdd0/game/<the disc's title id>,
+            such as BCUS98116 (the update installs under the disc's own title id; holds PARAM.SFO and USRDIR/EBOOT.BIN)
   --eboot   the decrypted EBOOT (an ELF); default: <update>/USRDIR/EBOOT.elf, else <dump>/PS3_GAME/USRDIR/EBOOT.elf
             (next to EBOOT.BIN), else an EBOOT.BIN that is already an ELF. E1 FAILs on a known EBOOT of another
             version than --target (the disc's 1.01 one on the 1.29 build: the message names the update's USRDIR
@@ -35,9 +35,12 @@ file sizes and the hashes (H1: the decrypted EBOOT; A1: the disc archive, unless
             PC port, same author, MIT), Project Helghast v0.1.2.
 
 Folder picks (adapted from Project Helghast v0.1.2): --dump may name PS3_GAME or PS3_GAME/USRDIR and --update
-its USRDIR (resolve_dump, resolve_update step up to the right folder). D1 names the TITLE_ID found: anything but
-BCUS98116 is refused by name and title; a disc VERSION other than 01.01 warns (02.00 = the Killzone Trilogy disc,
-whose PS3_GAME is Killzone 2 itself: untested). U1 fails when the update's TITLE_ID is not the disc's.
+its USRDIR (resolve_dump, resolve_update step up to the right folder). D1 names the TITLE_ID found: the four
+Killzone 2 discs of REGIONS are accepted (US BCUS98116, tested; Europe BCES00081, Asia BCAS20066 and Japan BCJS30032,
+D53: accepted as untested, a D1 WARN says so), anything else is refused by name and title; a disc VERSION other than
+the region's warns (02.00 on BCUS98116 = the Killzone Trilogy disc, whose PS3_GAME is Killzone 2 itself: untested).
+U1 fails when the update's TITLE_ID is not the disc's, naming both regions (a mixed set: each disc takes its own
+region's update; the Asian and Japanese updates carry their own added_data_ps3.psarc and patch files).
 
 Split archives (from Project Helghast v0.1.3): a dump copied to a FAT32 drive stores a file over 4 GiB as parts
 <name>.66600, .66601, ... (data_ps3.psarc is 6.5 GiB). D3 accepts the parts in place of data_ps3.psarc (sizes added
@@ -68,15 +71,55 @@ import sys
 # PR #14)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-TITLE_ID = "BCUS98116"                 # US disc (the RE notes); the only id accepted (no other region tested)
+TITLE_ID = "BCUS98116"                 # US disc (the RE notes), the tested one
 TITLE = "Killzone 2"
 DISC_VERSION = "01.01"                 # PARAM.SFO VERSION of the US disc we checked (the RE notes)
+DISC_EBOOT_BIN_SIZE = 16_384_360       # PS3_GAME/USRDIR/EBOOT.BIN on the disc, encrypted SELF (the RE notes)
+# The Killzone 2 discs (D53, 2026-11-04/05, read from the discs in the sandbox): title id -> region, its PARAM.SFO
+# VERSION, the size of its disc EBOOT.BIN (an encrypted SELF, never used: the port is built on the 1.29 update's
+# EBOOT, which is byte-identical for all four regions) and whether anyone has played it through on the port. Each
+# region's 1.29 update installs to dev_hdd0/game/<its id> (APP_VER 01.29). The European disc's data_ps3.psarc is the US
+# one; the Asian and Japanese ones differ (psarc_sha256.json), and so do their updates' added_data_ps3.psarc and
+# patch_data_ps3 files. Every disc also ships PS3_UPDATE/PS3UPDAT.PUP (a console firmware update): never read.
+REGIONS = {
+    TITLE_ID:    {"region": "US", "adj": "US", "version": DISC_VERSION, "disc_eboot": DISC_EBOOT_BIN_SIZE,
+                  "tested": True},
+    "BCES00081": {"region": "Europe", "adj": "European", "version": "01.01", "disc_eboot": 16_384_360,
+                  "tested": False, "note": "its data archive is the US one; PARAM.SFO and the pictures differ"},
+    "BCAS20066": {"region": "Asia", "adj": "Asian", "version": "01.02", "disc_eboot": 16_384_360, "tested": False,
+                  "note": "its data archive and its 1.29 update's data differ from the US ones"},
+    "BCJS30032": {"region": "Japan", "adj": "Japanese", "version": "01.00", "disc_eboot": 16_385_320,
+                  "tested": False, "note": "its data archive, intro movie and 1.29 update's data differ from the US ones"},
+}
+ACCEPTED_TEXT = ", ".join(f"{t} ({v['region']})" for t, v in list(REGIONS.items())[:-1]) + \
+    " or " + "{} ({})".format(*[(t, v["region"]) for t, v in REGIONS.items()][-1])
+
+
+def region_of(tid):
+    """The REGIONS entry of a title id, or None for any other id."""
+    return REGIONS.get(tid)
+
+
+def disc_label(tid):
+    """'the European disc (BCES00081)', or 'BCxx (not a Killzone 2 disc)' for another id."""
+    g = REGIONS.get(tid)
+    return f"the {g['adj']} disc ({tid})" if g else f"{tid or 'no title id'} (not a Killzone 2 disc)"
+
+
+def untested_text(tid):
+    """D1's WARN for a disc accepted as untested, else ""."""
+    g = REGIONS.get(tid)
+    if not g or g["tested"]:
+        return ""
+    return (f"disc dump: {disc_label(tid)}: untested. The port's code is the same for every region (the 1.29 EBOOT is "
+            f"identical), but the disc's data is its own ({g['note']}) and no one has played it through on the port "
+            "yet; setup goes on")
 # ASSUMPTION (KZ3's read-only survey of the Trilogy disc, BCUS99075, 2026-10-26; not checked on our own copy): its
 # PS3_GAME is Killzone 2 itself, TITLE_ID BCUS98116 with disc VERSION 02.00. Untested here (re-data 23 compares it).
 TRILOGY_DISC_VERSION = "02.00"
-# The title ids a folder hint may offer as the disc dump (looks_like_disc): only the US disc's. The Trilogy's
-# PS3_GAME carries the same id (VERSION 02.00 above), so it is offered too; other games' dumps never are.
-TITLE_IDS = (TITLE_ID,)
+# The title ids a folder hint may offer as the disc dump (looks_like_disc): the four Killzone 2 discs. The Trilogy's
+# PS3_GAME carries the US id (VERSION 02.00 above), so it is offered too; other games' dumps never are.
+TITLE_IDS = tuple(REGIONS)
 ONEDRIVE_VARS = ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
 # st_file_attributes bits of a OneDrive "files on demand" placeholder (an online-only file)
 ATTR_OFFLINE = 0x1000
@@ -84,7 +127,6 @@ ATTR_RECALL_ON_OPEN = 0x40000
 ATTR_RECALL_ON_DATA_ACCESS = 0x400000
 ONLINE_ONLY_MASK = ATTR_OFFLINE | ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS
 DEFAULT_INSTALL = "%LOCALAPPDATA%\\Programs\\Project Pyrrhus"
-DISC_EBOOT_BIN_SIZE = 16_384_360       # PS3_GAME/USRDIR/EBOOT.BIN on the disc, encrypted SELF (the RE notes)
 EBOOT_ELF_SIZES = {                    # decrypted EBOOTs (of a disc dump and the 1.29 update)
     16_381_928: "1.01",
     16_455_144: "1.29",
@@ -281,7 +323,7 @@ class Report:
 
 
 def check_sfo(r, path, code, what, expect=None):
-    """Shared PARAM.SFO check for the dump and the update. Returns the fields or None. Any TITLE_ID but BCUS98116 is a
+    """Shared PARAM.SFO check for the dump and the update. Returns the fields or None. A TITLE_ID outside REGIONS is a
     FAIL naming the id and title found; `expect` (the disc's id, for the update) must match too."""
     if not os.path.isfile(path):
         r.fail(code, f"{what}: no PARAM.SFO at {path}")
@@ -299,14 +341,27 @@ def sfo_report(r, sfo, code, what, expect=None):
     tid = sfo.get("TITLE_ID")
     if not tid:
         r.fail(code, f"{what}: PARAM.SFO has no TITLE_ID, so this is not a game folder")
-    elif tid != TITLE_ID:
-        r.fail(code, f"{what}: this is {tid} ({sfo.get('TITLE', '?')}), not {TITLE}: the port needs the US disc "
-                     f"{TITLE_ID} (other releases are not supported)")
+    elif tid not in REGIONS:
+        r.fail(code, f"{what}: this is {tid} ({sfo.get('TITLE', '?')}), not {TITLE}: the port needs a {TITLE} disc, "
+                     f"{ACCEPTED_TEXT} (other releases are not supported)")
     elif expect and tid != expect:
-        r.fail(code, f"{what}: TITLE_ID {tid} differs from the disc's {expect}: use the update of the same release")
+        r.fail(code, mixed_text(what, tid, expect))
     else:
-        r.ok(code, f"{what}: TITLE_ID {tid} ({sfo.get('TITLE', '?')})")
+        r.ok(code, f"{what}: TITLE_ID {tid} ({sfo.get('TITLE', '?')}; {REGIONS[tid]['region']})")
     return sfo
+
+
+def mixed_text(what, upd_id, disc_id):
+    """U1's FAIL for an update of another release than the disc: a mixed set. A PS3 applies an update only to
+    the disc with its title id, and the Asian and Japanese updates carry their own data and patch files, made for
+    their own disc's archive; the European and US updates differ only in PARAM.SFO and the encrypted EBOOT.BIN, but
+    the game asks for dev_hdd0/game/<the disc's id>, so a mixed pair is refused too (one rule for every region)."""
+    if disc_id not in REGIONS:
+        return f"{what}: TITLE_ID {upd_id} differs from the disc's {disc_id}: use the update of the same release"
+    g, d = REGIONS[upd_id], REGIONS[disc_id]
+    return (f"{what}: this is the {g['adj']} update ({upd_id}), but the disc dump is {disc_label(disc_id)}: each disc "
+            f"needs the 1.29 update of its own region. Use the {d['adj']} update (dev_hdd0{os.sep}game{os.sep}"
+            f"{disc_id}), or the {g['adj']} disc with this update")
 
 
 def split_parts(path):
@@ -350,7 +405,8 @@ def check_dump(r, dump, min_psarc):
     sfo = check_sfo(r, os.path.join(dump, "PS3_GAME", "PARAM.SFO"), "D1", "disc dump")
     disc_facts(r, sfo)
     eboot = os.path.join(dump, "PS3_GAME", "USRDIR", "EBOOT.BIN")
-    check_disc_eboot(r, (os.path.getsize(eboot), head(eboot, 4)) if os.path.isfile(eboot) else None)
+    check_disc_eboot(r, (os.path.getsize(eboot), head(eboot, 4)) if os.path.isfile(eboot) else None,
+                     (sfo or {}).get("TITLE_ID"))
     psarc = os.path.join(dump, "PS3_GAME", "USRDIR", PSARC_NAME)
     parts, missing, size, magic = psarc_info(psarc)
     if missing and missing != PSARC_NAME:
@@ -372,17 +428,24 @@ def disc_facts(r, sfo):
         r.facts["disc"] = {k: sfo.get(k) for k in ("TITLE_ID", "TITLE", "VERSION", "APP_VER", "CATEGORY")}
         if sfo.get("CATEGORY") != "DG":
             r.warn("D1", f"disc dump: CATEGORY {sfo.get('CATEGORY')!r}, a disc game is 'DG' (an installed copy?)")
-        ver = sfo.get("VERSION")
-        if sfo.get("TITLE_ID") == TITLE_ID and ver == TRILOGY_DISC_VERSION:
+        ver, tid = sfo.get("VERSION"), sfo.get("TITLE_ID")
+        g = REGIONS.get(tid)
+        if tid == TITLE_ID and ver == TRILOGY_DISC_VERSION:
             r.warn("D1", f"disc dump: disc VERSION {ver}: the Killzone Trilogy disc, whose PS3_GAME is {TITLE} "
                          f"({TITLE_ID}). Untested: the port is built on the stand-alone disc (VERSION {DISC_VERSION}); "
                          "A1 says whether its archive is the same")
-        elif sfo.get("TITLE_ID") == TITLE_ID and ver != DISC_VERSION:
-            r.warn("D1", f"disc dump: disc VERSION {ver!r}, the known US disc is {DISC_VERSION} (another printing?)")
+        elif g and ver != g["version"]:
+            r.warn("D1", f"disc dump: disc VERSION {ver!r}, the known {g['adj']} disc is {g['version']} (another printing?)")
+        if untested_text(tid):
+            r.warn("D1", untested_text(tid))
+            r.facts["disc"]["untested"] = True
+        if g:
+            r.facts["disc"]["region"] = g["region"]
 
 
-def check_disc_eboot(r, eboot):
-    """D2 from (size, first four bytes) of the disc's EBOOT.BIN, or None when it is absent."""
+def check_disc_eboot(r, eboot, tid=None):
+    """D2 from (size, first four bytes) of the disc's EBOOT.BIN, or None when it is absent; tid = the disc's title id
+    (its region's size; the US one otherwise)."""
     if eboot is None:
         r.fail("D2", "disc dump: no PS3_GAME/USRDIR/EBOOT.BIN (dump incomplete)")
         return
@@ -394,8 +457,9 @@ def check_disc_eboot(r, eboot):
         r.ok("D2", f"disc EBOOT.BIN is already a decrypted ELF ({size:,} bytes)")
     else:
         r.fail("D2", f"disc EBOOT.BIN has magic {magic!r}: neither SELF nor ELF (bad dump)")
-    if magic == SELF_MAGIC and size != DISC_EBOOT_BIN_SIZE:
-        r.warn("D2", f"disc EBOOT.BIN is {size:,} bytes, the US disc's is {DISC_EBOOT_BIN_SIZE:,} (another version?)")
+    g = REGIONS.get(tid) or REGIONS[TITLE_ID]
+    if magic == SELF_MAGIC and size != g["disc_eboot"]:
+        r.warn("D2", f"disc EBOOT.BIN is {size:,} bytes, the {g['adj']} disc's is {g['disc_eboot']:,} (another version?)")
 
 
 def check_psarc_head(r, size, magic, min_psarc, tail=")"):
@@ -444,7 +508,7 @@ def check_dump_iso(r, path, min_psarc):
                 info[key] = (e.size, im.read(rel, 4) if inside else b"")
                 if inside and info[key][1] not in ((SELF_MAGIC, ELF_MAGIC) if key == "eboot" else (PSARC_MAGIC,)):
                     raise iso9660.IsoEncrypted(ISO_ENCRYPTED)
-            check_disc_eboot(r, info.get("eboot"))
+            check_disc_eboot(r, info.get("eboot"), (sfo or {}).get("TITLE_ID"))
             if info.get("psarc") is None:
                 r.fail("D3", "disc dump: no PS3_GAME/USRDIR/data_ps3.psarc inside the ISO (the game's data archive)")
             else:
@@ -481,20 +545,34 @@ def hash_file(path, progress=None):
     return h.hexdigest()
 
 
+def load_archives(known):
+    """psarc_sha256.json -> [{sha256, size, discs, fail_on_mismatch}]: the "archives" list (one entry per disc, D53),
+    or the older single-archive form ({sha256, size, discs, fail_on_mismatch} at the top). Raises on a bad file."""
+    ents = known["archives"] if "archives" in known else [known]
+    out = []
+    for e in ents:
+        out.append({"sha256": e["sha256"].strip().lower(), "size": int(e["size"]),
+                    "discs": [str(d) for d in e.get("discs", [])], "fail_on_mismatch": bool(e.get("fail_on_mismatch", False))})
+    if not out:
+        raise ValueError("no archives listed")
+    return out
+
+
 def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_dir=None, progress=None, known_sha=None):
-    """A1: data_ps3.psarc (one file or its split parts) against the known disc archive (psarc_sha256.json: sha256,
-    size, discs, fail_on_mismatch). A different size is a mismatch without reading the file. The hash is cached in
-    <cache_dir>/psarc-sha256-cache.json keyed by the path, the total size and every part's path, size and mtime.
-    known_sha: the archive's SHA-256 already computed (firstrun.py hashes it while copying it out of an ISO): used
-    and cached instead of a second read."""
+    """A1: data_ps3.psarc (one file or its split parts) against the known disc archives (psarc_sha256.json: one entry
+    per disc, each sha256, size, discs, fail_on_mismatch). The disc's own entry decides: a match is OK; a mismatch is
+    a FAIL when it says fail_on_mismatch, else a WARN. An archive that is another known disc's (PARAM.SFO of one
+    region, the archive of another: a mixed dump) is a FAIL. A size no known archive has is a mismatch without
+    reading the file. The hash is cached in <cache_dir>/psarc-sha256-cache.json keyed by the path, the total size and
+    every part's path, size and mtime. known_sha: the archive's SHA-256 already computed (firstrun.py hashes it while
+    copying it out of an ISO): used and cached instead of a second read."""
     try:
         with open(hashes_file, encoding="utf-8") as f:
-            known = json.load(f)
-        want, want_size = known["sha256"].strip().lower(), int(known["size"])
-        discs, hard = list(known.get("discs", [])), bool(known.get("fail_on_mismatch", False))
+            archives = load_archives(json.load(f))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         r.warn("A1", f"known archive hash not readable ({hashes_file}: {e}); data_ps3.psarc not checked")
         return
+    own = [e for e in archives if title_id and title_id in e["discs"]]
     parts, missing = split_parts(psarc)
     if not parts or missing:
         r.warn("A1", f"data_ps3.psarc not complete ({missing or 'not found'} is missing); archive not hashed")
@@ -516,7 +594,7 @@ def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_di
     ent = cache.get(key)
     if isinstance(ent, dict) and ent.get("size") == size and ent.get("parts") == sig and ent.get("sha256"):
         got, cached = ent["sha256"], True
-    elif size == want_size:
+    elif any(size == e["size"] for e in archives):
         got = known_sha or hash_file(parts[0] if len(parts) == 1 else parts, progress)
         if cache_path:
             cache[key] = {"size": size, "parts": sig, "sha256": got}
@@ -527,13 +605,22 @@ def check_psarc_hash(r, psarc, title_id, hashes_file=PSARC_HASHES_FILE, cache_di
             except OSError:
                 pass
     r.facts.setdefault("psarc", {})["sha256"] = got or ""
-    detail = f"{size:,} bytes" + (f", SHA-256 {got}" if got else f"; the known archive is {want_size:,} bytes")
-    if got == want:
+    sizes = f"{own[0]['size']:,}" if own else " or ".join(sorted({f"{e['size']:,}" for e in archives}))
+    detail = f"{size:,} bytes" + (f", SHA-256 {got}" if got else f"; the known archive is {sizes} bytes")
+    hit = [e for e in archives if got and got == e["sha256"]]
+    if hit and any(e in own for e in hit):
         r.ok("A1", "data_ps3.psarc matches the known disc archive" + (" (hash cached from an earlier run)" if cached else ""))
-    elif title_id in discs and hard:
+    elif hit and own:
+        other = [d for e in hit for d in e["discs"]]
+        r.fail("A1", f"data_ps3.psarc is the archive of {disc_label(other[0])}, but PARAM.SFO is {disc_label(title_id)}"
+                     ": the dump mixes two discs. Copy or dump one disc again, all of it")
+    elif hit:
+        r.warn("A1", f"data_ps3.psarc is the archive of {disc_label(hit[0]['discs'][0])}, but the disc's title id is "
+                     f"{title_id or 'not known'}")
+    elif own and own[0]["fail_on_mismatch"]:
         r.fail("A1", f"data_ps3.psarc differs from the known disc archive (damaged or modified copy): copy or dump the "
                      f"disc again ({detail})")
-    elif title_id in discs:
+    elif own:
         r.warn("A1", f"data_ps3.psarc differs from the known disc archive ({detail}): a damaged or modified copy, or a "
                      "disc printing not seen yet. If the game does not start or stops loading, copy or dump the disc again")
     else:
@@ -594,17 +681,18 @@ def check_eboot_elf(r, elf, target="1.29", update=None):
         # console's check and the build then stopped at firstrun's version test, so a restart reused the same EBOOT
         r.fail("E1", f"this EBOOT is the disc's 1.01 one ({size:,} bytes); this release needs the EBOOT of the "
                      f"{target} update: EBOOT.elf, the decrypted form of EBOOT.BIN in the update's USRDIR folder "
-                     f"({update_usrdir(update)}), not the disc's")
+                     f"({update_usrdir(update, (r.facts.get('disc') or {}).get('TITLE_ID'))}), not the disc's")
     elif ver:
         r.fail("E1", f"this EBOOT is the {ver} one ({size:,} bytes); this build is for the {target} EBOOT")
     else:
         r.warn("E1", f"decrypted EBOOT has an unknown size ({size:,} bytes): not 1.01 or 1.29; the lift fixups may not apply")
 
 
-def update_usrdir(update):
+def update_usrdir(update, tid=None):
     """Where the update's EBOOT lies, for the E1 message: <update>/USRDIR, else the usual console/RPCS3 place (the
-    update installs under the disc's own title id)."""
-    return os.path.join(update, "USRDIR") if update else os.path.join("dev_hdd0", "game", TITLE_ID, "USRDIR")
+    update installs under the disc's own title id, tid; the US one when not known)."""
+    return os.path.join(update, "USRDIR") if update else \
+        os.path.join("dev_hdd0", "game", tid if tid in REGIONS else TITLE_ID, "USRDIR")
 
 
 def file_sha256(path):
@@ -872,9 +960,16 @@ def eboot_found(path):
 DISC_NEED = ("It must be the folder that holds PS3_GAME (with PS3_GAME{s}PARAM.SFO, PS3_GAME{s}USRDIR{s}EBOOT.BIN and "
              "PS3_GAME{s}USRDIR{s}" + PSARC_NAME + "), the PS3_GAME folder itself, or a decrypted .iso file picked "
              "as a file")
-UPDATE_NEED = ("It must be the installed 1.29 update folder (dev_hdd0{s}game{s}" + TITLE_ID + "), holding PARAM.SFO "
+UPDATE_NEED = ("It must be the installed 1.29 update folder (dev_hdd0{s}game{s}{tid}), holding PARAM.SFO "
                "and USRDIR{s}EBOOT.BIN, with USRDIR{s}" + UPDATE_DATA + " and USRDIR{s}" + UPDATE_PATCH_DIR)
 EBOOT_NEED = "It must be EBOOT.elf, the decrypted 1.29 EBOOT of your own copy (see " + GETTING_FILES + ")"
+
+
+def update_id(r):
+    """The title id the update folder must carry: the disc's (r.facts), else a placeholder naming the US one (the
+    disc's region is not known)."""
+    tid = (r.facts.get("disc") or {}).get("TITLE_ID")
+    return tid if tid in REGIONS else "<your disc's title id, such as " + TITLE_ID + ">"
 
 
 def input_reasons(r, dump, update, eboot):
@@ -897,7 +992,7 @@ def input_reasons(r, dump, update, eboot):
                 passed.append(INPUT_NAMES[k])
             continue
         what, structural = found[k]()
-        line = f"{INPUT_LABELS[k]} failed: {what}. " + need[k].format(s=os.sep) + "."
+        line = f"{INPUT_LABELS[k]} failed: {what}. " + need[k].format(s=os.sep, tid=update_id(r)) + "."
         if not structural:
             line += " Found: " + "; ".join(bad) + "."
         lines.append(line)

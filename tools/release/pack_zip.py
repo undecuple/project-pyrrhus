@@ -34,6 +34,7 @@ REQUIRED = ("run.cmd", "manifest.json", "VERSION.txt",
             # the runtime's error-notice fonts and their licence (assemble_payload FONTS; rsx 38)
             "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
             "fonts/NotoSans-Regular.ttf", "licenses/NotoSans-OFL.txt",   # patch 6061 (issue #39)
+            "fonts/NotoSansCJK-Regular.ttc", "licenses/NotoSansCJK-OFL.txt",   # its CJK collection (runtime 78)
             # SDL3 for the pads (patch 4010) and its licence (assemble_payload SDL3_DEST)
             "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
             # FFmpeg's LGPL decoders with their licence text, source pointer and build options (assemble_payload FFMPEG_*)

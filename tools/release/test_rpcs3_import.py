@@ -8,7 +8,8 @@ Cases: the detected root and the paths found (update USRDIR EBOOT first); a disc
 and nothing there is opened before it; a missing update; no decrypted EBOOT (a plain notice, no how-to
 instructions, check again); a wrong update version; the save import dry run (counts only), the copy only on a yes,
 refusal of an existing save until a second yes; redacted log lines (<RPCS3>/..., <home>/...) and no save contents in
-them; the wizard command line (--detect/--resolve/--save-dryrun/--save-copy); firstrun's text UI end to end.
+them; D53: each region's disc with its own update (title=), a European disc with only the US update reports the
+missing European update, the US title on a tie, every Killzone 2 disc outside the folder asked about; the wizard command line (--detect/--resolve/--save-dryrun/--save-copy); firstrun's text UI end to end.
 """
 import builtins
 import io
@@ -172,6 +173,56 @@ def main():
         check(ri.HELP_UPDATE in r["help"], "missing update: the help is shown")
         check("wrong_version" not in codes(r) and ri.HELP_VERSION not in r["help"],
              f"no update: only the missing-update problem, not also wrong_version ({codes(r)})")
+        # --- D53: the European, Asian and Japanese discs, each with its own region's update, never mixed
+        def region_tree(name, discs, updates, elf=True):
+            root = Path(tmp) / name
+            yml = ""
+            for tid in discs:
+                d = root / "games" / tid
+                w(d / "PS3_GAME" / "PARAM.SFO", sfo(TITLE_ID=tid, VERSION="01.01", APP_VER="01.01"))
+                yml += f"{tid}: {d}/\n"
+            w(root / "config" / "games.yml", yml or "{}\n")
+            w(root / "config" / "vfs.yml", "/dev_hdd0/: $(EmulatorDir)dev_hdd0/\n")
+            w(root / "rpcs3.exe")
+            for tid in updates:
+                g = root / "dev_hdd0" / "game" / tid
+                w(g / "PARAM.SFO", sfo(TITLE_ID=tid, APP_VER="01.29", CATEGORY="GD"))
+                w(g / "USRDIR" / "EBOOT.BIN", b"bin")
+                if elf:
+                    w(g / "USRDIR" / "EBOOT.elf", ELF + b"update")
+            return root
+        check(ri.TITLES == ("BCUS98116", "BCES00081", "BCAS20066", "BCJS30032") and
+              set(ri.WANTS) == set(ri.TITLES), f"every Killzone 2 id is asked for {ri.TITLES}")
+        for tid in ri.TITLES[1:]:
+            rr = region_tree("reg" + tid, [tid], [tid])
+            r = ri.resolve(str(rr))
+            check(r["ok"] and r["title"] == tid and r["dump"] == str(rr / "games" / tid)
+                  and r["update"] == str(rr / "dev_hdd0" / "game" / tid)
+                  and r["eboot"] == str(rr / "dev_hdd0" / "game" / tid / "USRDIR" / "EBOOT.elf"),
+                  f"{tid}: its disc and its own update are found ({r['status']} {codes(r)})")
+            check(f"# rpcs3 import: title={tid}" in ri.log_lines(r), f"{tid}: the log names the title")
+        rr = region_tree("mixed", ["BCES00081"], ["BCUS98116"])
+        r = ri.resolve(str(rr))
+        check(r["title"] == "BCES00081" and not r["update"] and not r["eboot"] and not r["ok"]
+              and "missing_update" in codes(r) and ri.HELP_UPDATE in r["help"],
+              f"a European disc with only the US update: the European update is missing, never mixed ({codes(r)})")
+        rr = region_tree("two", ["BCES00081", "BCUS98116"], ["BCES00081", "BCUS98116"])
+        r = ri.resolve(str(rr))
+        check(r["ok"] and r["title"] == "BCUS98116", f"two complete regions: the tested US one is used ({r['title']})")
+        rr = region_tree("twohalf", ["BCUS98116", "BCJS30032"], ["BCJS30032"])
+        r = ri.resolve(str(rr))
+        check(r["ok"] and r["title"] == "BCJS30032", f"the complete region wins over a disc without its update ({r['title']})")
+        rr = region_tree("none", [], [])
+        r = ri.resolve(str(rr))
+        check(r["title"] == "BCUS98116" and "missing_disc" in codes(r) and ri.HELP_DISC in r["help"]
+              and "BCJS30032" in ri.HELP_DISC, f"no Killzone 2 disc: the US title's problems ({codes(r)})")
+        outside = Path(tmp) / "elsewhere"
+        rr = region_tree("outs", [], [])
+        w(rr / "config" / "games.yml", f"BCAS20066: {outside / 'AS'}/\nBCUS98116: {outside / 'US'}/\nNPUB30001: {outside / 'X'}/\n")
+        r = ri.resolve(str(rr))
+        check(r["status"] == "approval" and r["outside"] == [str(outside / "US"), str(outside / "AS")],
+              f"every Killzone 2 disc outside the folder is asked about, no other game ({r['outside']})")
+
         sw = ri.soft_wrap("no update folder /data/x/Projects/some-long-folder/work/release/wizard/fx/nothing is here")
         check(ri.BREAK in sw and all(len(x.split(" ")[-1]) <= 40 for x in sw.split(ri.BREAK)) and sw.replace(ri.BREAK, "").startswith("no update folder /data/x/"),
               "soft_wrap breaks long paths after a separator and loses no text")

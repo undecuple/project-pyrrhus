@@ -128,4 +128,11 @@ NF="$DIR/fonts/NotoSans-Regular.ttf"
 if [[ $rc == 0 && ( ! -f "$NF" || "$ROOT/tools/runtime/mkfont_noto.py" -nt "$NF" ) ]]; then
   python3 "$ROOT/tools/runtime/mkfont_noto.py" "$NF" >&2 || echo "build-kz2: WARNING: no $NF (Cyrillic and Greek text will be blank)" >&2
 fi
+# the CJK collection beside it, <build dir>/fonts/NotoSansCJK-Regular.ttc (tools/runtime/mkfont_cjk.py:
+# nixpkgs' noto-fonts-cjk-sans cut to tools/runtime/cjk-codepoints.txt; needs fontTools, see the script). Only when
+# missing or older than the script or the list; a warning, not a failure, without it (CJK text is then blank).
+CF="$DIR/fonts/NotoSansCJK-Regular.ttc"
+if [[ $rc == 0 && ( ! -f "$CF" || "$ROOT/tools/runtime/mkfont_cjk.py" -nt "$CF" || "$ROOT/tools/runtime/cjk-codepoints.txt" -nt "$CF" ) ]]; then
+  python3 "$ROOT/tools/runtime/mkfont_cjk.py" "$CF" >&2 || echo "build-kz2: WARNING: no $CF (Japanese, Korean and Chinese text will be blank)" >&2
+fi
 exit $rc

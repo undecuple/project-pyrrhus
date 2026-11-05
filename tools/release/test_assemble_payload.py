@@ -155,6 +155,10 @@ def fake_repo(root):
     put(root, "work/release/fonts/NotoSans-Regular.ttf", noto)
     ap.NOTO_SHA256 = hashlib.sha256(noto).hexdigest()
     put(root, "public/licenses/NotoSans-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1 (Noto)\n")
+    cjk = b"ttcf\0\2\0\0cjk" + bytes(64)      # runtime 78's CJK collection; its pin swapped like NOTO_SHA256
+    put(root, "work/release/fonts/NotoSansCJK-Regular.ttc", cjk)
+    ap.CJK_SHA256 = hashlib.sha256(cjk).hexdigest()
+    put(root, "public/licenses/NotoSansCJK-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1 (Noto CJK)\n")
     put(root, "work/release/fonts/OFL-rajdhani.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
     put(root, "work/release/sdl3/SDL3.dll", fake_dll(3 << 20))   # over the 2 MiB binary cap on purpose
     put(root, "work/release/sdl3/LICENSE.txt", "Copyright (C) 1997-2026 Sam Lantinga\n")
@@ -241,6 +245,7 @@ def main():
                 "README.md", "NOTICE.md", "run.cmd", "manifest.json", "VERSION.txt",
                 "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
                 "fonts/NotoSans-Regular.ttf", "licenses/NotoSans-OFL.txt",
+                "fonts/NotoSansCJK-Regular.ttc", "licenses/NotoSansCJK-OFL.txt",
                 "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
                 "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
                 "licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt",
@@ -473,6 +478,27 @@ def main():
         os.rename(nlic + ".off", nlic)
         rc, txt = run(["--repo", repo, "--dry-run"])
         check(rc == 0, "the Noto face and licence restored: the payload passes again", txt)
+        # NotoSansCJK-Regular.ttc (runtime 78): required, SHA-256 pinned (CJK_SHA256), its OFL text from public/licenses
+        cpath = os.path.join(fdir, "NotoSansCJK-Regular.ttc")
+        with open(cpath, "rb") as f:
+            corig = f.read()
+        os.remove(cpath)
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSansCJK-Regular.ttc" in txt and "mkfont_cjk.py" in txt,
+              "a payload without NotoSansCJK-Regular.ttc is refused with the fix", txt)
+        with open(cpath, "wb") as f:
+            f.write(corig + b"x")
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSansCJK-Regular.ttc: SHA-256 differs" in txt, "a CJK collection that differs from its pin is refused", txt)
+        with open(cpath, "wb") as f:
+            f.write(corig)
+        clic = os.path.join(repo, "public", "licenses", "NotoSansCJK-OFL.txt")
+        os.rename(clic, clic + ".off")
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 1 and "NotoSansCJK-OFL.txt" in txt, "a payload without Noto Sans CJK's OFL text is refused", txt)
+        os.rename(clic + ".off", clic)
+        rc, txt = run(["--repo", repo, "--dry-run"])
+        check(rc == 0, "the CJK collection and licence restored: the payload passes again", txt)
 
         # SDL3.dll (pads, patch 4010): required, 64-bit PE DLL, own size cap, its licence text beside it
         sdir = os.path.join(repo, "work", "release", "sdl3")

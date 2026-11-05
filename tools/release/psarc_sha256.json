@@ -1,10 +1,9 @@
 {
- "comment": "Known data_ps3.psarc of the Killzone 2 US disc (BCUS98116, VERSION 01.01), hashed on our one copy (2026-10-28). firstrun_check.py A1: a match is OK; a mismatch on a disc listed here is a WARN until a second copy confirms the hash (then fail_on_mismatch becomes true and a mismatch is a FAIL); any other disc is a WARN.",
- "sha256": "063d3f157ec4d5b130808f70c22086bb0edaf0070a5aba407d20c200ee8a59e9",
- "size": 6998576922,
- "discs": [
-  "BCUS98116"
- ],
- "fail_on_mismatch": false,
- "copies_checked": 1
+ "comment": "Known data_ps3.psarc of each Killzone 2 disc, one entry per disc. US BCUS98116 (VERSION 01.01): hashed on our copy (2026-10-28); Europe BCES00081 (01.01): byte-identical to the US one (2026-11-05); Asia BCAS20066 (01.02) and Japan BCJS30032 (01.00): one copy each (2026-11-05). firstrun_check.py A1: a match with the disc's own entry is OK; another disc's archive is a FAIL (a mixed dump); a mismatch is a WARN unless the entry says fail_on_mismatch (then a FAIL); any other disc is a WARN.",
+ "archives": [
+  {"discs": ["BCUS98116"], "region": "US", "sha256": "063d3f157ec4d5b130808f70c22086bb0edaf0070a5aba407d20c200ee8a59e9", "size": 6998576922, "fail_on_mismatch": false, "copies_checked": 1},
+  {"discs": ["BCES00081"], "region": "Europe", "sha256": "063d3f157ec4d5b130808f70c22086bb0edaf0070a5aba407d20c200ee8a59e9", "size": 6998576922, "fail_on_mismatch": false, "copies_checked": 1},
+  {"discs": ["BCAS20066"], "region": "Asia", "sha256": "b0bfa59ff461494336076e5fc4170c1d72853fa0d2a53d61ff58752138a65a85", "size": 7023155305, "fail_on_mismatch": false, "copies_checked": 1},
+  {"discs": ["BCJS30032"], "region": "Japan", "sha256": "bf880e050ed319b20da85af4cd9c0a280b32894d659d44712810917fd77e01a4", "size": 7120891686, "fail_on_mismatch": false, "copies_checked": 1}
+ ]
 }

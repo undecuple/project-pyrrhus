@@ -32,7 +32,8 @@ What goes in (the allowlist, RULES below; nothing else is ever copied):
                   against its SHA-256 pinned in installer/art/art.json, and their OFL text as licenses/Rajdhani-OFL.txt.
                   firstrun.py and the launcher copy them to build/fonts/, next to kz2.exe (KZ3's runtime error notice
                   loads them from <exe dir>/fonts). Missing or changed fonts refuse the payload.
-                  Also fonts/NotoSans-Regular.ttf (patch 6061, mkfont_noto.py; pinned NOTO_SHA256) and licenses/NotoSans-OFL.txt.
+                  Also fonts/NotoSans-Regular.ttf (patch 6061, mkfont_noto.py; pinned NOTO_SHA256) and licenses/NotoSans-OFL.txt,
+                  and fonts/NotoSansCJK-Regular.ttc (runtime 78, mkfont_cjk.py; pinned CJK_SHA256) and licenses/NotoSansCJK-OFL.txt.
   pso-template.bin  the pipeline template (--pso-template FILE, default <repo>/installer/pso-template.bin, the committed
                   copy of the merged template, as Project Helghast keeps its own; checked with
                   tools/runtime/pso_template.py's reader, numbers only): build/kz2.exe reads ../pso-template.bin (patch
@@ -111,6 +112,7 @@ RULES = [
      "file", {}),
     ("public/licenses/LGPL-2.1.txt", "licenses/LGPL-2.1.txt", "file", {}),   # the one LGPL text; NOTICE.md links it
     ("public/licenses/NotoSans-OFL.txt", "licenses/NotoSans-OFL.txt", "file", {}),   # patch 6061's face (FONTS below)
+    ("public/licenses/NotoSansCJK-OFL.txt", "licenses/NotoSansCJK-OFL.txt", "file", {}),   # 6061's CJK collection (runtime 78)
     ("public/licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-LICENSE.txt", "file", {}),
     ("public/licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "file", {}),
     ("public/README.md", "README.md", "file", {}),
@@ -124,6 +126,10 @@ FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf")   # KZ3's runtime notice fo
 # installer_art.py from the fetched Rajdhani fonts). OFL text: RULES (public/licenses/NotoSans-OFL.txt).
 NOTO_FONT = "NotoSans-Regular.ttf"
 NOTO_SHA256 = "063c8b2dd0a3d84c89d606a4edcb4d33e79aa323f8ee0b6ed3dc3b3ed6a24f3d"
+# Runtime an earlier change: the CJK collection behind it (Japanese, Korean, Chinese), made by tools/runtime/mkfont_cjk.py
+# from nixpkgs' noto-fonts-cjk-sans cut to tools/runtime/cjk-codepoints.txt; same pin rule (mkfont_cjk.py OUT_SHA256).
+CJK_FONT = "NotoSansCJK-Regular.ttc"
+CJK_SHA256 = "6dcb72425101f53db0f9e5071c5102509fa30d58d6974c60d2d2e1704685b6c5"
 FONT_LICENSE = ("OFL-rajdhani.txt", "licenses/Rajdhani-OFL.txt", "fonts/OFL.txt")   # installer_art.py's name -> payload names
                                                                                     # (the second sits next to the .ttf files)
 SDL3_DEST = ("runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt")   # payload names: the DLL (firstrun.place_sdl3 copies it next to
@@ -330,6 +336,13 @@ def collect_fonts(repo, fonts_dir):
         bad.append(f"{NOTO_FONT}: SHA-256 differs from the pin in assemble_payload.py (NOTO_SHA256)")
     else:
         files.append(("fonts/" + NOTO_FONT, p))
+    p = os.path.join(fonts_dir, CJK_FONT)
+    if not os.path.isfile(p) or os.path.islink(p):
+        bad.append(f"{p} (patch 6061's CJK collection: python3 tools/runtime/mkfont_cjk.py {p}; without it Japanese, Korean and Chinese text is blank)")
+    elif sha256(p) != CJK_SHA256:
+        bad.append(f"{CJK_FONT}: SHA-256 differs from the pin in assemble_payload.py (CJK_SHA256)")
+    else:
+        files.append(("fonts/" + CJK_FONT, p))
     return files, bad
 
 

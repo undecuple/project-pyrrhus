@@ -249,6 +249,7 @@ add_executable(${PROJECT_NAME}
     kz2_prompts.cpp     # prompt glyph source for patches 2091-2093: keys, label fonts
     kz2_port_settings.cpp  # the Display page's port rows (fov, upscale, sharpness) and display.ini
     kz2_menu_pages.cpp  # EXIT TO DESKTOP and the Keyboard page in the game's menus
+    kz2_cjk_face.cpp  # the CJK face per page language (patch 6061's kz2_cjk_face_index)
     kz2_session_log.c   # KZ2_CONSOLE, logs/kz2-<date>-<time>.log, the EBOOT beside the exe (kz2_session_log.h)
     kz2_edge_zlib.c     # patch 6039: the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)
     kz2_edge_guest.c    # patch 6039: a guest write standing in for the task's DMA put

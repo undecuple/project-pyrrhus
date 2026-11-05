@@ -698,6 +698,10 @@ def main():
         check(fr.place_fonts(root, os.path.join(root, "build")) == [], "8 fonts already in place: nothing copied")
         write(os.path.join(root, "fonts", "Rajdhani-Bold.ttf"), "bold v2")
         check(fr.place_fonts(root, os.path.join(root, "build")) == ["Rajdhani-Bold.ttf"], "8 a changed font is copied again")
+        write(os.path.join(root, "fonts", "Rajdhani-Bold.ttf"), "BOLD v2")   # same size, other bytes (runtime 78's note)
+        check(fr.place_fonts(root, os.path.join(root, "build")) == ["Rajdhani-Bold.ttf"]
+              and open(os.path.join(bf, "Rajdhani-Bold.ttf")).read() == "BOLD v2", "8 a same-size font update is copied (SHA-256)")
+        check(fr.place_fonts(root, os.path.join(root, "build")) == [], "8 then nothing again")
         # SDL3.dll next to kz2.exe (patch 4010): placed from the payload, left alone when identical, replaced when changed
         sd = os.path.join(root, "runtime", "SDL3.dll")
         check(not fr.place_sdl3(root, os.path.join(root, "build")) and not os.path.exists(os.path.join(root, "build", "SDL3.dll")),

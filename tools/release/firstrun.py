@@ -722,20 +722,22 @@ def eboot_stat(path):
         return None
 
 
-NOTICE_FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf", "OFL.txt", "NotoSans-Regular.ttf")   # the licence travels with the fonts
+NOTICE_FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf", "OFL.txt", "NotoSans-Regular.ttf", "NotoSansCJK-Regular.ttc")   # the licence travels with the fonts
 
 
 def place_fonts(root, build):
-    """Copy <root>/fonts/Rajdhani-*.ttf, OFL.txt and NotoSans-Regular.ttf (patch 6061, the system-fontset face) (shipped in the payload, assemble_payload FONTS) to <build>/fonts/, next to
+    """Copy <root>/fonts/Rajdhani-*.ttf, OFL.txt, NotoSans-Regular.ttf and NotoSansCJK-Regular.ttc (patch 6061, the system-fontset faces) (shipped in the payload, assemble_payload FONTS) to <build>/fonts/, next to
     kz2.exe: KZ3's runtime error notice loads them privately from <exe dir>\\fonts (ASSUMPTION: KZ2's runtime takes
-    over that notice; until then the copy is unused and harmless). Copies only a missing or different-size file; -> names copied. Called after
+    over that notice; until then the copy is unused and harmless). Copies a missing file, or one whose size or SHA-256
+    differs from the payload's (a same-size font update reaches the build folder too: runtime 78's note); -> names
+    copied. Called after
     every build and by the launcher before each start (an install from before the fonts shipped gets them too)."""
     done = []
     for fn in NOTICE_FONTS:
         src, dst = os.path.join(root, "fonts", fn), os.path.join(build, "fonts", fn)
         if not os.path.isfile(src):
             continue
-        if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
+        if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src) and file_sha256(dst) == file_sha256(src):
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
@@ -1535,11 +1537,11 @@ def dry_run(ctx, steps, log_path, fallback, out=sys.stdout):
 
 # ------------------------------------------------------------------------------------- portable zip: text UI
 NOTICE_TEXT = """Project Pyrrhus (Killzone 2 PC): first run
-This checks your own Killzone 2 disc dump (BCUS98116), the 1.29 update and the decrypted EBOOT, then lifts and
-compiles the game on this computer (5-30 minutes; Ctrl+C stops it, the next start resumes). Nothing is downloaded
+This checks your own Killzone 2 disc dump (US BCUS98116; the European, Asian and Japanese discs are untested),
+the 1.29 update of the same region and the decrypted EBOOT, then lifts and compiles the game on this computer (5-30 minutes; Ctrl+C stops it, the next start resumes). Nothing is downloaded
 and nothing of the game is copied; the files it generates are your own and must not be shared."""
-UPDATE_HELP = """The 1.29 update is required. Install it on your PS3 (then copy dev_hdd0/game/BCUS98116)
-or install the 1.29 update in RPCS3 (see its documentation). The port cannot decrypt the EBOOT: it needs
+UPDATE_HELP = """The 1.29 update of your disc's region is required. Install it on your PS3 (then copy
+dev_hdd0/game/<your disc's title id>, such as BCUS98116) or install the 1.29 update in RPCS3 (see its documentation). The port cannot decrypt the EBOOT: it needs
 a decrypted EBOOT.elf, made from your own copy, in the update's USRDIR folder. This project ships no decryption tools
 or instructions."""
 EBOOT_AGAIN = ("The EBOOT must be the {want} update's one, not the disc's: EBOOT.elf, the decrypted form of EBOOT.BIN in "
@@ -1551,7 +1553,7 @@ def _rpcs3():
 
 
 RPCS3_CONFIRM = ("Setup reads it in place (never changed, never copied) and looks only at Killzone 2 "
-                 "(BCUS98116) in it.")
+                 "(BCUS98116, BCES00081, BCAS20066, BCJS30032) in it.")
 
 
 def rpcs3_step(a, ask, say, notes):
@@ -1583,7 +1585,8 @@ def rpcs3_step(a, ask, say, notes):
             say("RPCS3's own settings keep some of Killzone 2 outside that folder:")
             for p in res["outside"]:
                 say("  " + p)
-            if yes("Read it there too? (Setup looks only at Killzone 2 (BCUS98116) in them.)", True):
+            if yes("Read it there too? (Setup looks only at Killzone 2 (BCUS98116, BCES00081, BCAS20066, BCJS30032) "
+                   "in them.)", True):
                 allow = True
                 continue
             notes.append("# rpcs3 import: the player declined the folders outside the RPCS3 folder")
@@ -1880,7 +1883,8 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
                 dump = folder("Disc dump: the folder holding PS3_GAME, or a decrypted .iso file", dump,
                               resolve=_fc().resolve_dump, iso=True)
             if wrong is None or "update" in wrong:
-                upd = folder("1.29 update folder (dev_hdd0/game/BCUS98116)", upd, resolve=_fc().resolve_update)
+                upd = folder("1.29 update folder (dev_hdd0/game/<your disc's title id>, such as BCUS98116)", upd,
+                             resolve=_fc().resolve_update)
             if wrong is None or "eboot" in wrong:
                 auto = os.path.join(upd, "USRDIR", "EBOOT.elf")
                 elf = elf or (prev.get("eboot", "") if prev.get("update") == upd else "") or \

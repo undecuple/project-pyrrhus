@@ -1323,7 +1323,9 @@ void func_003BCAA0(ppu_context* ctx) { kz2_edge_add(ctx, func_003BCAA0__lifted);
  *
  *  aim_assist   ApplyInputModifier @0x2F0120 (v1.01 0x2E4EF8) when lr is 0x174160 (v1.01 0x16E900) and the shoot/zoom
  *               assist helper @0x2F0880 (0x2E5658) when lr is 0x1741F8 or 0x1742CC (0x16E998 / 0x16EA2C): UpdateLook
- *               @0x173E80 (0x16E620) only. They return early when the assist is off; the modifier pointer C+0x30C is
+ *               @0x173E80 (0x16E620) only. They return early when the assist is off (except a pad with
+ *               aim_assist = off, where the modifier runs for its smoother and the softlock search / aim cone take
+ *               their no-target exits; aim_assist_strength scales the cone factor and the pull); the modifier pointer C+0x30C is
  *               never touched (the sprint slowdown shares that gate), the follow camera (0xBF398) and mounted gun
  *               (0x102148) callers keep running. Results are not read by the callers (they reload from memory).
  *  crouch_toggle  Crouch decision @0x176208 (0x170990): P+0x61 (CrouchButtonIsToggle) is set to 1 around the body and
@@ -1441,25 +1443,89 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t, uint32_t, uint64_t, uint64_t, ui
     if (kz2_aim_in_mod) kz2_aim_stats_find(&kz2_aim, (uint32_t)ctx->gpr[3] != 0);
 }
 /* Aim-cone factor (r3 = M, r4 = E, r5 = &factor out): 1 without a target, the AimAssistSpeedCurve value with one. */
-[[maybe_unused]] static void kz2_aim_cone(ppu_context* ctx, void (*lifted)(ppu_context*))
+/* what UpdateLook's ApplyInputModifier is running for right now (set by kz2_aim_gate around the lifted body;
+ * KZ2_AIM_MODE_SKIP = not inside it): FULL = the game's assist at aim_assist_strength (kz2_aim_strength_now), SMOOTH =
+ * pad with aim_assist = off: the softlock search and the aim cone below take their own "no target" exits, so only the
+ * smoother edits the stick. Counters for the KZ2_AIM_LOG / KZ2_GP_LOG lines. */
+static int kz2_aim_site_mode = KZ2_AIM_MODE_SKIP;
+static float kz2_aim_strength_now = 1.0f;
+static unsigned kz2_aim_noassist_soft, kz2_aim_noassist_cone, kz2_aim_scaled_cone, kz2_aim_scaled_pull;
+static int kz2_aim_cone_site(uint32_t lr) { return lr == 0x002F0264u || lr == 0x002E503Cu; }   /* 1.29 / v1.01 */
+static int kz2_aim_soft_site(uint32_t lr) { return lr == 0x002F023Cu || lr == 0x002E5014u; }
+static int kz2_aim_pull_site(uint32_t lr) { return lr == 0x002F041Cu || lr == 0x002E51F4u; }
+[[maybe_unused]] static void kz2_aim_cone(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t self)
 {
     const uint32_t out = (uint32_t)ctx->gpr[5];
+    if (kz2_aim_site_mode == KZ2_AIM_MODE_SMOOTH && kz2_aim_cone_site((uint32_t)ctx->lr)) {
+        /* The function's own no-target exit (@0x2EFDD0 in 1.29: no AimAssistDistanceCurve, or the finder found none):
+         * *out = the float at fn - 0xC (lis/addi r29 = fn - 0x10, lfs +4), 1.0 = no slowdown. */
+        const uint32_t one = vm_read32(self - 0xCu);
+        vm_write32(out, one);
+        if (++kz2_aim_noassist_cone == 1)
+            fprintf(stderr, "[gameplay] aim assist off with a pad: aim cone @0x%08X returns its no-target value %.3f "
+                            "(the stick smoother still runs)\n", self, kz2_gp_f32(self - 0xCu));
+        if (kz2_aim_in_mod) kz2_aim_stats_cone(&kz2_aim, kz2_gp_f32(out));
+        return;
+    }
     lifted(ctx);
+    if (kz2_aim_site_mode == KZ2_AIM_MODE_FULL && kz2_aim_strength_now != 1.0f && kz2_aim_cone_site((uint32_t)ctx->lr)) {
+        const float f = kz2_gp_f32(out), g = kz2_aim_scale_cone(f, kz2_aim_strength_now);
+        uint32_t u; memcpy(&u, &g, 4); vm_write32(out, u);
+        if (g != f && (++kz2_aim_scaled_cone <= 5 || kz2_aim_scaled_cone % 300 == 0) && (kz2_aim_log_on() || kz2_gp_log_on()))
+            fprintf(stderr, "[aim] strength %.3g: cone factor %.3f -> %.3f (%u scaled)\n", kz2_aim_strength_now, f, g,
+                    kz2_aim_scaled_cone);
+    }
     if (kz2_aim_in_mod) kz2_aim_stats_cone(&kz2_aim, kz2_gp_f32(out));
 }
-/* Softlock search (r3 = M, r4 = E, r6 = &target out, cleared first): no target = ApplyInputModifier skips the slowdown
- * @0x2EF948 and the pull @0x2EF7E8. */
-[[maybe_unused]] static void kz2_aim_soft(ppu_context* ctx, void (*lifted)(ppu_context*))
+/* The pull (r3 = M, r4 = E, r5 = target, f1 = softlock factor M+0x0C, r6 / r7 = &dy / &dx out; ApplyInputModifier
+ * adds them to the stick right after, 0x2F041C..0x2F0438): at aim_assist_strength s the two changes are times s. */
+[[maybe_unused]] static void kz2_aim_pull(ppu_context* ctx, void (*lifted)(ppu_context*))
 {
-    const uint32_t out = (uint32_t)ctx->gpr[6];
+    const uint32_t o6 = (uint32_t)ctx->gpr[6], o7 = (uint32_t)ctx->gpr[7];
+    const int scale = kz2_aim_site_mode == KZ2_AIM_MODE_FULL && kz2_aim_strength_now != 1.0f && kz2_aim_pull_site((uint32_t)ctx->lr);
+    lifted(ctx);
+    if (!scale) return;
+    const float a = kz2_gp_f32(o6), b = kz2_gp_f32(o7);
+    const float a2 = kz2_aim_scale_pull(a, kz2_aim_strength_now), b2 = kz2_aim_scale_pull(b, kz2_aim_strength_now);
+    uint32_t u; memcpy(&u, &a2, 4); vm_write32(o6, u); memcpy(&u, &b2, 4); vm_write32(o7, u);
+    if ((a != 0.0f || b != 0.0f) && (++kz2_aim_scaled_pull <= 10 || kz2_aim_scaled_pull % 300 == 0) &&
+        (kz2_aim_log_on() || kz2_gp_log_on()))
+        fprintf(stderr, "[aim] strength %.3g: pull (%.4f, %.4f) -> (%.4f, %.4f) (%u scaled)\n", kz2_aim_strength_now, b, a, b2,
+                a2, kz2_aim_scaled_pull);
+}
+/* Softlock search (r3 = M, r4 = E, r5 = &score out, r6 = &target out, cleared first). In SMOOTH mode it takes its own
+ * no-softlock-curve exit (@0x2EFF28 in 1.29): r3 = 0, *target = 0, *score = the float at fn - 8 (lis/addi r26 = fn - 8),
+ * so ApplyInputModifier runs no slowdown and no pull. */
+[[maybe_unused]] static void kz2_aim_soft(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t self)
+{
+    const uint32_t out = (uint32_t)ctx->gpr[6], score = (uint32_t)ctx->gpr[5];
+    if (kz2_aim_site_mode == KZ2_AIM_MODE_SMOOTH && kz2_aim_soft_site((uint32_t)ctx->lr)) {
+        vm_write32(out, 0);
+        vm_write32(score, vm_read32(self - 8u));
+        ctx->gpr[3] = 0;
+        if (++kz2_aim_noassist_soft == 1 || kz2_aim_noassist_soft % 3000 == 0)
+            fprintf(stderr, "[gameplay] aim assist off with a pad: softlock search @0x%08X leaves no target (%u updates; "
+                            "score %.3f)\n", self, kz2_aim_noassist_soft, kz2_gp_f32(self - 8u));
+        if (kz2_aim_in_mod) kz2_aim_stats_soft(&kz2_aim, 0);
+        return;
+    }
     lifted(ctx);
     if (kz2_aim_in_mod) kz2_aim_stats_soft(&kz2_aim, vm_read32(out) != 0);
 }
+#ifdef PPU_OVERRIDE_002EF0C0
+void func_002EF0C0(ppu_context* ctx) { kz2_aim_pull(ctx, func_002EF0C0__lifted); }   // @0x002EF0C0 aim pull (1.29)
+#endif
+#ifdef PPU_OVERRIDE_002E3E98
+void func_002E3E98(ppu_context* ctx) { kz2_aim_pull(ctx, func_002E3E98__lifted); }   // @0x002E3E98 aim pull (v1.01)
+#endif
+/* Softlock search (r3 = M, r4 = E, r6 = &target out, cleared first): no target = ApplyInputModifier skips the slowdown
+ * @0x2EF948 and the pull @0x2EF7E8. */
+[[maybe_unused]] static void kz2_aim_soft(ppu_context* ctx, void (*lifted)(ppu_context*), uint32_t self);
 #ifdef PPU_OVERRIDE_002EFEB8
-void func_002EFEB8(ppu_context* ctx) { kz2_aim_soft(ctx, func_002EFEB8__lifted); }   // @0x002EFEB8 (1.29)
+void func_002EFEB8(ppu_context* ctx) { kz2_aim_soft(ctx, func_002EFEB8__lifted, 0x002EFEB8u); }   // @0x002EFEB8 (1.29)
 #endif
 #ifdef PPU_OVERRIDE_002E4C90
-void func_002E4C90(ppu_context* ctx) { kz2_aim_soft(ctx, func_002E4C90__lifted); }   // @0x002E4C90 (v1.01)
+void func_002E4C90(ppu_context* ctx) { kz2_aim_soft(ctx, func_002E4C90__lifted, 0x002E4C90u); }   // @0x002E4C90 (v1.01)
 #endif
 /* The finder's per-candidate line-of-sight query (world vf 0x18 = the thunk 0x19BFD8 -> 0x19BEF8; r4 = 0, r5 = the
  * candidate's 16-byte point block (candidate + 4), r6 = the candidate entity, r7 = the finder's filter object, r8 = the
@@ -1654,7 +1720,7 @@ void func_002F9F50(ppu_context* ctx) { kz2_aim_gather(ctx, func_002F9F50__lifted
 void func_002FAF70(ppu_context* ctx) { kz2_aim_find(ctx, func_002FAF70__lifted); }   // @0x002FAF70 (1.29)
 #endif
 #ifdef PPU_OVERRIDE_002EFC88
-void func_002EFC88(ppu_context* ctx) { kz2_aim_cone(ctx, func_002EFC88__lifted); }   // @0x002EFC88 (1.29)
+void func_002EFC88(ppu_context* ctx) { kz2_aim_cone(ctx, func_002EFC88__lifted, 0x002EFC88u); }   // @0x002EFC88 (1.29)
 #endif
 #ifdef PPU_OVERRIDE_002EECD8
 void func_002EECD8(ppu_context* ctx) { kz2_aim_gather(ctx, func_002EECD8__lifted, 0); }   // @0x002EECD8 (v1.01)
@@ -1663,16 +1729,20 @@ void func_002EECD8(ppu_context* ctx) { kz2_aim_gather(ctx, func_002EECD8__lifted
 void func_002EFCF8(ppu_context* ctx) { kz2_aim_find(ctx, func_002EFCF8__lifted); }   // @0x002EFCF8 (v1.01)
 #endif
 #ifdef PPU_OVERRIDE_002E4A60
-void func_002E4A60(ppu_context* ctx) { kz2_aim_cone(ctx, func_002E4A60__lifted); }   // @0x002E4A60 (v1.01)
+void func_002E4A60(ppu_context* ctx) { kz2_aim_cone(ctx, func_002E4A60__lifted, 0x002E4A60u); }   // @0x002E4A60 (v1.01)
 #endif
 
 [[maybe_unused]] static void kz2_aim_gate(ppu_context* ctx, void (*lifted)(ppu_context*), const uint32_t* sites, int n,
                                           int stick_args, const char* name)
 {
-    const int on = kz2_gp_aim_on(kz2_gameplay_get(), kz2_look_is_mouse());   /* auto: off while the mouse looks */
+    const kz2_gameplay_cfg* cfg = kz2_gameplay_get();
+    const int mode = kz2_gp_aim_mode(cfg, kz2_look_is_mouse());   /* auto: off while the mouse looks */
+    const int on = mode == KZ2_AIM_MODE_FULL;
     const uint32_t lr = (uint32_t)ctx->lr;
     static unsigned skipped, ran_site, changed, ran_other;
-    if (kz2_gp_aim_skip(on, lr, sites, n)) {
+    /* a pad with aim_assist = off keeps ApplyInputModifier for its stick smoother (KZ2_AIM_MODE_SMOOTH; the
+     * softlock and cone hooks take their no-target exits); the shoot/zoom helper (target help only) stays skipped. */
+    if (kz2_gp_aim_skip(on, lr, sites, n) && !(mode == KZ2_AIM_MODE_SMOOTH && stick_args)) {
         if (stick_args && kz2_aim_log_on()) { kz2_aim.mod++; kz2_aim_flush("off (modifier skipped)"); }
         if (kz2_gp_log_on() && (++skipped == 1 || skipped % 600 == 0))
             fprintf(stderr, "[gameplay] aim assist off: %s skipped at lr 0x%08X (%u skipped, %u ran at the look sites, %u other callers)\n",
@@ -1684,6 +1754,13 @@ void func_002E4A60(ppu_context* ctx) { kz2_aim_cone(ctx, func_002E4A60__lifted);
     for (int i = 0; i < n; i++) site |= sites[i] == lr;
     if (!site) { ran_other++; lifted(ctx); return; }
     ran_site++;
+    /* the softlock / cone / pull hooks read the mode while the lifted body runs (the look update is one thread) */
+    struct site_mode_scope {
+        explicit site_mode_scope(int m, float s) { kz2_aim_site_mode = m; kz2_aim_strength_now = s; }
+        ~site_mode_scope() { kz2_aim_site_mode = KZ2_AIM_MODE_SKIP; kz2_aim_strength_now = 1.0f; }
+    } scope(stick_args ? mode : KZ2_AIM_MODE_SKIP, cfg->aim_strength);
+    if (mode == KZ2_AIM_MODE_SMOOTH && stick_args && kz2_gp_log_on() && (ran_site == 1 || ran_site % 600 == 0))
+        fprintf(stderr, "[gameplay] aim assist off with a pad: %s runs for its stick smoother only (%u calls)\n", name, ran_site);
     if (stick_args && kz2_aim_log_on()) {   /* KZ2_AIM_LOG: inputs, outputs and the target search under it */
         const uint32_t M = (uint32_t)ctx->gpr[3], px = (uint32_t)ctx->gpr[5], py = (uint32_t)ctx->gpr[6];
         kz2_aim_M = M;
@@ -1715,7 +1792,7 @@ void func_002E4A60(ppu_context* ctx) { kz2_aim_cone(ctx, func_002E4A60__lifted);
         if ((ox != fx || oy != fy || kz2_aim.found + kz2_aim.soft_found != found0 || kz2_aim.cand_max != cand0) && ++s_events <= 40)
             fprintf(stderr, "[aim] event: stick (%.3f, %.3f) -> (%.3f, %.3f), M+0x10 %.3f M+0x0C %.3f, cand max %u, found %u\n",
                     fx, fy, ox, oy, kz2_gp_f32(M + 0x10), kz2_gp_f32(M + 0x0C), kz2_aim.cand_max, kz2_aim.found);
-        kz2_aim_flush("on");
+        kz2_aim_flush(mode == KZ2_AIM_MODE_SMOOTH ? "off with a pad (smoother only)" : "on");
         return;
     }
     if (!kz2_gp_log_on() || !stick_args) { lifted(ctx); return; }
@@ -2404,4 +2481,98 @@ extern "C" void kz2_fov_set(double deg)
 }
 #ifdef PPU_OVERRIDE_003D9640
 void func_003D9640(ppu_context* ctx) { kz2_fov_frustum(ctx, func_003D9640__lifted); }   // @0x003D9640 frustum setter (1.29)
+#endif
+
+/* Runtime an earlier change (public #49): the game's own fatal paths, kz2_guest_fatal.h has the static reading.
+ * abort() @0x00028030 (1.29) / @0x00027F60 (v1.01) is `*(int*)0 = 0x0DEADCA7; blr`. On the PS3 that store faults and
+ * the process ends; here ps3recomp drops null-page stores, the lifted abort returns, and std::terminate @0x007D9AA0
+ * falls through into std::unexpected @0x007D9AE0 and back, recursing until the host stack overflows (0xC00000FD, the
+ * #49 crash). The host body does what the PS3 does at that store: the process ends, here with a log line, the guest
+ * chain, the log flushed, a message box (KZ2_NO_ERROR_DIALOG=1 skips it) and exit code 5 (kz2_guest_fatal_exit,
+ * main.cpp). The store itself is not replayed: it only ever existed to fault. */
+#include "kz2_guest_fatal.h"
+extern "C" void ppu_dump_guest_stack(ppu_context*, const char*);
+extern "C" void kz2_guest_fatal_exit(const char* what);   /* main.cpp: log flush, message box, TerminateProcess(5) */
+[[maybe_unused]] static void kz2_guest_abort(ppu_context* ctx, uint32_t self)
+{
+    fprintf(stderr, "[guest-abort] the game called abort() @0x%08X from lr=0x%08X (guest tid %u): on the PS3 its "
+                    "store of 0x%08X to address 0 ends the process; ending it here\n",
+            self, (uint32_t)ctx->lr, (unsigned)ctx->thread_id, kz2fatal::ABORT_POISON);
+    ppu_dump_guest_stack(ctx, "abort");
+    kz2_guest_fatal_exit("abort");
+}
+#ifdef PPU_OVERRIDE_00028030
+void func_00028030(ppu_context* ctx) { kz2_guest_abort(ctx, 0x00028030u); }   // @0x00028030 abort (1.29)
+#endif
+#ifdef PPU_OVERRIDE_00027F60
+void func_00027F60(ppu_context* ctx) { kz2_guest_abort(ctx, 0x00027F60u); }   // @0x00027F60 abort (v1.01)
+#endif
+
+/* luaD_throw(L, errcode) @0x003F3160 (1.29) / @0x003E6D10 (v1.01): diagnostic only, the lifted body always runs.
+ * When no pcall catches the error (L->errorJmp 0) the game is about to call exit(1); say so, with the error text when
+ * L is readable, the errcode (2 run, 3 syntax, 4 memory, 5 error handler) and the guest chain. #49's log shows such a
+ * throw on L = 0x00000001 (a bad lua_State pointer, not a script error), right after a checkpoint restart. */
+[[maybe_unused]] static void kz2_lua_throw(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t L = (uint32_t)ctx->gpr[3];
+    char msg[200];
+    const int k = kz2fatal::classify_throw(L, [](uint32_t a) { return vm_read32(a); },
+                                           [](uint32_t a) { return vm_read8(a); }, msg, sizeof msg);
+    if (k) {
+        static int n = 0;
+        if (n++ < 4) {
+            fprintf(stderr, "[lua] unprotected error %d on lua_State 0x%08X%s (lr=0x%08X, guest tid %u): \"%s\"; the game "
+                            "calls exit(1) next\n", (int)(uint32_t)ctx->gpr[4], L,
+                    k == 2 ? " (not a valid pointer)" : "", (uint32_t)ctx->lr, (unsigned)ctx->thread_id, msg);
+            ppu_dump_guest_stack(ctx, "lua-throw");
+        }
+    }
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_003F3160
+void func_003F3160(ppu_context* ctx) { kz2_lua_throw(ctx, func_003F3160__lifted); }   // @0x003F3160 luaD_throw (1.29)
+#endif
+#ifdef PPU_OVERRIDE_003E6D10
+void func_003E6D10(ppu_context* ctx) { kz2_lua_throw(ctx, func_003E6D10__lifted); }   // @0x003E6D10 luaD_throw (v1.01)
+#endif
+
+/* exit(code) @0x007B7D60 (1.29) / @0x007AA3D8 (v1.01): diagnostic only, the lifted body runs (atexit list, PRX
+ * unload, _Exit). KZ2 does not exit on its own in play, so this line names who did. */
+[[maybe_unused]] static void kz2_guest_exit(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    fprintf(stderr, "[guest-exit] the game called exit(%d) from lr=0x%08X (guest tid %u)\n", (int)(int32_t)ctx->gpr[3],
+            (uint32_t)ctx->lr, (unsigned)ctx->thread_id);
+    ppu_dump_guest_stack(ctx, "exit");
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_007B7D60
+void func_007B7D60(ppu_context* ctx) { kz2_guest_exit(ctx, func_007B7D60__lifted); }   // @0x007B7D60 exit (1.29)
+#endif
+#ifdef PPU_OVERRIDE_007AA3D8
+void func_007AA3D8(ppu_context* ctx) { kz2_guest_exit(ctx, func_007AA3D8__lifted); }   // @0x007AA3D8 exit (v1.01)
+#endif
+
+/* luaV_gettable(L, t, key, val) @0x003F9870 (1.29) / @0x003ED420 (v1.01, same body; luaD_throw's delta 0xC450):
+ * diagnostic only, the lifted body always runs. #49: the first bad read was this function's t->tt at address 4 with
+ * L = 1, and the guest chain stopped here, so its direct caller (lr) is the one datum the log lacked. Logged when L or
+ * t is not a pointer (at most 4 lines, each with the chain). One compare per call otherwise. */
+[[maybe_unused]] static void kz2_lua_gettable(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    const uint32_t L = (uint32_t)ctx->gpr[3], tv = (uint32_t)ctx->gpr[4];
+    if (__builtin_expect(!kz2fatal::plausible_ptr(L) || tv < 0x10000u, 0)) {
+        static int n = 0;
+        if (n++ < 4) {
+            fprintf(stderr, "[lua] luaV_gettable on a bad %s: L=0x%08X t=0x%08X key=0x%08X from lr=0x%08X (guest tid %u)\n",
+                    !kz2fatal::plausible_ptr(L) ? "lua_State" : "table value", L, tv, (uint32_t)ctx->gpr[5],
+                    (uint32_t)ctx->lr, (unsigned)ctx->thread_id);
+            ppu_dump_guest_stack(ctx, "lua-gettable");
+        }
+    }
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_003F9870
+void func_003F9870(ppu_context* ctx) { kz2_lua_gettable(ctx, func_003F9870__lifted); }   // @0x003F9870 luaV_gettable (1.29)
+#endif
+#ifdef PPU_OVERRIDE_003ED420
+void func_003ED420(ppu_context* ctx) { kz2_lua_gettable(ctx, func_003ED420__lifted); }   // @0x003ED420 luaV_gettable (v1.01)
 #endif

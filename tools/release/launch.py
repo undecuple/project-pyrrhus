@@ -691,13 +691,16 @@ GAMEPLAY_INI = "gameplay.ini"
 # default so the keys are visible and behaviour does not change. test_gameplay_ini.py derives the key list from that
 # source and compares.
 GAMEPLAY_INI_TEXT = """; Project Pyrrhus gameplay settings. Created with the defaults when this file was missing; the launcher
-; never overwrites it. The game reads it at start. An environment variable (KZ2_AIM_ASSIST, KZ2_CROUCH_TOGGLE,
-; KZ2_COVER_TOGGLE, KZ2_MOTION, KZ2_DSU_PORT, KZ2_MOUSE_*) wins over this file for one run. A wrong value is ignored (the default stays).
+; never overwrites it. The game reads it at start. An environment variable (KZ2_AIM_ASSIST, KZ2_AIM_ASSIST_STRENGTH,
+; KZ2_CROUCH_TOGGLE, KZ2_COVER_TOGGLE, KZ2_MOTION, KZ2_DSU_PORT, KZ2_MOUSE_*) wins over this file for one run. A wrong value is ignored (the default stays).
 ; Booleans: 1/0, on/off, true/false, yes/no.
 
 [gameplay]
 ; aim_assist = auto | on | off. auto: assist while a pad drives the look, none while the mouse does.
 aim_assist = auto
+; aim_assist_strength = 0 .. 4, a factor on the game's own assist (the slowdown on a target and the pull toward it).
+; 1 is the game's strength, 2 twice as strong, 0 none (the pad's stick smoothing stays).
+aim_assist_strength = 1
 ; crouch_toggle = 0 | 1. 1: the crouch button toggles instead of being held.
 crouch_toggle = 0
 ; cover_toggle = 0 | 1. 1: the cover button toggles instead of being held.

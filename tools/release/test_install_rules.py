@@ -17,7 +17,7 @@ Cases:
   - OneDrive (Project Helghast v0.1.2): InOneDrive/InstallDirProblem refuse an install folder inside OneDrive, on the folder page
     and in PrepareToInstall (silent /DIR=); a transcription agrees with firstrun_check.onedrive_root_of.
   - Dump and update pages (Project Helghast v0.1.2): PS3_GAME / USRDIR picks resolved (wizard and silent), the TITLE_ID read
-    by SfoField (a transcription agrees with firstrun_check.read_sfo) and named, only BCUS98116 accepted, the Trilogy
+    by SfoField (a transcription agrees with firstrun_check.read_sfo) and named, the four Killzone 2 discs accepted, the Trilogy
     disc named, the update's id must be the disc's; the EBOOT page takes a folder (Project Helghast v0.1.4); Inno pitfalls.
 Exit 0 = PASS, 1 = FAIL.
 """
@@ -168,11 +168,22 @@ check("LoadStringFromFile" in f and "SfoInt(S, 8, 4)" in f and "SfoInt(S, 12, 4)
       and "20 + 16 * I" in f and "SfoInt(S, E, 2)" in f and "SfoInt(S, E + 4, 4)" in f and "SfoInt(S, E + 12, 4)" in f,
       "SfoField reads the header and the 16-byte entries like read_sfo")
 f = func("DumpProblem")
-check("Id <> 'BCUS98116'" in f and "'This is ' + Id" in f and "not Killzone 2" in f and "ArchiveProblem(" in f,
-      "DumpProblem accepts only BCUS98116, names any other id and title, and asks ArchiveProblem")
+check("not KnownDiscId(Id)" in f and "'This is ' + Id" in f and "not Killzone 2" in f and "ArchiveProblem(" in f
+      and all(t in f for t in ("BCUS98116 (US)", "BCES00081 (Europe)", "BCAS20066 (Asia)", "BCJS30032 (Japan)")),
+      "DumpProblem accepts the four Killzone 2 discs (KnownDiscId, D53), names any other id and title, asks ArchiveProblem")
 check("'02.00'" in func("IsTrilogy"), "the Trilogy disc (VERSION 02.00) is recognised")
 f = func("UpdateIdProblem")
 check("Id <> DiscId" in f and "'TITLE_ID'" in f, "UpdateIdProblem: the update carries the disc's TITLE_ID")
+check("RegionAdj(Id)" in f and "RegionAdj(DiscId)" in f and "Each disc needs the 1.29 update of its own region" in f
+      and "(dev_hdd0\\game\\' + DiscId" in f, "UpdateIdProblem: a mixed region set names both regions")
+ra = func("RegionAdj")
+check(all(f"'{t}' then Result := '{a}'" in ra for t, a in (("BCUS98116", "US"), ("BCES00081", "European"),
+      ("BCAS20066", "Asian"), ("BCJS30032", "Japanese"))) and
+      {t: g["adj"] for t, g in fc.REGIONS.items()} == {"BCUS98116": "US", "BCES00081": "European",
+                                                      "BCAS20066": "Asian", "BCJS30032": "Japanese"},
+      "RegionAdj = firstrun_check.REGIONS adj")
+check("RegionNoted" in func("NextButtonClick") and "supported but untested" in func("NextButtonClick"),
+      "NextButtonClick tells the player once that a non-US disc is untested")
 nb = func("NextButtonClick")
 check("DumpPage.Values[0] := ResolveDump(DumpPage.Values[0])" in nb
       and "UpdatePage.Values[0] := ResolveUpdate(UpdatePage.Values[0])" in nb and "DumpProblem(" in nb

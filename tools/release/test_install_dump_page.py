@@ -58,7 +58,8 @@ check("SubWith(Dir, 'PS3_GAME" not in g, "DumpProblem's one-folder-down hint com
 check("FindFirst" in sd and "KnownDiscId(SfoField(DiscSfo(AddBackslash(Dir) + FR.Name), 'TITLE_ID'))" in sd and
       "FILE_ATTRIBUTE_DIRECTORY" in sd, "SubDisc offers only subfolders whose PS3_GAME has one of our title ids")
 ids = re.findall(r"'([A-Z]{4}\d{5})'", kd)
-check(ids == ["BCUS98116"] and set(ids) == set(fc.TITLE_IDS), f"KnownDiscId accepts only firstrun_check.TITLE_IDS: {ids}")
+check(ids == list(fc.TITLE_IDS) == ["BCUS98116", "BCES00081", "BCAS20066", "BCJS30032"],
+      f"KnownDiscId accepts exactly firstrun_check.TITLE_IDS: {ids}")
 check(code.index("function SfoField") < code.index("function DiscSfo") < code.index("function KnownDiscId") <
       code.index("function SubDisc") < code.index("function DumpProblem"),
       "SubDisc sits after SfoField, DiscSfo and KnownDiscId, before DumpProblem (Pascal Script order)")
@@ -68,7 +69,7 @@ check("It looks like the 1.29 update folder: give it as the update, and the disc
       "DumpProblem names an update folder given as the dump")
 check(g.index("one folder down") < g.index("It looks like the 1.29 update folder") < g.index("Select the folder"),
       "the update hint sits after the one-folder-down hint and before the accepted forms")
-check(g.index("IsIsoPick(Dir)") < g.index("holds no PS3_GAME") and "<> 'BCUS98116'" in g and "ArchiveProblem" in g,
+check(g.index("IsIsoPick(Dir)") < g.index("holds no PS3_GAME") and "not KnownDiscId(Id)" in g and "ArchiveProblem" in g,
       "the ISO, TITLE_ID and archive branches are kept (ISO first)")
 ok_, up = func("UpdateOK"), func("UpdateProblem")
 check(all(f"'{n}'" in ok_ for n in ("PARAM.SFO", "USRDIR\\EBOOT.BIN", "USRDIR\\added_data_ps3.psarc")),

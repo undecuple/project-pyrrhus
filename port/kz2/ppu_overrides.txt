@@ -61,12 +61,12 @@
 002F0880  # 1.29 shoot/zoom aim-assist helper (= v1.01 0x2E5658): skipped at UpdateLook's lr 0x1741F8 / 0x1742CC when aim_assist is off
 002F9F50  # 1.29 aim assist candidate gather (= v1.01 0x2EECD8): KZ2_AIM_LOG counts
 002FAF70  # 1.29 aim assist target finder, gather + line-of-sight ray (= v1.01 0x2EFCF8): KZ2_AIM_LOG
-002EFC88  # 1.29 aim assist aim-cone factor (= v1.01 0x2E4A60): KZ2_AIM_LOG
+002EFC88  # 1.29 aim assist aim-cone factor (= v1.01 0x2E4A60): KZ2_AIM_LOG; aim_assist_strength scales it, pad + off returns 1
 0019BFD8  # 1.29 world vf 0x18 thunk (= v1.01 0x196660): the aim finder's line-of-sight query, KZ2_AIM_LOG
 0068F6F0  # 1.29 line-of-sight queue submit (= v1.01 0x682000): KZ2_AIM_LOG
 0068FAC0  # 1.29 line-of-sight queue collect (= v1.01 0x6823D0): KZ2_AIM_LOG
 00508D40  # 1.29 job done test (= v1.01 0x4FBC90): KZ2_AIM_LOG counts it at the collect (lr 0x68FB44)
-002EFEB8  # 1.29 aim assist softlock search (= v1.01 0x2E4C90): KZ2_AIM_LOG
+002EFEB8  # 1.29 aim assist softlock search (= v1.01 0x2E4C90): KZ2_AIM_LOG; pad + off leaves no target
 00176208  # 1.29 SoldierJoystickController crouch decision (= v1.01 0x170990): P+0x61 set around the body for crouch_toggle
 0007B388  # 1.29 net-state test (= v1.01 0x7A098): forced to 1 at lr 0x1762AC for crouch_toggle; KZ2_GP_LOG prints the raw result
 001763B0  # 1.29 SoldierJoystickController cover decision (= v1.01 0x170B38): cover_toggle latch frame
@@ -79,3 +79,8 @@
 007D0818  # 1.29 tanf (libm): KZ2_FOV_LOG=1 lists the callers and arguments (an earlier change FOV search)
 0066F3C0  # 1.29 Camera FieldOfView writer (camera, resource): KZ2_FOV_LOG=1 (an earlier change FOV search)
 003D9640  # 1.29 Frustum perspective setter(frustum, pos, ?, ?, f1 near, f2 far, f3 FOV deg, f4 aspect): KZ2_FOV_LOG=1 lists callers (an earlier change FOV search); KZ2_FOV
+00028030  # 1.29 abort(): store 0x0DEADCA7 to 0 (faults on the PS3); host ends the process (public #49)
+003F3160  # 1.29 luaD_throw(L, errcode): "[lua] unprotected error" line before the game's exit(1); lifted runs
+007B7D60  # 1.29 exit(code): "[guest-exit]" line + guest chain; lifted runs
+002EF0C0  # 1.29 aim assist pull (= v1.01 0x2E3E98): aim_assist_strength scales its stick change
+003F9870  # 1.29 luaV_gettable(L, t, key, val): logs a bad L or t with its caller (lr); lifted runs (#49)

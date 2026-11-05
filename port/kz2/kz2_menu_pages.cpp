@@ -60,10 +60,11 @@ void ppu_register_function(uint64_t addr, void (*fn)(ppu_context*));
 int  pad_kb_ui_cmd(const char* cmd, char* out, size_t n);                       /* cellPad.c (patch 2038) */
 int  kz2_port_settings_cmd(const char* cmd, char* out, size_t n);               /* kz2_port_settings.cpp */
 int  stbi_zlib_decode_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);   /* stb_image (cellPngDec.c) */
-const char* kz2_update_dir(void);                                                /* main.cpp: <..>/dev_hdd0/game/BCUS98116/USRDIR */
+const char* kz2_update_dir(void);                                                /* main.cpp: <..>/dev_hdd0/game/<title id>/USRDIR */
 void ps3_indirect_call(ppu_context* ctx);
 extern PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*);
 void kz2_request_close(const char* why);                                         /* main.cpp */
+void kz2_cjk_note_page(const char* path);                                        /* kz2_cjk_face.cpp */
 int  kz2_exe_version(char* out, size_t n);                                       /* kz2_session_log.c */
 #ifdef _WIN32
 int  pad_kb_sibling_path(const wchar_t* name, wchar_t* out, size_t n);           /* cellPad.c (patch 2095) */
@@ -511,6 +512,7 @@ extern "C" int kz2_menu_fetch(ppu_context* ctx)
     const uint32_t str = vm_read32(h + 0x20), listener = vm_read32(h + 0x18);
     if (!str || !listener) return 0;
     const std::string path = guest_string(str + 0x10, 512);
+    kz2_cjk_note_page(path.c_str());   /* the page's language picks the CJK face (kz2_cjk_face.cpp) */
     if (path.find("/kin/menu/") == std::string::npos) return 0;
     const char* kind = ends_with(path, "/kin/menu/mainmenu.jsp") ? "main" :
                        ends_with(path, "/kin/menu/campaign/options.jsp") ? "sp" :

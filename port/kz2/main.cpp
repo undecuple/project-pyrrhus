@@ -88,6 +88,7 @@ void     ppu_fs_register(void);               /* cellFs over the real game direc
 void     lv2_init_syscalls(void);             /* the lv2 syscall table */
 void     cellSaveData_register_ctx_handlers(void); /* 9-argument User*Auto{Load,Save} (patch 3001) */
 void     cellGame_init_from_paramsfo(const char* sfo_path); /* title id etc. from PARAM.SFO */
+const char* cellGame_get_title_id(void);      /* the TITLE_ID read from PARAM.SFO (or the runtime default) */
 extern uint32_t ppu_hle_inject_base;           /* guest EA of the runtime's GCM window (labels, control) */
 int      ppu_run(uint32_t entry_opd, uint32_t stack_top);
 /* KZ3 patch 1032/1033 (runtime/diag/kz3_wait_acct.c): names this host thread's wait-accounting record. The 1033
@@ -394,6 +395,22 @@ static void kz2_no_renderer_exit(void)
     TerminateProcess(GetCurrentProcess(), 2);
 }
 
+/* The game ended itself (public #49): its abort() (kz2_ppu_overrides.cpp) is a store to address 0
+ * that ends the process on the PS3. Here the same end, told plainly: one log line, the log flushed, a message box
+ * (KZ2_NO_ERROR_DIALOG=1 skips it), exit code 5. Before, the dropped store let abort return and std::terminate /
+ * std::unexpected recursed into a stack overflow (0xC00000FD). TerminateProcess as above: other guest threads run on. */
+extern "C" void kz2_guest_fatal_exit(const char* what)
+{
+    fprintf(stderr, "[guest-fatal] the game stopped itself (%s): exiting with code 5\n", what ? what : "?");
+    kz2_log_shutdown();
+    const char* q = getenv("KZ2_NO_ERROR_DIALOG");
+    if (!(q && q[0] == '1'))
+        MessageBoxW(NULL, L"Killzone 2 stopped with an internal error (the game called abort).\n\n"
+                          L"The log folder next to kz2.exe has the details; please attach the newest log to a bug report.",
+                    L"Project Pyrrhus", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    TerminateProcess(GetCurrentProcess(), 5);
+}
+
 /* The message pump inside the vblank catch-up loop. From Project Helghast (the Killzone 3 PC port)
  * v0.1.4 (port/kz3/main.cpp; same author, MIT), KZ3_ -> KZ2_. The inner loop below fires every
  * vblank tick the clock is behind, and each tick drains the FIFO (the live renderer's walker: 29-30 ms a frame on
@@ -620,15 +637,18 @@ static void derive_vfs_root(const char* eboot)
 /* ---------------------------------------------------------------------------
  * Game update (1.29) data: KZ2_UPDATE_DIR=<update>/USRDIR (the name tools/release/launch.py sets)
  * -----------------------------------------------------------------------*/
-/* On a PS3 the 1.29 update lives in /dev_hdd0/game/BCUS98116/USRDIR (EBOOT.BIN, added_data_ps3.psarc,
- * patch_data_ps3/ with the .pspatch files; the game's FIOS reads them itself). Two ways to reach it:
- *  - KZ2_UPDATE_DIR ends in .../dev_hdd0/game/BCUS98116/USRDIR (an RPCS3 tree) and PS3_HDD0_ROOT is unset:
+/* On a PS3 the 1.29 update lives in /dev_hdd0/game/<title id>/USRDIR (EBOOT.BIN, added_data_ps3.psarc,
+ * patch_data_ps3/ with the .pspatch files; the game's FIOS reads them itself). <title id> is the disc's PARAM.SFO
+ * TITLE_ID (cellGame_init_from_paramsfo, read before this; an earlier change, D53): BCUS98116 (US), BCES00081 (Europe),
+ * BCAS20066 (Asia), BCJS30032 (Japan). All four 1.29 EBOOTs are the same file, but the Asian and Japanese updates carry
+ * more files (patch_data_ps3 for their extra languages), so each disc needs its own region's update. Two ways to reach it:
+ *  - KZ2_UPDATE_DIR ends in .../dev_hdd0/game/<title id>/USRDIR (an RPCS3 tree) and PS3_HDD0_ROOT is unset:
  *    PS3_HDD0_ROOT is set to that dev_hdd0, so every /dev_hdd0 path resolves there (sys_fs.c / ppu_fs.cpp).
  *  - any other folder: the runtime's VFS miss hook (g_ps3_vfs_miss_hook, sys_fs.c) retries a host path that still
  *    misses after the USRDIR flattening with its part from USRDIR/ on under KZ2_UPDATE_DIR. Only misses are
  *    retried, so a disc file is never shadowed (ASSUMPTION: the update adds files and does not re-use disc names;
  *    true for added_data_ps3.psarc and patch_data_ps3/).
- * Without KZ2_UPDATE_DIR, <vfs root>/dev_hdd0/game/BCUS98116/USRDIR is used when it exists (the stage layout of
+ * Without KZ2_UPDATE_DIR, <vfs root>/dev_hdd0/game/<title id>/USRDIR is used when it exists (the stage layout of
  * tools/runtime/stage.sh, so the boot check needs no extra variable). Each miss-hook hit is logged ("[kz2-update] ...",
  * first 64); with PS3_HDD0_ROOT the opens show as ordinary "[fs] open '/dev_hdd0/...'" lines. */
 extern "C" void (*g_ps3_vfs_miss_hook)(char* path, size_t cap);
@@ -675,12 +695,39 @@ static void skip_intro_option(void)
     printf("[boot] KZ2_SKIP_INTRO: no known start-page word found; nothing changed\n");
 }
 
+/* TITLE_ID of a PARAM.SFO (little-endian PSF: key table @8, data table @12, count @16, 16-byte entries from 20), or ""
+ * (the update's own id, for the [boot] line; cellGame keeps the disc's). */
+static void sfo_title_id(const char* path, char* out, size_t cap)
+{
+    out[0] = 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    unsigned char d[8192];
+    const size_t n = fread(d, 1, sizeof d, f);
+    fclose(f);
+    if (n < 20 || memcmp(d, "\0PSF", 4) != 0) return;
+    auto rd16 = [&](size_t o) -> uint32_t { return o + 2 <= n ? (uint32_t)(d[o] | d[o + 1] << 8) : 0; };
+    auto rd32 = [&](size_t o) -> uint32_t { return o + 4 <= n ? (uint32_t)(d[o] | d[o + 1] << 8 | d[o + 2] << 16 | (uint32_t)d[o + 3] << 24) : 0; };
+    const uint32_t kt = rd32(8), dt = rd32(12), cnt = rd32(16);
+    for (uint32_t i = 0; i < cnt && 20 + 16 * (size_t)i + 16 <= n; i++) {
+        const size_t e = 20 + 16 * (size_t)i;
+        const size_t k = (size_t)kt + rd16(e), v = (size_t)dt + rd32(e + 12), len = rd32(e + 4);
+        if (k + 9 > n || memcmp(d + k, "TITLE_ID", 9) != 0) continue;
+        if (v >= n) return;
+        size_t m = len < cap - 1 ? len : cap - 1;
+        if (v + m > n) m = n - v;
+        memcpy(out, d + v, m); out[m] = 0;
+        return;
+    }
+}
+
 static void setup_update_dir(void)
 {
     const char* e = getenv("KZ2_UPDATE_DIR");
-    if (!e || !*e) {   /* the stage layout (tools/runtime/stage.sh): <vfs root>/dev_hdd0/game/BCUS98116/USRDIR */
+    const char* tid = cellGame_get_title_id();   /* the disc's TITLE_ID (BCUS98116 on the US disc) */
+    if (!e || !*e) {   /* the stage layout (tools/runtime/stage.sh): <vfs root>/dev_hdd0/game/<title id>/USRDIR */
         static char staged[1100]; struct stat sst;
-        snprintf(staged, sizeof staged, "%s/dev_hdd0/game/BCUS98116/USRDIR", ppu_vfs_root ? ppu_vfs_root : ".");
+        snprintf(staged, sizeof staged, "%s/dev_hdd0/game/%s/USRDIR", ppu_vfs_root ? ppu_vfs_root : ".", tid);
         if (stat(staged, &sst) != 0) return;
         e = staged;
     }
@@ -688,8 +735,9 @@ static void setup_update_dir(void)
     for (char* p = s_update_dir; *p; p++) if (*p == '\\') *p = '/';
     size_t n = strlen(s_update_dir);
     while (n > 1 && s_update_dir[n - 1] == '/') s_update_dir[--n] = 0;
-    static const char tail[] = "/game/BCUS98116/USRDIR";
-    const size_t tl = sizeof tail - 1;
+    char tail[96];   /* "/game/<title id>/USRDIR": another region's update tree takes the miss-hook path below */
+    snprintf(tail, sizeof tail, "/game/%s/USRDIR", tid);
+    const size_t tl = strlen(tail);
     const char* hdd0 = getenv("PS3_HDD0_ROOT");
     if ((!hdd0 || !*hdd0) && n > tl && strcmp(s_update_dir + n - tl, tail) == 0) {
         snprintf(s_hdd0_env, sizeof s_hdd0_env, "PS3_HDD0_ROOT=%.*s", (int)(n - tl), s_update_dir);
@@ -703,6 +751,16 @@ static void setup_update_dir(void)
     if (!getenv("PS3_GAME_ATTR_PATCH")) _putenv("PS3_GAME_ATTR_PATCH=1");
     struct stat st;
     if (stat(s_update_dir, &st) != 0) printf("[boot] update: %s does not exist\n", s_update_dir);
+    /* An earlier change (D53): the disc's and the update's title ids. Each region's 1.29 update belongs to its own disc (the
+     * Asian and Japanese updates carry more files than the US/European one); the first run refuses a mix, the runtime
+     * only warns, since the EBOOT is the same file in all four. */
+    char usfo[1100], uid[32];
+    snprintf(usfo, sizeof usfo, "%s/../PARAM.SFO", s_update_dir);
+    sfo_title_id(usfo, uid, sizeof uid);
+    printf("[boot] title id: disc %s, update %s\n", tid, uid[0] ? uid : "(no PARAM.SFO beside USRDIR)");
+    if (uid[0] && strcmp(uid, tid) != 0)
+        printf("[boot] WARNING: the update is %s's but the disc is %s: the game may miss files of its own region's "
+               "update (install the %s update)\n", uid, tid, tid);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1055,6 +1113,15 @@ int main(int argc, char** argv)
     skip_intro_option();
     derive_vfs_root(eboot);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
+    {   /* title id from PARAM.SFO (BCUS98116 on the US disc) instead of the runtime default: the update folder
+         * (setup_update_dir), the save directory <id>-KILLZONE2, the SysCache id, trophies (patch 5006) and the game's
+         * own region code (@0x00063CA0 matches the id's prefix: BCES 0, BCJS 1, BCUS 2, BCKS 3, BCAS 5; kept at
+         * 0x00ED54C4). Read before setup_update_dir since an earlier change (was after kz2 registration; nothing in between
+         * reads or sets it). */
+        char sfo[1100];
+        snprintf(sfo, sizeof sfo, "%s/PS3_GAME/PARAM.SFO", ppu_vfs_root);
+        cellGame_init_from_paramsfo(sfo);
+    }
     setup_update_dir();
     kz2_split_roots();       /* KZ2_CACHE_ROOT: unset = today's layout */
 
@@ -1068,11 +1135,6 @@ int main(int argc, char** argv)
     kz2_menu_install();      /* EXIT TO DESKTOP, Keyboard page: ExitAll and the Lua bridge (kz2_menu_pages.cpp) */
     kz2_prompts_register();  /* prompt glyph sets and keycaps: keys and label fonts for patches 2091-2093 */
     cellSaveData_register_ctx_handlers();   /* 9-argument User*Auto{Load,Save} (patch 3001) */
-    {   /* title id from PARAM.SFO (BCUS98116) instead of the runtime default: save directory and SysCache id */
-        char sfo[1100];
-        snprintf(sfo, sizeof sfo, "%s/PS3_GAME/PARAM.SFO", ppu_vfs_root);
-        cellGame_init_from_paramsfo(sfo);
-    }
 
     g_ps3_guest_caller = harness_guest_caller;
     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);

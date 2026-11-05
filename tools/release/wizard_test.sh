@@ -350,9 +350,10 @@ zip)
   proton run 'C:\windows\system32\cmd.exe' /c ver >/dev/null 2>&1; mark "prefix-ready"
   python3 -I -m zipfile -e "$ZIP" "$G" && mark "unzipped"; du -sb "$G" | cut -f1
   D="$G/Project Pyrrhus"; WD='C:\Games\Project Pyrrhus'
-  # run.cmd's questions: dump, update, EBOOT, check now (n), start the build (Enter = yes); the pause reads EOF. A
-  # driver .cmd holds the quoted paths (cmd /c on a Wine-built command line mangles nested quotes).
-  printf '%s\r\n' "${KZ2_WT_DUMP:?}" "${KZ2_WT_UPDATE:?}" "${KZ2_WT_EBOOT:?}" n '' '' > "$G/answers.txt"
+  # run.cmd's questions: RPCS3 folder (Enter = pick the folders), dump, update, EBOOT, update check (n), then the
+  # setup questions (pad layout, prompts, display, ...) and start the build, all Enter = default; the pause reads EOF. A driver .cmd holds the quoted paths (cmd /c on a Wine-built command line
+  # mangles nested quotes).
+  printf '%s\r\n' '' "${KZ2_WT_DUMP:?}" "${KZ2_WT_UPDATE:?}" "${KZ2_WT_EBOOT:?}" n '' '' '' '' '' '' '' '' '' '' '' '' > "$G/answers.txt"
   printf '@echo off\r\ncall "%s\\run.cmd" < C:\\Games\\answers.txt > C:\\Games\\run-out.txt 2>&1\r\n' "$WD" > "$G/drive.cmd"
   proton run 'C:\windows\system32\cmd.exe' /c 'C:\Games\drive.cmd' >"$SHOTS/proton-build.out" 2>&1
   mark "run.cmd-returned"; grep -m1 "^RESULT " "$D"/Project-Pyrrhus-firstrun*.log 2>/dev/null

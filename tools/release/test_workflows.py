@@ -117,6 +117,13 @@ def test_release():
     check("nix-parts/fonts/NotoSans-Regular.ttf" in inst0 and "work/release/fonts/" in inst0
           and inst0.index("NotoSans-Regular.ttf") < inst0.index("python3 tools/release/assemble_payload.py"),
           "release.yml: the installer job copies the face to work/release/fonts before assembling the payload")
+    # runtime 78: the CJK collection, made the same way (mkfont_cjk.py from noto-fonts-cjk-sans) and carried along
+    check("noto-fonts-cjk-sans" in npart and "tools/runtime/mkfont_cjk.py nix-parts/fonts/NotoSansCJK-Regular.ttc" in npart
+          and npart.index("noto-fonts-cjk-sans") < npart.index("mkfont_cjk.py") < npart.index("upload-artifact"),
+          "release.yml: nix-parts realises noto-fonts-cjk-sans, makes NotoSansCJK-Regular.ttc before the upload")
+    check("nix-parts/fonts/NotoSansCJK-Regular.ttc" in inst0
+          and inst0.index("NotoSansCJK-Regular.ttc") < inst0.index("python3 tools/release/assemble_payload.py"),
+          "release.yml: the installer job copies the CJK collection to work/release/fonts before assembling")
     writers = [j for j, b in js.items() if "contents: write" in b]
     check(writers == ["publish"], "release.yml: only the publish job can write", writers)
     pub = js.get("publish", "")

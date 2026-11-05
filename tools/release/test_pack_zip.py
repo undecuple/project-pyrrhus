@@ -62,6 +62,8 @@ def payload(tmp):
     put(root, "licenses/Rajdhani-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
     put(root, "fonts/NotoSans-Regular.ttf", b"\0\1\0\0" + bytes(700))
     put(root, "licenses/NotoSans-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
+    put(root, "fonts/NotoSansCJK-Regular.ttc", b"ttcf\0\2\0\0" + bytes(700))
+    put(root, "licenses/NotoSansCJK-OFL.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
     put(root, "fonts/OFL.txt", "SIL OPEN FONT LICENSE Version 1.1\n")
     pe = bytearray(64) + b"PE\0\0" + (0x8664).to_bytes(2, "little") + bytes(16) + (0x2000).to_bytes(2, "little")
     pe[:2], pe[60:64] = b"MZ", (64).to_bytes(4, "little")      # a minimal 64-bit PE DLL header (assemble_payload.pe_x64_problem)
@@ -111,11 +113,12 @@ def main():
             names = [i.filename for i in infos]
             same = all(z.read(f"Project Pyrrhus/{rel}") == open(p, "rb").read() for rel, p in pz.walk(root))
         check(names == sorted(names) and all(n.startswith("Project Pyrrhus/") for n in names)
-              and len(names) == 23 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
+              and len(names) == 25 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
               names)
         check({"Project Pyrrhus/runtime/SDL3.dll", "Project Pyrrhus/licenses/SDL3-LICENSE.txt"} <= set(names),
               "SDL3.dll and its licence are in the zip", names)
-        check({"Project Pyrrhus/fonts/NotoSans-Regular.ttf", "Project Pyrrhus/licenses/NotoSans-OFL.txt"} <= set(names), "the Noto Sans face and its OFL text are in the zip")
+        check({"Project Pyrrhus/fonts/NotoSans-Regular.ttf", "Project Pyrrhus/licenses/NotoSans-OFL.txt",
+               "Project Pyrrhus/fonts/NotoSansCJK-Regular.ttc", "Project Pyrrhus/licenses/NotoSansCJK-OFL.txt"} <= set(names), "the Noto Sans face and its OFL text are in the zip")
         check({"Project Pyrrhus/fonts/Rajdhani-Medium.ttf", "Project Pyrrhus/fonts/Rajdhani-Bold.ttf",
                "Project Pyrrhus/fonts/OFL.txt", "Project Pyrrhus/licenses/Rajdhani-OFL.txt"} <= set(names), "the notice fonts and their OFL text are in the zip",
               names)
@@ -165,6 +168,10 @@ def main():
                 "fonts/NotoSans-Regular.ttf: missing", remanifest=True)
         refused("no Noto Sans licence", lambda r: os.remove(os.path.join(r, "licenses", "NotoSans-OFL.txt")),
                 "licenses/NotoSans-OFL.txt: missing", remanifest=True)
+        refused("no Noto Sans CJK collection (runtime 78)", lambda r: os.remove(os.path.join(r, "fonts", "NotoSansCJK-Regular.ttc")),
+                "fonts/NotoSansCJK-Regular.ttc: missing", remanifest=True)
+        refused("no Noto Sans CJK licence", lambda r: os.remove(os.path.join(r, "licenses", "NotoSansCJK-OFL.txt")),
+                "licenses/NotoSansCJK-OFL.txt: missing", remanifest=True)
         refused("no licence beside the fonts", lambda r: os.remove(os.path.join(r, "fonts", "OFL.txt")),
                 "fonts/OFL.txt: missing", remanifest=True)
         refused("game name", lambda r: put(r, "port/EBOOT.BIN", "x\n"), "game-data name", remanifest=True)

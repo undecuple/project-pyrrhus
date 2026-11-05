@@ -101,7 +101,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
 {
     c->aim_assist = KZ2_AIM_AUTO; c->crouch_toggle = 0; c->cover_toggle = 0;
     c->mouse_look = 1; c->mouse_sens = KZ2_MOUSE_SENS_DEF; c->mouse_zoom = 1.0f; c->mouse_yaw = KZ2_MOUSE_YAW_DEF;
-    c->mouse_invert = 0; c->motion = KZ2_MOTION_AUTO; c->dsu_port = 0;
+    c->mouse_invert = 0; c->motion = KZ2_MOTION_AUTO; c->dsu_port = 0; c->aim_strength = 1.0f;
     int bad = 0, in = 0;   /* in: 1 = [gameplay], 2 = [mouse] */
     const char* p = text ? text : "";
     while (*p) {
@@ -135,6 +135,7 @@ int kz2_gp_ini_parse(const char* text, kz2_gameplay_cfg* c)
         else if (ieq(k, "cover_toggle")) { const int x = kz2_gp_parse_bool(v); if (x < 0) bad++; else c->cover_toggle = x; }
         else if (ieq(k, "motion")) { const int x = kz2_gp_parse_motion(v); if (x < 0) bad++; else c->motion = x; }
         else if (ieq(k, "dsu_port")) { const int x = kz2_gp_parse_dsu(v); if (x < 0) bad++; else c->dsu_port = x; }
+        else if (ieq(k, "aim_assist_strength")) { const float f = kz2_gp_parse_strength(v); if (f < 0) bad++; else c->aim_strength = f; }
     }
     return bad;
 }
@@ -201,6 +202,42 @@ int kz2_gp_aim_on(const kz2_gameplay_cfg* c, int look_is_mouse)
     if (c->aim_assist == KZ2_AIM_OFF) return 0;
     return look_is_mouse ? 0 : 1;
 }
+
+int kz2_gp_aim_mode(const kz2_gameplay_cfg* c, int look_is_mouse)
+{
+    if (kz2_gp_aim_on(c, look_is_mouse)) return KZ2_AIM_MODE_FULL;
+    return look_is_mouse ? KZ2_AIM_MODE_SKIP : KZ2_AIM_MODE_SMOOTH;
+}
+
+float kz2_gp_parse_strength(const char* s)
+{
+    if (!s || !*s) return -1.0f;
+    char* e;
+    const double d = strtod(s, &e);
+    while (*e == ' ' || *e == '\t') e++;
+    if (e == s || *e || !isfinite(d) || d < 0.0 || d > 4.0) return -1.0f;
+    return (float)d;
+}
+
+int kz2_gp_apply_strength_env(kz2_gameplay_cfg* c, const char* s)
+{
+    if (!s || !*s) return 0;
+    const float f = kz2_gp_parse_strength(s);
+    if (f < 0) return 1;
+    c->aim_strength = f;
+    return 0;
+}
+
+float kz2_aim_scale_cone(float f, float s)
+{
+    if (s == 1.0f) return f;
+    float r = 1.0f - s * (1.0f - f);
+    if (!(r > 0.0f)) r = 0.0f;   /* NaN too */
+    if (r > 1.0f) r = 1.0f;
+    return r;
+}
+
+float kz2_aim_scale_pull(float d, float s) { return s == 1.0f ? d : d * s; }
 
 int kz2_gp_aim_skip(int aim_on, uint32_t lr, const uint32_t* sites, int nsites)
 {
@@ -301,15 +338,16 @@ const kz2_gameplay_cfg* kz2_gameplay_get(void)
                      kz2_gp_apply_mouse_env(&cfg, getenv("KZ2_MOUSE_LOOK"), getenv("KZ2_MOUSE_SENS"), getenv("KZ2_MOUSE_ZOOM_SENS"),
                                             getenv("KZ2_MOUSE_YAW"), getenv("KZ2_MOUSE_INVERT")) +
                      kz2_gp_apply_motion_env(&cfg, getenv("KZ2_MOTION")) +
-                     kz2_gp_apply_dsu_env(&cfg, getenv("KZ2_DSU_PORT"));
+                     kz2_gp_apply_dsu_env(&cfg, getenv("KZ2_DSU_PORT")) +
+                     kz2_gp_apply_strength_env(&cfg, getenv("KZ2_AIM_ASSIST_STRENGTH"));
     /* The old switch of patch 4015's stand-in: KZ2_MOTION_STICK=0 (no stand-in) is motion = on when KZ2_MOTION is unset. */
     { const char* m = getenv("KZ2_MOTION"), *o = getenv("KZ2_MOTION_STICK");
       if ((!m || !*m) && o && o[0] == '0') cfg.motion = KZ2_MOTION_ON; }
     static const char* const an[3] = { "auto", "on", "off" };
     fprintf(stderr, "[gameplay] aim_assist %s, crouch_toggle %d, cover_toggle %d, mouse_look %d (sensitivity %.3g x %.4g deg/count,"
-            " zoom x%.3g, invert_y %d), motion %s, dsu_port %d (gameplay.ini %s; %d bad value(s) ignored)\n",
+            " zoom x%.3g, invert_y %d), motion %s, dsu_port %d, aim_assist_strength %.3g (gameplay.ini %s; %d bad value(s) ignored)\n",
             an[cfg.aim_assist], cfg.crouch_toggle, cfg.cover_toggle, cfg.mouse_look, cfg.mouse_sens, cfg.mouse_yaw,
-            cfg.mouse_zoom, cfg.mouse_invert, an[cfg.motion], cfg.dsu_port, file ? "read" : "not there", bad + benv);
+            cfg.mouse_zoom, cfg.mouse_invert, an[cfg.motion], cfg.dsu_port, cfg.aim_strength, file ? "read" : "not there", bad + benv);
     done = 1;
     return &cfg;
 }

@@ -136,7 +136,8 @@ repo; keep that limit.
 ## What the user supplies
 
 Nothing from the game is in this repository or in a release. Each user brings their own copy of the US disc
-(BCUS98116), the 1.29 update, and a decrypted executable made from their own copy. This project gives no tools or
+(BCUS98116; the European, Asian and Japanese discs are accepted but untested), the 1.29 update of the same region,
+and a decrypted executable made from their own copy. This project gives no tools or
 instructions for making that executable; [RPCS3](https://rpcs3.net/) and its documentation are the place to start
 for the game files. Do not add a decryption procedure, keys, or links to either to your fork's docs or tests. The full
 list is in [requirements.md](requirements.md). Do not add disc files, archives, executables or extracted assets to

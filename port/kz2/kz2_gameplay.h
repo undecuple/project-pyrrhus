@@ -27,6 +27,11 @@ typedef struct {
     /* an earlier change (ENHANCEMENT; from KZ3 patch 4028): the UDP port of a DSU (cemuhook) motion server on 127.0.0.1, 0 = off
      * (default). dsu_port = 0|off, on (= 26760, the cemuhook default) or 1024..65535; KZ2_DSU_PORT. cellPad patch 6062. */
     int   dsu_port;
+    /* an earlier change (ENHANCEMENT): a factor on the game's own aim assist, 0..4, 1 = the game's
+     * strength (default: nothing changes). It scales the softlock slowdown (the aim-cone factor f -> 1 - s(1 - f),
+     * clamped to 0..1) and the pull (the stick change the pull adds, times s). aim_assist_strength,
+     * KZ2_AIM_ASSIST_STRENGTH. 0 leaves the game's stick smoother on and every target help at nothing. */
+    float aim_strength;
 } kz2_gameplay_cfg;
 
 #define KZ2_DSU_PORT_DEFAULT 26760   /* the port DSU servers (DS4Windows, SteamDeckGyroDSU, ...) listen on by default */
@@ -75,6 +80,20 @@ void kz2_look_note(kz2_look_src* s, float stick_x, float stick_y, float dead, in
 
 /* Aim assist is on? auto = on unless the look comes from the mouse (kz2_look_src.mouse). */
 int kz2_gp_aim_on(const kz2_gameplay_cfg* c, int look_is_mouse);
+/* what UpdateLook's ApplyInputModifier does. KZ2_AIM_MODE_SKIP: not run (the mouse looks and the assist is
+ * auto or off: the smoother's ramp-in is the pad's, a mouse needs none; unchanged since an earlier change); KZ2_AIM_MODE_FULL:
+ * the game's assist (scaled by aim_strength); KZ2_AIM_MODE_SMOOTH: a pad looks and aim_assist = off: the modifier runs
+ * for its stick smoother only, the softlock search leaves no target and the aim cone returns 1 (no slowdown, no pull). */
+enum { KZ2_AIM_MODE_SKIP = 0, KZ2_AIM_MODE_FULL = 1, KZ2_AIM_MODE_SMOOTH = 2 };
+int kz2_gp_aim_mode(const kz2_gameplay_cfg* c, int look_is_mouse);
+/* aim_assist_strength: a finite number 0..4 -> that; NULL, "", a word, < 0 or > 4 -> -1. */
+float kz2_gp_parse_strength(const char* s);
+/* KZ2_AIM_ASSIST_STRENGTH (NULL = unset) overrides the file; a bad value is ignored and counted. */
+int kz2_gp_apply_strength_env(kz2_gameplay_cfg* c, const char* s);
+/* The aim-cone factor (1 = no slowdown) at strength s: 1 - s (1 - f), clamped to 0..1; s = 1 returns f unchanged. */
+float kz2_aim_scale_cone(float f, float s);
+/* The pull's stick change at strength s: d x s; s = 1 returns d unchanged. */
+float kz2_aim_scale_pull(float d, float s);
 /* The UpdateLook call sites (return addresses, per EBOOT) of ApplyInputModifier / the shoot-zoom assist helper. A call
  * is skipped only when the assist is off AND its return address is one of these; the other callers (follow camera,
  * mounted gun) and the sprint slowdown (the modifier pointer is never touched) are not. */

@@ -114,9 +114,12 @@ and the newest log file).
   default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
   aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
   with `aim_assist = auto` the aim assist turns off while the mouse aims.
+- **Regions and languages:** the European, Asian and Japanese discs are untested. The language page appears at every
+  start on a new profile, and the Keyboard entry is missing from non-English main menus that have no Controls row.
+- **Closes after a checkpoint restart (rare, #49):** the game may close with an internal-error message after restarting
+  from a checkpoint. Please attach the newest log from the `logs` folder if it happens.
 - **Aim assist with a pad is subtle:** it only helps while an enemy's body is in clear view, and it nudges the aim by a
-  small amount, as in the game's own tuning. Turning `aim_assist` off with a pad also removes the game's gradual start of
-  a turn (to be fixed).
+  small amount, as in the game's own tuning. `aim_assist_strength` (0 to 4) in `gameplay.ini` makes it stronger.
 - **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks and push the right stick to one side (more than half way) and then the other; a controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. `motion = off` in `gameplay.ini` always uses the stick. With a keyboard, hold Z (or X) at the valve or charge, then switch to the other key (`tilt_left` / `tilt_right` in `keybinds.ini`). The real motion sensor reaches the game (the loading screen tilts). A pad reached over XInput has no motion sensors, so the stick is used. A pad whose gyro reaches Windows only through a DSU (cemuhook) server (DS4Windows, DualSenseX, a Steam Deck or phone DSU app) can tilt for real: set `dsu_port = on` (port 26760) or the server's port in `gameplay.ini`; it is off by default, talks only to 127.0.0.1, and was tested only against a fake server on the same computer, not a real one (the direction of the tilt is not yet checked; both directions are used). Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
 - **Keyboard and mouse:** the game can be played with a keyboard and mouse: the mouse looks and aims, and its buttons fire and zoom by default (`keybinds.ini`). Mouse look has only been checked in scripted test runs, not yet by hand, and it does not work in vehicles or on mounted guns yet.
 
@@ -124,7 +127,12 @@ and the newest log file).
 
 - **Downloadable content:** the downloadable content (the multiplayer map packs) is not used yet, even when it is
   installed for RPCS3. The campaign does not need it.
-- **US disc only:** the port targets the US disc (BCUS98116) with update 1.29. Other regions are untested.
+- **Regions:** the port is built and tested on the US disc (BCUS98116) with update 1.29. The European (BCES00081),
+  Asian (BCAS20066) and Japanese (BCJS30032) discs, each with its own region's 1.29 update, are accepted but
+  untested: the code is the same (the 1.29 EBOOT is identical in all four), the data differs (the European game
+  archive is the US one; the Asian and Japanese archives and update data are their own), and no one has played them
+  through yet. Their languages and Japanese intro movie are not checked. A disc of one region with another region's
+  update is refused.
 - **Update 1.29:** its added archives and patch files are read; the effect of the patches on the game's data is not
   fully checked yet.
 - **You need a decrypted main program made from your own copy**, see [requirements.md](requirements.md). This project

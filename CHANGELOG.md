@@ -4,6 +4,23 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Added
+- The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with the 1.29 update of its own region. The code is the same (the 1.29 EBOOT is identical in all four regions), the disc data differs, and no one has played them through yet. The first-run check says "untested" and goes on (#48).
+- `aim_assist_strength` in `gameplay.ini` (0 to 4, default 1 = the game's own strength) scales the aim assist's slowdown and pull.
+
+### Changed
+- The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names the disc's and the update's ids and warns when they differ.
+- Trophies are read from the running region's update when several regions' updates are installed.
+- A disc of one region with another region's update is refused, and the message names both regions; a dump whose game archive belongs to another region's disc fails the archive check (A1).
+- "Use my RPCS3 install" finds any of the four discs and always pairs it with the update of its own id.
+- With a controller and `aim_assist = off`, the game's own stick smoothing stays; only the target help is removed. Mouse look is unchanged.
+
+### Fixed
+- Japanese, Korean and Chinese text is no longer blank: the game's system font now includes Noto Sans CJK (OFL), cut to the characters the game uses, with the Japanese, Korean, Simplified, Traditional and Hong Kong letterforms chosen by the game's language (the PS3 drew all Han characters in Japanese style).
+- A crash with a stack overflow (0xC00000FD) when the game stopped itself after an internal error: the game now closes with a message and a log line instead (#49). The error that started it is not found yet; the log now records it.
+
 ## [0.1.10] - 2026-11-04 (pre-release)
 
 ### Added

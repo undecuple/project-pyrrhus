@@ -12,7 +12,7 @@
 [![Downloads](https://img.shields.io/github/downloads/undecuple/project-pyrrhus/total)](https://github.com/undecuple/project-pyrrhus/releases)
 
 Project Pyrrhus is a native Windows x64 port of **Killzone 2** (PS3, 2009), made by static recompilation of the game's own
-code. You build it on your PC from your own US disc (BCUS98116) with the 1.29 update; it is **not an emulator** and
+code. You build it on your PC from your own disc (US, tested; European, Asian and Japanese, untested) with the 1.29 update; it is **not an emulator** and
 **not a rewrite**, and it ships none of the game.
 
 **Status:** <!-- version -->[v0.1.10](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.10)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs (below). MIT licence. Direct3D 12 only.
@@ -47,8 +47,11 @@ Optional features, same three states (both new in 0.1.7):
 
 **You need:**
 
-- **Your Killzone 2 disc** (US, BCUS98116), dumped as a folder or as a decrypted `.iso`.
-- **The 1.29 update** from your copy (on a PS3 or in RPCS3: the `dev_hdd0/game/BCUS98116` folder).
+- **Your Killzone 2 disc**, dumped as a folder or as a decrypted `.iso`: US (BCUS98116, tested), or Europe
+  (BCES00081), Asia (BCAS20066) or Japan (BCJS30032), which are accepted but untested: the code is the same, the data
+  differs, and no one has played them through yet ([docs/GETTING-FILES.md](docs/GETTING-FILES.md#regions)).
+- **The 1.29 update of the same region** from your copy (on a PS3 or in RPCS3: the `dev_hdd0/game/<title id>` folder,
+  such as `dev_hdd0/game/BCUS98116`).
 - **The decrypted 1.29 EBOOT** (`EBOOT.elf`), made from that update's `EBOOT.BIN`.
 - Windows 10 or 11 (64-bit) with a CPU that has AVX and FMA3 (about 2013 or later), 16 GB of RAM advised for the build, and a Direct3D 12 graphics card: [docs/requirements.md](docs/requirements.md).
 

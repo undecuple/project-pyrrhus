@@ -21,6 +21,11 @@ stored the host's stale xmm1/xmm2). Changed for KZ2, after an earlier change's c
 Also needed (port/kz2/hle_kz2.cpp, same round): KZ2's own context handler for cellFontInitializeWithRevision returned 0
 without calling cellFontInit, so cellFontOpenFontset failed with UNINITIALIZED and the game gave up on the system font
 for good; it is removed and the runtime's flat cellFontInitializeWithRevision -> cellFontInit runs.
+An earlier change (D53): a second file in the chain, NotoSansCJK-Regular.ttc (tools/runtime/mkfont_cjk.py: Noto Sans CJK, OFL
+1.1, a static Regular instance with TrueType outlines cut to the characters of the game's own text), so Japanese,
+Korean and Chinese text is no longer blank; a collection's faces are all loaded (stb_truetype offsets per index) and
+the face is picked per lookup by the weak kz2_cjk_face_index() (port/kz2/kz2_cjk_face.cpp: the game's page language),
+so Han characters get their language's shapes (0 JP, 1 KR, 2 SC, 3 TC, 4 HK); .ttc is a searched extension.
 Host test: tools/runtime/test_font_fallback.sh. Upstream candidate (general: the outline API, a fontset backed by real
 files, SetScalePixel's float arguments, the file cache as the record pool).
 
@@ -148,7 +153,7 @@ diff -ruN a/libs/font/cellFont.c b/libs/font/cellFont.c
 diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 --- /dev/null
 +++ b/libs/font/cellFontOutline.c
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,524 @@
 +/*
 + * KZ2 patch 6061 - cellFont outline API on a bundled font (system fontsets).
 + *
@@ -166,9 +171,15 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 + * then per character cellFontGenerateCharGlyph @0x0004467C, the game's converter @0x000438D0, cellFontDeleteGlyph
 + * @0x000446AC. Without these functions the imports took the unresolved-NID path (CELL_OK, out-parameters untouched).
 + *
-+ * Font files, tried per code point in this order (the first whose cmap has the character wins):
-+ *   $KZ2_FONT_DIR, else <exe dir>/fonts, else ./fonts: NotoSans-Regular.ttf (SIL OFL 1.1, Latin + Greek + Cyrillic;
-+ *   tools/runtime/mkfont_noto.py makes it from nixpkgs' noto-fonts). Nothing is extracted or decrypted here.
++ * Font files, tried per code point in this order (the first whose cmap has the character wins), from $KZ2_FONT_DIR,
++ * else <exe dir>/fonts, else ./fonts. Nothing is extracted or decrypted here.
++ *   1. NotoSans-Regular.ttf (SIL OFL 1.1, Latin + Greek + Cyrillic; tools/runtime/mkfont_noto.py makes it from
++ *      nixpkgs' noto-fonts).
++ *   2. An earlier change (D53): NotoSansCJK-Regular.ttc (SIL OFL 1.1; tools/runtime/mkfont_cjk.py: Noto Sans CJK cut to the
++ *      characters of the game's own text, TrueType outlines), a collection of five faces with one glyph set: 0 JP,
++ *      1 KR, 2 SC, 3 TC, 4 HK. Han characters are drawn differently per language, so the face is picked per lookup by
++ *      kz2_cjk_face_index() (weak; port/kz2: the game's current page language), 0 when nothing defines it. The PS3's
++ *      fontset 0x109 (Rodin, New Rodin, YG, DFHEI5) draws every Han character from its Japanese face first.
 + *
 + * Guest layout (the game's reads in 0x438D0; big-endian; matches RPCS3's CellFontGlyph, read, not copied):
 + *   CellFontGlyph (0x40 bytes): +0x08 CellFontGlyphMetrics (8 floats: width, height, h_bearing_x, h_bearing_y,
@@ -270,12 +281,30 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +}
 +
 +/* ---- faces and chains ---------------------------------------------------------------------------------------- */
++#define MAX_SUBFACES 8   /* faces of a collection (.ttc); a plain font has one */
 +typedef struct {
 +    char            path[1200];   /* UTF-8 */
 +    int             tried, ok;
 +    unsigned char*  data;
-+    stbtt_fontinfo  info;
++    stbtt_fontinfo  info;         /* face 0 */
++    stbtt_fontinfo  sub[MAX_SUBFACES];
++    int             nsub;
 +} KzFace;
++
++/* which face of a collection to use (port/kz2 defines it; weak so a host test without it still links). */
++extern __attribute__((weak)) int kz2_cjk_face_index(void);
++static const stbtt_fontinfo* face_info(const KzFace* f)
++{
++    int i = (f->nsub > 1 && kz2_cjk_face_index) ? kz2_cjk_face_index() : 0;
++    if (i < 0 || i >= f->nsub) i = 0;
++    static int last = -1;
++    if (f->nsub > 1 && i != last) {   /* once per change: which language's shapes the next characters get */
++        last = i;
++        printf("[cellFont] fontset: %s face %d of %d\n", f->path, i, f->nsub);
++        fflush(stdout);
++    }
++    return &f->sub[i];
++}
 +
 +#define MAX_FACES 8
 +#define MAX_CHAIN 4
@@ -302,9 +331,9 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +/* First existing dir/base+ext; returns 1 and fills out. */
 +static int find_file(const char* dir, const char* base, char* out, size_t cap)
 +{
-+    static const char* exts[] = { ".ttf", ".TTF", ".otf", ".OTF" };
++    static const char* exts[] = { ".ttf", ".TTF", ".otf", ".OTF", ".ttc", ".TTC" };
 +    if (!dir || !*dir) return 0;
-+    for (int i = 0; i < 4; i++) {
++    for (int i = 0; i < 6; i++) {
 +        snprintf(out, cap, "%s/%s%s", dir, base, exts[i]);
 +        if (file_exists(out)) return 1;
 +    }
@@ -333,12 +362,20 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +    f->data = (unsigned char*)malloc((size_t)sz);
 +    if (!f->data || fread(f->data, 1, (size_t)sz, fp) != (size_t)sz) { fclose(fp); free(f->data); f->data = NULL; return 0; }
 +    fclose(fp);
-+    if (!stbtt_InitFont(&f->info, f->data, stbtt_GetFontOffsetForIndex(f->data, 0))) {
++    int nf = stbtt_GetNumberOfFonts(f->data);
++    if (nf < 1) nf = 1;
++    if (nf > MAX_SUBFACES) nf = MAX_SUBFACES;
++    for (f->nsub = 0; f->nsub < nf; f->nsub++) {
++        int off = stbtt_GetFontOffsetForIndex(f->data, f->nsub);
++        if (off < 0 || !stbtt_InitFont(&f->sub[f->nsub], f->data, off)) break;
++    }
++    if (f->nsub == 0) {
 +        printf("[cellFont] fontset: cannot parse %s\n", f->path);
 +        free(f->data); f->data = NULL; return 0;
 +    }
++    f->info = f->sub[0];
 +    f->ok = 1;
-+    printf("[cellFont] fontset: loaded %s (%ld bytes)\n", f->path, sz);
++    printf("[cellFont] fontset: loaded %s (%ld bytes, %d face(s))\n", f->path, sz, f->nsub);
 +    fflush(stdout);
 +    return 1;
 +}
@@ -389,7 +426,7 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +     * CJK sets on the PS3; the CJK part is not backed here). */
 +    char dir[1024]; env_utf8("KZ2_FONT_DIR", dir, sizeof dir);
 +    if (!dir[0]) { char ed[1000]; exe_dir(ed, sizeof ed); if (ed[0]) snprintf(dir, sizeof dir, "%s/fonts", ed); }
-+    static const char* const names[] = { "NotoSans-Regular", "NotoSans", NULL };
++    static const char* const names[] = { "NotoSans-Regular", "NotoSans", "NotoSansCJK-Regular", NULL };
 +    const char* dirs[2] = { dir, "fonts" };
 +    char path[1200];
 +    for (int d = 0; d < 2 && c->n == 0; d++)   /* ./fonts only when the first dir has none (often the same folder) */
@@ -397,7 +434,7 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +            if (find_file(dirs[d], names[i], path, sizeof path)) chain_add(c, path);
 +    printf("[cellFont] fontset type=0x%X: %d font file(s) in the chain (dir %s)\n", type, c->n, dir[0] ? dir : "none");
 +    if (c->n == 0)
-+        printf("[cellFont] fontset: no fonts found. Put NotoSans-Regular.ttf in <exe dir>/fonts or set KZ2_FONT_DIR; "
++        printf("[cellFont] fontset: no fonts found. Put NotoSans-Regular.ttf and NotoSansCJK-Regular.ttc in <exe dir>/fonts or set KZ2_FONT_DIR; "
 +               "characters the game's own fonts lack stay blank.\n");
 +    fflush(stdout);
 +}
@@ -438,8 +475,9 @@ diff -ruN a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
 +    const stbtt_fontinfo* r = NULL;
 +    for (int i = 0; i < c->n; i++) {
 +        if (!face_load(c->f[i])) continue;
-+        int g = stbtt_FindGlyphIndex(&c->f[i]->info, (int)code);
-+        if (g) { *tmp = c->f[i]->info; *glyph = g; r = tmp; break; }
++        const stbtt_fontinfo* fi = face_info(c->f[i]);
++        int g = stbtt_FindGlyphIndex(fi, (int)code);
++        if (g) { *tmp = *fi; *glyph = g; r = tmp; break; }
 +    }
 +    unlock();
 +    return r;
