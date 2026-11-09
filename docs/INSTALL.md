@@ -17,6 +17,6 @@ Until then every release is a pre-release. There is no date for it.
 
 Requirements, in short: your own Killzone 2 disc (US BCUS98116; the European, Asian and Japanese discs are accepted but
 untested) dumped as a folder, the 1.29 update of the same region, and the decrypted EBOOT from your own copy; a Direct3D 12 GPU. The hardware figures are estimates, provisional until the game runs at full speed. Details: [requirements.md](requirements.md);
-what each folder must hold and what the first-run check prints: [GETTING-FILES.md](GETTING-FILES.md).
+what each folder must hold and what the first-run check prints: [GETTING-FILES.md](GETTING-FILES.md). A worked example (RPCS3 on one drive, the ISO on another) and common questions: [FAQ.md](FAQ.md).
 
 Settings: the first start creates `gameplay.ini` (aim assist, crouch and cover toggle, motion, mouse) with its defaults next to `keybinds.ini`, in `%APPDATA%\Project Pyrrhus` or, in the portable zip, next to `kz2.exe`; an existing file is never changed.

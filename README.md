@@ -5,27 +5,56 @@
 
 # Project Pyrrhus
 
-**Killzone 2: Unofficial PC Port (static recompilation)**
+**Killzone 2 (PS3) as a native Windows program, built on your PC from your own copy: an unofficial port by static recompilation.**
 
 [![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/undecuple/project-pyrrhus?include_prereleases&label=release)](https://github.com/undecuple/project-pyrrhus/releases)
-[![Downloads](https://img.shields.io/github/downloads/undecuple/project-pyrrhus/total)](https://github.com/undecuple/project-pyrrhus/releases)
 
-Project Pyrrhus is a native Windows x64 port of **Killzone 2** (PS3, 2009), made by static recompilation of the game's own
-code. You build it on your PC from your own disc (US, tested; European, Asian and Japanese, untested) with the 1.29 update; it is **not an emulator** and
-**not a rewrite**, and it ships none of the game.
+> **Bring your own game.** This repository holds no game code, assets, keys or firmware, and downloads none. You
+> need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
+> ([what each must contain](docs/GETTING-FILES.md)).
 
-**Status:** <!-- version -->[v0.1.11](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs (below). MIT licence. Direct3D 12 only.
+| | | | |
+|---|---|---|---|
+| **23-33 fps** in the first level, scripted runs under Proton (PS3: 30) · [proof](docs/KNOWN_ISSUES.md#frame-rate) | **4 disc regions** accepted, US tested · [proof](docs/GETTING-FILES.md#regions) | **0 game files** in the repo or the downloads · [proof](docs/HOW-IT-WORKS.md#in-short) | **About 18 minutes** to build with four jobs · [proof](docs/BUILDING.md#steps) |
 
-**[Download](#download-and-install)** · **[Compatibility](#compatibility)** · **[Building](docs/BUILDING.md)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Reporting bugs](https://github.com/undecuple/project-pyrrhus/issues/new/choose)** · **[More](#more)**
+**[Download](https://github.com/undecuple/project-pyrrhus/releases)** · **[Install walkthrough and FAQ](docs/FAQ.md)** · **[Known issues](docs/KNOWN_ISSUES.md)** · **[Reporting bugs](https://github.com/undecuple/project-pyrrhus/issues/new/choose)** · **[More](#more)**
 
-<p align="center">
-  <a href="docs/SCREENSHOTS.md"><img src="docs/screenshots/20261028_kz2-corinth-river-in-play.png" width="720"
-       alt="Killzone 2 running in the port: the first level in first person, with the weapon, crosshair and ammo counter"></a><br>
-  <sub>The first level in play on 2026-10-28 (an older build, under Proton). More: <a href="docs/SCREENSHOTS.md">screenshots</a>.</sub>
-</p>
+## Play it
 
-## Compatibility
+**Windows 10 or 11 (64-bit):**
+1. Download `Project-Pyrrhus-setup.exe` (or the portable zip) from the [releases page](https://github.com/undecuple/project-pyrrhus/releases).
+2. Point it at your disc dump, the 1.29 update and the decrypted EBOOT; if you play the game in RPCS3, "Use my RPCS3 install" finds them.
+3. Start the game from the launcher.
+
+*Caveat:* native Windows is not yet confirmed by us (players report playing there). The first start translates and builds the game on your PC, which takes a while. It needs a CPU with AVX and FMA3 and a Direct3D 12 graphics card ([requirements](docs/requirements.md)).
+
+**Linux:**
+1. Run the same Windows download under Proton, for example as a non-Steam game in Steam.
+
+*Caveat:* the installer and the zip are made for Windows and not checked under Proton; we test the built game under GE-Proton ([known issues](docs/KNOWN_ISSUES.md)).
+
+## What makes it different
+
+| Claim | Proof |
+|---|---|
+| A native Windows x64 program: the game's own code, recompiled ahead of time; no emulator runs while you play | [How it works](docs/HOW-IT-WORKS.md#in-short) |
+| Most of the game's SPU post-processing runs as native C, giving the same output bits as the recompiled jobs on the tested inputs | [How it works](docs/HOW-IT-WORKS.md#what-kind-of-port-is-this) |
+| Field of view (45-75) and FSR 1 upscaling as rows on the game's own Display page | [Features](docs/FEATURES.md), [roadmap](docs/ROADMAP.md) |
+| Shaders built during the load from a shipped list: pauses over 0.1 s in the first minute fell from 18-20 to 2 in paired scripted runs | [Known issues](docs/KNOWN_ISSUES.md#frame-rate) |
+| The setup checks your files before building and names what is wrong | [Getting your files](docs/GETTING-FILES.md#what-the-first-run-check-can-print) |
+
+## Coming soon
+
+Not done yet, and said openly: a steady 30 frames per second, the campaign past the first level, loading checkpoint
+saves back, 5.1 surround sound, and multiplayer (offline bots and self-hosted online). Where each stands:
+[roadmap](docs/ROADMAP.md) and [feature table](docs/FEATURES.md).
+
+## Status
+
+**Status:** <!-- version -->[v0.1.11](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs. MIT licence. Direct3D 12 only.
+
+### Compatibility
 
 One row per setup. *Verified* means we ran it on that setup; *implemented* means the code is in but we have not run it
 there; *planned* means neither. Full dated table: [docs/STATUS.md](docs/STATUS.md).
@@ -43,7 +72,7 @@ Optional features, same three states (both new in 0.1.7):
 | Options > Display: field of view (45-75, 45 is the original), first-person only | verified in play under Proton (45, 60, 75) | GE-Proton11-7, RTX 4060 |
 | Options > Display: upscaling (Off / FSR 1) and sharpness | implemented; drawn in the menu under Proton, not yet checked in play; adds about 0.4-1.3 ms of graphics time per frame at 2560x1440 in our tests | GE-Proton11-7, RTX 4060 |
 
-## Download and install
+## Install in detail
 
 **You need:**
 
@@ -66,26 +95,16 @@ your RPCS3 install ("Use my RPCS3 install"). What each must contain:
 
 Do not install into a OneDrive folder. The settings files (`keybinds.ini`, `gameplay.ini`; the latter is created with its defaults on the first start, and an existing one is never changed) are in `%APPDATA%\Project Pyrrhus`, or next to `kz2.exe` in the portable zip. More: [docs/INSTALL.md](docs/INSTALL.md), [CHANGELOG.md](CHANGELOG.md).
 
-## Settings and known issues
+## How it works
 
-Pads (PlayStation and Xbox, through SDL3), keyboard and mouse, button prompts, window modes and the Display rows are in
-[docs/FEATURES.md](docs/FEATURES.md) and [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md). The main problems today:
-
-- Speed is below the PS3's in scripted runs; hand play is not measured.
-- Only the first level has been played; the campaign has not been played through.
-- Keyboard and mouse: checked in scripted runs, not by hand; pads work.
-- Not yet confirmed on native Windows by us (players report playing there).
-
-All of them: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
-
-## Building
-
-The installer builds the port on your machine; to build it yourself, see [docs/BUILDING.md](docs/BUILDING.md). The build
-is heavy: about 18 minutes with four jobs, and over 1 GB of memory per compile job.
+The game's PPU and SPU code is recompiled ahead of time to native x64; the graphics commands are translated to
+Direct3D 12 at run time; the system libraries are reimplemented on PC APIs. Details: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
+Settings and controls: [docs/FEATURES.md](docs/FEATURES.md), [docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md). Building
+it yourself: [docs/BUILDING.md](docs/BUILDING.md).
 
 ## More
 
-[Features](docs/FEATURES.md) · [Screenshots](docs/SCREENSHOTS.md) · [Requirements](docs/requirements.md) · [How it works](docs/HOW-IT-WORKS.md) · [Accessibility](docs/ACCESSIBILITY.md) · [Roadmap](docs/ROADMAP.md) · [Release criteria](docs/RELEASE-CRITERIA.md) · [What goes online](docs/PRIVACY.md) · [AI use](docs/AI.md) · [Contributing](.github/CONTRIBUTING.md)
+[Features](docs/FEATURES.md) · [Screenshots](docs/SCREENSHOTS.md) · [Requirements](docs/requirements.md) · [How it works](docs/HOW-IT-WORKS.md) · [Accessibility](docs/ACCESSIBILITY.md) · [Roadmap](docs/ROADMAP.md) · [Release criteria](docs/RELEASE-CRITERIA.md) · [What goes online](docs/PRIVACY.md) · [How AI was used](docs/AI.md) · [Contributing](.github/CONTRIBUTING.md)
 
 ## Related projects
 
@@ -104,9 +123,11 @@ Project Pyrrhus is made by **undecuple**: GitHub [@undecuple](https://github.com
 
 Pull requests are welcome: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
-## AI, licence, disclaimer
+## How AI was used
 
 This project is developed by one person with AI coding agents, with the maintainer reviewing and merging their work: [docs/AI.md](docs/AI.md).
+
+## Licence and disclaimer
 
 The port's own code, tools and documentation: [MIT](LICENSE). Third-party components and credits: [NOTICE.md](NOTICE.md). The licence covers nothing of the game itself. Security problems: [SECURITY.md](.github/SECURITY.md). Reuse, including by AI systems and automated tools: [NOTICE.md](NOTICE.md#reuse-and-attribution-including-ai-and-automated-use).
 
