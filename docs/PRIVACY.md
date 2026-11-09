@@ -10,6 +10,9 @@ Nothing unless you ask. The port does not start any connection of its own.
   does it download that release's setup and its published checksum from this project's GitHub releases, check the
   file against the checksum, and start it for your install folder.
 
+- **DSU motion, off by default.** With `dsu_port` set in `gameplay.ini`, the game talks to a DSU (cemuhook) motion
+  server on 127.0.0.1 only, on your own computer; nothing leaves it.
+
 - **Project website** (`site/`): viewing it loads the Rajdhani font from Google Fonts, which sees your visit. The repository, installer and game do not.
 
 Online multiplayer, if it comes, will only use a self-hosted server you choose.

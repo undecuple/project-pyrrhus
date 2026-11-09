@@ -1,7 +1,7 @@
 # Install walkthrough and FAQ
 
 A worked example for a common setup, then the questions players ask most. The full reference for each input and
-every check is [GETTING-FILES.md](GETTING-FILES.md); this page leaves nothing out that it says, it only puts it in order.
+every check is [GETTING-FILES.md](GETTING-FILES.md); where this page is shorter, that page is the reference.
 No game files, keys or decryption steps are given here or anywhere in this project: you need your own copy.
 
 ## Walkthrough: RPCS3 on one drive, the game ISO on another
@@ -55,8 +55,8 @@ No. The setup refuses the mix and names both regions.
 That is accepted as it is.
 
 **Does it run at full speed?**
-Not yet. Our runs of the first level are between about 23 and 33 frames per second; the PS3 holds 30. Speed depends
-mostly on the CPU. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md#frame-rate).
+Not yet. Our scripted runs of the first level under Proton are between about 23 and 33 frames per second; the PS3
+holds 30. It has not been measured by hand, and speed varies with what else the computer is doing. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md#frame-rate).
 
 **Can I skip the intro movie?**
 Yes: set `KZ2_SKIP_INTRO=1` (in a Command Prompt, `setx KZ2_SKIP_INTRO 1`, then start the game again).

@@ -479,12 +479,14 @@ def render(root, problems):
     w("<section id=\"install\" class=\"promo\">\n<h2>Install</h2>\n" + download_block(root, version, problems)
       + "<p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then "
       "translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full "
-      "install log. Nothing of the game is shipped or downloaded; your dump is read where it is, never copied. What "
+      "install log. Nothing of the game is shipped or downloaded; a dump folder is read where it is, and the files of a "
+      "decrypted .iso are copied once into the install folder. What "
       f"each input must contain: <a href=\"{REPO}/blob/main/docs/GETTING-FILES.md\">Getting your files ready</a>.</p>\n"
       f"<p>Or build the port from source: <a href=\"{REPO}/blob/main/docs/BUILDING.md\">building</a>.</p>\n"
       "<h3>What goes online</h3>\n<p>Nothing unless you ask. The port starts no connection of its own; the version "
-      "check and update download are off until you turn them on. Online multiplayer, if it comes, will only use a "
-      f"self-hosted server you choose. See the <a href=\"{REPO}/blob/main/docs/PRIVACY.md\">README</a>.</p>\n"
+      "check and update download are off until you turn them on, and the optional DSU motion setting talks only to "
+      "127.0.0.1 on your own computer. Online multiplayer, if it comes, will only use a "
+      f"self-hosted server you choose. See <a href=\"{REPO}/blob/main/docs/PRIVACY.md\">What goes online</a>.</p>\n"
       "<p class=\"small\">Viewing this website loads the Rajdhani font from Google Fonts, which sees your visit; the "
       "repository, installer and game do not.</p>\n</section>\n")
 

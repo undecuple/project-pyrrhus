@@ -9,6 +9,7 @@
 
 [![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/undecuple/project-pyrrhus?include_prereleases&label=release)](https://github.com/undecuple/project-pyrrhus/releases)
+[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-blue)](https://deepwiki.com/undecuple/project-pyrrhus)
 
 > **Bring your own game.** This repository holds no game code, assets, keys or firmware, and downloads none. You
 > need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
@@ -38,10 +39,10 @@
 
 | Claim | Proof |
 |---|---|
-| A native Windows x64 program: the game's own code, recompiled ahead of time; no emulator runs while you play | [How it works](docs/HOW-IT-WORKS.md#in-short) |
-| Most of the game's SPU post-processing runs as native C, giving the same output bits as the recompiled jobs on the tested inputs | [How it works](docs/HOW-IT-WORKS.md#what-kind-of-port-is-this) |
-| Field of view (45-75) and FSR 1 upscaling as rows on the game's own Display page | [Features](docs/FEATURES.md), [roadmap](docs/ROADMAP.md) |
-| Shaders built during the load from a shipped list: pauses over 0.1 s in the first minute fell from 18-20 to 2 in paired scripted runs | [Known issues](docs/KNOWN_ISSUES.md#frame-rate) |
+| A native Windows x64 program: the game's own code, recompiled ahead of time; no CPU emulator runs while you play (the graphics commands are translated at run time) | [How it works](docs/HOW-IT-WORKS.md#in-short) |
+| Most of the game's SPU post-processing runs as native C by default (each job has a switch back), giving the same output bits as the recompiled jobs on the tested inputs | [How it works](docs/HOW-IT-WORKS.md#what-kind-of-port-is-this) |
+| Field of view (45-75) and FSR 1 upscaling as rows on the game's own Display page (FSR 1 checked in the menu only, not yet in play) | [Features](docs/FEATURES.md), [roadmap](docs/ROADMAP.md) |
+| Shaders built during the load from a shipped list: pauses over 0.1 s in the first minute fell from 18-20 to 2 in paired scripted runs (not yet measured in an installed copy) | [Known issues](docs/KNOWN_ISSUES.md#frame-rate) |
 | The setup checks your files before building and names what is wrong | [Getting your files](docs/GETTING-FILES.md#what-the-first-run-check-can-print) |
 
 ## Coming soon
@@ -84,7 +85,7 @@ Optional features, same three states (both new in 0.1.7):
 - **The decrypted 1.29 EBOOT** (`EBOOT.elf`), made from that update's `EBOOT.BIN`.
 - Windows 10 or 11 (64-bit) with a CPU that has AVX and FMA3 (about 2013 or later), 16 GB of RAM advised for the build, and a Direct3D 12 graphics card: [docs/requirements.md](docs/requirements.md).
 
-No emulator runs while you play. If you play the game in the PS3 emulator RPCS3, the setup can find all three in
+No CPU emulator runs while you play. If you play the game in the PS3 emulator RPCS3, the setup can find all three in
 your RPCS3 install ("Use my RPCS3 install"). What each must contain:
 [docs/GETTING-FILES.md](docs/GETTING-FILES.md). This project ships none of them and gives no decryption steps.
 
