@@ -8,8 +8,9 @@
 **Killzone 2 (PS3) as a native Windows program, built on your PC from your own copy: an unofficial port by static recompilation.**
 
 [![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/undecuple/project-pyrrhus?include_prereleases&label=release)](https://github.com/undecuple/project-pyrrhus/releases)
-[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-blue)](https://deepwiki.com/undecuple/project-pyrrhus)
+<!-- version -->[![pre-release 0.1.11](https://img.shields.io/badge/pre--release-0.1.11-b4500f?style=flat-square&labelColor=17130f)](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version -->
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-b4500f?style=flat-square&labelColor=17130f)](LICENSE)
+[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-b4500f?style=flat-square&labelColor=17130f)](https://deepwiki.com/undecuple/project-pyrrhus)
 
 > **Bring your own game.** This repository holds no game code, assets, keys or firmware, and downloads none. You
 > need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
