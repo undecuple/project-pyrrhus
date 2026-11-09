@@ -9,6 +9,7 @@
 
 [![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/undecuple/project-pyrrhus?include_prereleases&label=release)](https://github.com/undecuple/project-pyrrhus/releases)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/undecuple/project-pyrrhus)
 
 > **Bring your own game.** This repository holds no game code, assets, keys or firmware, and downloads none. You
 > need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
