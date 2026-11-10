@@ -241,6 +241,7 @@ extern "C" void rsx_display_configure(int saved_mode, int saved_scaling, int sav
                                       void (*save)(int mode, int scaling, int filter));   /* rsx_null_backend.c */
 extern "C" int  kz2_display_ini_set3(const char* mode, const char* scaling, const char* filter);   /* kz2_port_settings.cpp */
 extern "C" void kz2_port_settings_load(void);                                                     /* kz2_port_settings.cpp */
+extern "C" int kz2_skip_intro_enabled(void);                                                    /* display.ini / one-run override */
 
 static void kz2_display_save(int mode, int scaling, int filter)
 {
@@ -670,18 +671,17 @@ static void update_miss_hook(char* path, size_t cap)
     snprintf(path, cap, "%s", alt);
 }
 
-/* KZ2_SKIP_INTRO=1 (test aid, ENHANCEMENT): start the front end on the main menu page instead of the intro page.
+/* Skip intro (Options > Display / display.ini, KZ2_SKIP_INTRO=0|1 for one run): start the front end on the main menu page instead of the intro page.
  * The front end is a set of "JSP" pages; a data table holds the start page's URL pointer. The community 1.29 "Skip
  * Intro" patch swaps it (the RE notes): 1.29 @0x00F07460 "file:///kin/index.jsp" (0x00BFA880)
  * -> "file:///kin/menu/mainmenu.jsp" (0x00BFAB10). v1.01 has the same table at @0x00EF6618: 0x00BE3770 -> 0x00BE3A00
  * (strings and table neighbours checked). The word is changed only if it holds the expected
- * pointer, so the other EBOOT is left alone. Off unless KZ2_SKIP_INTRO=1: the intro movie (GameIntro_PS3.avi) plays
+ * pointer, so the other EBOOT is left alone. Off by default: the intro movie (GameIntro_PS3.avi) plays
  * through to the title screen since patch 6021 (cellVdec handles are nonzero; the movie player read handle 0 as "not
  * open" and never submitted an AU, which stalled every movie thread). Until then hand-play launches skipped it. */
 static void skip_intro_option(void)
 {
-    const char* e = getenv("KZ2_SKIP_INTRO");
-    if (!(e && e[0] == '1')) return;
+    if (!kz2_skip_intro_enabled()) return;
     static const struct { uint32_t at, from, to; const char* ver; } sites[] = {
         {0x00F07460u, 0x00BFA880u, 0x00BFAB10u, "1.29"},
         {0x00EF6618u, 0x00BE3770u, 0x00BE3A00u, "v1.01"},

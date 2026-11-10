@@ -83,9 +83,10 @@ and a folder holding `PS3_GAME` given as the update is named as the disc dump.
   written and locks them. The setup refuses such a folder, and the first-run check refuses an install or build folder
   inside OneDrive (O1). Game files inside OneDrive are fine when they are on this device; files that are only online
   are refused before anything is read (O2): right-click the folder and choose "Always keep on this device" first.
-- **EBOOT version.** The port is built on the 1.29 EBOOT. The disc's own 1.01 EBOOT is recognised by its size and
-  refused: on the setup's EBOOT page (a silent install with `/EBOOT=` stops with the same text) and by the first-run
-  check (E1). The message names the update's `USRDIR` folder, where the 1.29 one is.
+- **EBOOT version.** The port is built on the 1.29 EBOOT. Your EBOOT is identified by its SHA-256, else by its
+  program segments (so a copy that another tool laid out with extra padding is still recognised), else by its size.
+  The disc's own 1.01 EBOOT is refused: on the setup's EBOOT page (a silent install with `/EBOOT=` stops with the same
+  text) and by the first-run check (E1). The message names the EBOOT this release needs (title id, version, region).
 
 ## What the first-run check can print
 
@@ -108,8 +109,8 @@ A `WARN` lets it go on. The full log is next to the installer (or in the install
 | U1 | OK / WARN / FAIL | FAIL: the update's `PARAM.SFO` is missing or unreadable, its title id is not the disc's (another region's update: both are named), or it is the disc's own (category DG: the disc's `PS3_GAME` folder was given as the update). WARN: its version is not 01.29 | Pick the 1.29 update folder of the disc's region |
 | U2 | OK / FAIL | `USRDIR/EBOOT.BIN` is missing in the update folder | Pick the folder that holds `PARAM.SFO` and `USRDIR` |
 | U3 | OK / FAIL | `USRDIR/added_data_ps3.psarc` is missing or does not start with `PSAR`, or the `USRDIR/patch_data_ps3` folder is missing: the update's data would be missing | Use a complete update folder |
-| E1 | OK / WARN / FAIL | FAIL: no decrypted `EBOOT.elf` was found, it is not a 64-bit PowerPC ELF, or it is the disc's 1.01 EBOOT (or another known version). WARN: an unknown size | Pick the decrypted EBOOT of the 1.29 update, from the update's `USRDIR` folder |
-| H1 | OK / WARN | The EBOOT is compared with the known 1.29 one. A WARN means it differs or could not be compared | The build may still work if it is a 1.29 EBOOT; if the build fails, check the file |
+| E1 | OK / WARN / FAIL | FAIL: no decrypted `EBOOT.elf` was found; "This EBOOT is an encrypted SELF, not an ELF"; "This file is not a PS3 executable"; or "This EBOOT is Killzone 2 1.01 ..., the disc's own version" (or another known version). Each FAIL names the EBOOT this release needs, such as "Killzone 2 1.29 (BCUS98116, US)". WARN: an unknown size | Pick the decrypted EBOOT of the 1.29 update, from the update's `USRDIR` folder |
+| H1 | OK / WARN / FAIL | The EBOOT is compared with the known Killzone 2 EBOOTs, by SHA-256, else by its program segments. OK: the US 1.29 EBOOT (tested). WARN: the 1.29 EBOOT of an untested region; "Wrong region" (a known EBOOT of another region than the disc's); "Your EBOOT is the 1.29 size but its contents differ from a clean copy. It may be patched or damaged." (unknown or modified); an EBOOT that matches no known build; or the comparison could not be made. FAIL: "a build this port does not run", or a known EBOOT whose status this check does not know | For "contents differ": make it again from your own 1.29 update's `EBOOT.BIN`, without patches, and pick the new file. For a FAIL: pick the 1.29 EBOOT |
 
 When a check fails, the setup's message box, the dialog of `Project Pyrrhus.exe` and the console show one line per
 input that failed, labelled `Disc dump`, `1.29 update` or `EBOOT`: the path it looked at, what is there, and what that

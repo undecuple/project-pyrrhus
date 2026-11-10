@@ -6,7 +6,7 @@ downloaded.
 
 There are two ways to get a build:
 
-- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.11](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version -->.**
+- **The installer or portable zip (Windows), pre-release <!-- version -->[v0.1.12](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version -->.**
   It checks your disc dump and the 1.29 update, then lifts and compiles the game's code on your machine with a bundled
   compiler, behind one progress bar, with a full log. Download it from the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). The scripts and the installer definition are in this repository (`installer/`,
@@ -62,6 +62,12 @@ cd project-pyrrhus                                   # third_party/ps3recomp com
 
 Steps 1 to 4 below were run in a fresh copy of the repository (with `third_party/ps3recomp` checked out at the pinned
 commit) on NixOS; the `git clone --recursive` line itself was not run.
+
+The Lua recovery change needs a fresh step 3 before rebuilding. `tools/lift.sh`
+generates its host continuations automatically. If calling the PPU lifter directly,
+follow it with `python3 tools/release/lua_unwind.py --recomp-dir work/recomp --version 129`
+(use `101` for that executable). A missing continuation marker prevents compiling
+the new jump override; `build-kz2.sh` also rejects stale generation receipts.
 
 ```sh
 # 1. Point the repo at your game files (they stay outside git and are mounted read-only)
@@ -139,6 +145,8 @@ There is no ini file for the program itself. It reads these environment variable
 | `KZ2_COVER_TOGGLE` | `1`: a tap of the cover button takes cover and a second tap (or a sprint or jump) leaves it. Default `0`: hold to take cover, as in the original. |
 | `KZ2_PROMPTS` | Button prompt symbols: `ps3`, `ps4`, `xbox` or `keyboard`. Unset: chosen from the pad in use. |
 | `KZ2_DISPLAY` | `borderless`, `windowed` or `fullscreen`. Unset: the game's `display.ini` decides; with no `display.ini` a new install starts borderless (Alt+Enter switches to a window and back). |
+| `KZ2_SKIP_INTRO` | `0` shows the opening movie page, `1` starts at the main menu. Unset: Options > Display's saved **Skip intro (next start)** choice decides; the default is off. |
+| `KZ2_LUA_UNWIND` | `0` restores the previous guest jump behavior for diagnosis. Leave unset for corrected protected Lua error handling. |
 
 The same three gameplay choices can be kept in `gameplay.ini` next to `keybinds.ini` (the installer and the launcher create it with the defaults when it is missing and never overwrite it; the game only reads it):
 `[gameplay]` then `aim_assist = auto|on|off`, `crouch_toggle = 0|1`, `cover_toggle = 0|1`. The variables win for one run.

@@ -17,7 +17,11 @@ Command line (the wizard; results are `key=value` lines in --out, UTF-8 with BOM
   --resolve --rpcs3 DIR [--allow-outside]    status=ok|problems|approval|not_found, dump=, update=, eboot=, title=,
                                              outside= (one per line), problem=code|text, help=text, saves=N
   --eboot-kind PATH [--sha256]               status=encrypted|ok, help= (the wizard's manual EBOOT page; no RPCS3 folder);
-                                             --sha256 adds size= and sha256= for a file that is not encrypted
+                                             --sha256 adds size= and sha256= for a file that is not encrypted;
+                                             --identify [--title ID] [--target 1.29] adds them too, plus the first-run
+                                             check's E1/H1 verdict on the file (firstrun_check.check_eboot_elf, the
+                                             shared EBOOT id table): version=, level=OK|WARN|FAIL, code=, text= (the
+                                             worst line; ID = the disc's title id, for the region)
   Any unexpected error writes status=error (the wizard polls for --out instead of waiting for the process, issue #22).
   --save-dryrun --rpcs3 DIR --data-dir D     line= text for the question, exists=0|1, status=
   --save-copy --rpcs3 DIR --data-dir D [--overwrite]   status=copied|exists|failed, line=
@@ -293,6 +297,22 @@ def save_log_line(results):
 
 
 # ------------------------------------------------------------------------------------------------ command line
+def identify_pairs(path, title="", target="1.29"):
+    """The wizard's EBOOT verdict: firstrun_check.check_eboot_elf on the file alone (E1 and H1, the shared EBOOT id
+    table next to firstrun_check.py), title = the disc's title id when the wizard knows it. -> [("version", v),
+    ("level", worst), ("code", its code), ("text", its message)]; level OK and no text when nothing is wrong."""
+    r = fc.Report()
+    if title in fc.REGIONS:
+        r.facts["disc"] = {"TITLE_ID": title}
+    fc.check_eboot_elf(r, path, target)
+    rank = {"OK": 0, "WARN": 1, "FAIL": 2}
+    worst = max(r.checks, key=lambda c: rank[c["level"]], default={"level": "OK", "code": "", "message": ""})
+    out = [("version", (r.facts.get("eboot_elf") or {}).get("version") or ""), ("level", worst["level"])]
+    if worst["level"] != "OK":
+        out += [("code", worst["code"]), ("text", worst["message"])]
+    return out
+
+
 def _write(path, pairs):
     """The result file, whole or not at all: written beside it and renamed over it as the last act, because the
     wizard no longer waits for this process to end (issue #22) but polls for the file and reads it once it is there."""
@@ -339,6 +359,10 @@ def _main(argv=None):
     ap.add_argument("--sha256", action="store_true",
                     help="with --eboot-kind: also size= and sha256= of a decrypted EBOOT (the wizard asks only when "
                          "the size is a known EBOOT's; one read, off the wizard's window thread)")
+    ap.add_argument("--identify", action="store_true",
+                    help="with --eboot-kind: also the first-run check's E1/H1 verdict (version=, level=, code=, text=)")
+    ap.add_argument("--title", default="", help="with --identify: the disc's title id (for the region)")
+    ap.add_argument("--target", default="1.29", help="with --identify: the EBOOT version the release is built for")
     ap.add_argument("--rpcs3", default="")
     ap.add_argument("--out", required=True)
     ap.add_argument("--allow-outside", action="store_true")
@@ -349,10 +373,12 @@ def _main(argv=None):
     if a.eboot_kind is not None:   # the wizard's manual EBOOT page (same test as the text UI)
         enc = encrypted_eboot(a.eboot_kind)
         pairs = [("status", "encrypted" if enc else "ok")] + ([("help", HELP_ENCRYPTED)] if enc else [])
-        if a.sha256 and not enc:
+        if (a.sha256 or a.identify) and not enc:
             h = loc.sha256(a.eboot_kind)
             if h.get("ok"):
                 pairs += [("size", h["size"]), ("sha256", h["sha256"])]
+        if a.identify and not enc:
+            pairs += identify_pairs(a.eboot_kind, a.title, a.target)
         _write(a.out, pairs)
         return 1 if enc else 0
     if a.detect:

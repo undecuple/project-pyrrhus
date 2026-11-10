@@ -106,7 +106,8 @@ check("EbootSha256(" in ev and "GetSHA256OfFile" not in ev, "EbootVersionOf take
 es = code_only(func("EbootSha256"))
 check(es.find("EbootHashValue") >= 0 and es.find("EbootHashValue") < es.find("GetSHA256OfFile"),
       "EbootSha256 uses the helper's hash first, GetSHA256OfFile only as the fallback")
-check("--sha256" in func("EbootEncrypted"), "the EBOOT check asks the helper for the hash")
+check("--identify" in func("EbootEncrypted"), "the EBOOT check asks the helper for the hash and the verdict "
+      "(--identify)")
 
 # 5. [Files] order and the font
 files = [x for x in section("Files").splitlines() if x.startswith("Source:")]

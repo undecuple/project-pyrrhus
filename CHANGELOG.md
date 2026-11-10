@@ -4,6 +4,18 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [0.1.12] - 2026-11-10 (pre-release)
+
+### Added
+- Options > Display has a **Skip intro (next start)** choice, saved in `display.ini`. It is off by default; `KZ2_SKIP_INTRO=0|1` overrides it for one run (#43). With it on, the game starts at the main menu, past the language and brightness pages and the intro movie. Switching it on and off in the menu was checked under Proton.
+
+### Changed
+- Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that pads the file differently is still accepted. The messages name only what is wrong and the EBOOT the port needs (title id, version, region). A 1.29-sized EBOOT whose contents differ (patched or damaged) gets a warning saying so. Checked with the real EBOOTs and in the setup wizard under Proton.
+
+### Fixed
+- The setup's EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted EBOOT was only caught at the first build step. It is packed again, and the page now gives the same verdict as the first-run check; in the wizard under Proton it answers in under a second.
+- When one of the game's scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This may be the cause of the quit in #49: the reported log matches the forced error line for line, but the error there has not been reproduced yet and which script raises it is not known; the game's log now records a script's own error message, so a log from the moment it happens can name it.
+
 ## [0.1.11] - 2026-11-05 (pre-release)
 
 ### Added

@@ -71,9 +71,13 @@ int main()
     { double d = -1; ok(parse(kz2_port_rows[find("vsync")], "on", &d) && d == 1.0 && !parse(kz2_port_rows[find("vsync")], "maybe", &d),
                         "vsync ini parse"); }
     ok(command(&s, "cycle vsync", &ch) == "ON", "vsync cycles back");
+    ok(command(&s, "show skip_intro", &ch) == "OFF", "intro is shown by default");
+    ok(command(&s, "cycle skip_intro", &ch) == "ON" && ch.size() == 1 &&
+       ini_value(kz2_port_rows[find("skip_intro")], s.v[find("skip_intro")]) == "on", "intro skip cycles and persists as on");
     ok(command(&s, "cycle fov", &ch) == "?" && command(&s, "set nope 1", &ch) == "?" && command(&s, "", &ch) == "?", "bad commands");
     command(&s, "cycle upscale", &ch);
-    ok(command(&s, "reset", &ch) == "ok" && ch.size() == 2 && s.v[find("fov")] == 45.0 && s.v[find("upscale")] == 0.0, "reset");
+    ok(command(&s, "reset", &ch) == "ok" && ch.size() == 3 && s.v[find("fov")] == 45.0 && s.v[find("upscale")] == 0.0 &&
+       s.v[find("skip_intro")] == 0.0, "reset includes the original intro behavior");
     /* the page edit on a miniature of the options page */
     const std::string mini =
         "<SVML> <PAGEID name=\"kin-preparsed_x\" /> <_p name=\"optionsSubpanel\" c=\"_Normal\" p=\"514,196,638,400\" g=\"0\" /> "
@@ -95,10 +99,10 @@ int main()
        "slider ranges");
     ok(e.find("<_i name=\"itemPcUpscale\" c=\"_Medium\" p=\",174,620,29\" g=\"5\" h=\"static://script.optionsmenuscript.PcCycle_upscale\"") !=
            std::string::npos, "UPSCALING row cycles");
-    ok(e.find("<_i name=\"itemResetDisplaySettings\" c=\"_Medium\" p=\",290,620,29\" g=\"8\"") != std::string::npos &&
-           e.find("<_i: name=\"!\" g=\"8\" /> <_l: name=\"!\" g=\"1\" />") != std::string::npos, "SET TO DEFAULT moves down to y 290, g 8");
-    ok(e.find("<_l name=\"listDisplaySettings\" c=\"_Normal\" p=\"16,14,620,319\"") != std::string::npos, "list grows to 319");
-    ok(e.find("<_l name=\"listControlSettings\" c=\"_Normal\" p=\"16,14,620,203\" g=\"9\"") != std::string::npos, "later ids move by 4");
+    ok(e.find("<_i name=\"itemResetDisplaySettings\" c=\"_Medium\" p=\",319,620,29\" g=\"9\"") != std::string::npos &&
+           e.find("<_i: name=\"!\" g=\"9\" /> <_l: name=\"!\" g=\"1\" />") != std::string::npos, "SET TO DEFAULT moves down to y 319, g 9");
+    ok(e.find("<_l name=\"listDisplaySettings\" c=\"_Normal\" p=\"16,14,620,348\"") != std::string::npos, "list grows to 348");
+    ok(e.find("<_l name=\"listControlSettings\" c=\"_Normal\" p=\"16,14,620,203\" g=\"10\"") != std::string::npos, "later ids move by 5");
     ok(e.find("UpdateVolume(sliderMusicVolume)\")\r\ngBrowser:GetTagByName(\"sliderPcFov\"):SetOnChange(\"optionsmenuscript.PcSet_fov\")\r\n") !=
            std::string::npos, "slider change applies live");
     ok(e.find("function InitOptionSettings()\r\nPcInit()\r\n") != std::string::npos &&
@@ -109,6 +113,8 @@ int main()
            e.find("function PcCycle_vsync()") != std::string::npos, "script functions before ToggleCheckBox");
     ok(e.find("<_i name=\"itemPcVsync\" c=\"_Medium\" p=\",232,620,29\" g=\"7\" h=\"static://script.optionsmenuscript.PcCycle_vsync\"") !=
            std::string::npos, "VSYNC row cycles, below SHARPNESS");
+    ok(e.find("SKIP INTRO (NEXT START)") != std::string::npos &&
+       e.find("function PcCycle_skip_intro()") != std::string::npos, "intro skip has a named next-start control");
     bool threw = false;
     try { display_rows(e); } catch (const kz2mt::Anchor&) { threw = true; }
     ok(threw, "a second edit is refused");

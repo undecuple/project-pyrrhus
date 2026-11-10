@@ -1,0 +1,13 @@
+{
+  "schema": "kz2.play/1",
+  "name": "checkpoint-smoke",
+  "steps": [
+    {"id": "level-start-proxy", "op": "wait", "text": "[usercmd] HLE #1 ", "timeout": 120},
+    {"id": "checkpoint-proxy", "op": "wait", "text": "[cellSaveData] AutoSave(", "timeout": 90},
+    {"id": "settle-before", "op": "flips", "count": 120, "timeout": 30},
+    {"id": "before-request", "op": "capture", "timeout": 10},
+    {"id": "request-r1", "op": "key", "button": "R1", "reports": 4, "timeout": 10},
+    {"id": "settle-after", "op": "flips", "count": 30, "timeout": 15},
+    {"id": "after-request", "op": "capture", "timeout": 10}
+  ]
+}

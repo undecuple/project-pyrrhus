@@ -1,0 +1,108 @@
+KZ2: publish wait-accounting readiness after profiler initialization.
+
+A naming thread can otherwise see enabled accounting before prof_init sets s_prof_on,
+return from prof_attach without a sampling handle, and never retry its one naming call.
+This fixes that source-level initialization race; the historical zero walker samples
+have not been reproduced or attributed to it. Acquire/release readiness also publishes
+the clock, TLS slot and profiler fields. The flip counter and three GCM/SPU skip-only guards use relaxed atomic readiness
+loads; note/job callees acquire readiness themselves. Remaining direct interval reads
+are printer-only after its creation, which follows publication. Disabled accounting still publishes zero without starting helpers.
+
+The profiler setup and its sampler use kz3_wacct_now directly and do not reenter the
+accounting initializer, so delayed readiness cannot make them wait on themselves.
+No attribution to a measured FPS gain. Test: tools/runtime/test_profiler_init.sh.
+
+diff --git a/runtime/diag/kz3_wait_acct.c b/runtime/diag/kz3_wait_acct.c
+--- a/runtime/diag/kz3_wait_acct.c
++++ b/runtime/diag/kz3_wait_acct.c
+@@ -172,7 +172,7 @@
+ 
+ void kz3_wacct_flip(void)
+ {
+-    if (g_kz3_wacct > 0) __sync_fetch_and_add(&s_flips, 1);
++    if (__atomic_load_n(&g_kz3_wacct, __ATOMIC_RELAXED) > 0) __sync_fetch_and_add(&s_flips, 1);
+     if (g_kz3_wtrace) { const uint64_t n = kz3_wacct_now(); kz3_wacct_trace(KZ3_WT_FLIP, 0, n, n); }   /* patch 1085 */
+ }
+ 
+@@ -442,8 +442,9 @@
+ {
+     static volatile long once = 0;
+     if (__sync_val_compare_and_swap(&once, 0, 1) != 0) {
+-        while (*(volatile int*)&g_kz3_wacct < 0) { /* another thread is initialising */ }
+-        return g_kz3_wacct;
++        int ready;
++        while ((ready = __atomic_load_n(&g_kz3_wacct, __ATOMIC_ACQUIRE)) < 0) { /* another thread is initialising */ }
++        return ready;
+     }
+     const char* e = getenv("KZ3_WAIT_ACCT");
+     int ms = e ? atoi(e) : 0;
+@@ -456,13 +457,16 @@
+     s_t0 = kz3_wacct_now();
+     if (ms) {
+         fprintf(stderr, "[wacct] on: %d ms windows (KZ3 patch 1032)\n", ms);
+-        g_kz3_wacct = ms;
+         prof_init();   /* patch 1033 */
++        /* KZ2: naming must not pass readiness before profiler setup completes.
++         * prof_init/prof_thread use the initialized clock directly, without reentering init.
++         * Publish before starting the printer, which reads the interval immediately. */
++        __atomic_store_n(&g_kz3_wacct, ms, __ATOMIC_RELEASE);
+ #ifdef _WIN32
+         CreateThread(NULL, 1u << 18, printer, NULL, 0, NULL);
+ #else
+         pthread_t th; pthread_create(&th, NULL, printer, NULL);
+ #endif
+-    } else g_kz3_wacct = 0;
+-    return g_kz3_wacct;
+-}
++    } else __atomic_store_n(&g_kz3_wacct, 0, __ATOMIC_RELEASE);
++    return ms;
++}
+diff --git a/runtime/diag/kz3_wait_acct.h b/runtime/diag/kz3_wait_acct.h
+--- a/runtime/diag/kz3_wait_acct.h
++++ b/runtime/diag/kz3_wait_acct.h
+@@ -51,7 +51,11 @@
+ void     kz3_wacct_name(const char* name);  /* name this host thread */
+ void     kz3_wacct_flip(void);
+ 
+-static inline int kz3_wacct_on(void) { return g_kz3_wacct < 0 ? kz3_wacct_init() : g_kz3_wacct; }
++static inline int kz3_wacct_on(void)
++{
++    const int ready = __atomic_load_n(&g_kz3_wacct, __ATOMIC_ACQUIRE);
++    return ready < 0 ? kz3_wacct_init() : ready;
++}
+ /* Returns 0 when off; kz3_wacct_end ignores t0 == 0. */
+ static inline uint64_t kz3_wacct_begin(void) { return kz3_wacct_on() ? kz3_wacct_begin_slow() : 0; }
+ 
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -3383,7 +3383,7 @@
+                               s_fifo_getoff, (unsigned long long)ms, s_park_putchg, tgt);
+                   if (ms > s_pmax) s_pmax = ms;
+                   { extern void kz3_wacct_note(int, uint32_t, uint64_t);   /* patch 1032: KZ3_WA_PARK = 9 */
+-                    extern int g_kz3_wacct; if (g_kz3_wacct > 0) kz3_wacct_note(9, 0, get_timestamp_ns() - s_park_t0); }
++                    extern int g_kz3_wacct; if (__atomic_load_n(&g_kz3_wacct, __ATOMIC_RELAXED) > 0) kz3_wacct_note(9, 0, get_timestamp_ns() - s_park_t0); }
+                   if (kz3_ft_on()) fprintf(stderr, "[ft] %llu unpark io=0x%08X after %llu ms -> 0x%08X\n", ps3_ms_now(),
+                                            s_fifo_getoff, (unsigned long long)ms, tgt);
+               }
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2467,7 +2467,7 @@
+                 fprintf(stderr, "[spu-ovl] no free resident code span for image %d\n", o->image_id);
+                 return;
+             }
+-            { extern void kz3_wacct_job(int); extern int g_kz3_wacct; if (g_kz3_wacct > 0) kz3_wacct_job(o->image_id); }   /* patch 1032 */
++            { extern void kz3_wacct_job(int); extern int g_kz3_wacct; if (__atomic_load_n(&g_kz3_wacct, __ATOMIC_RELAXED) > 0) kz3_wacct_job(o->image_id); }   /* patch 1032 */
+             if (ctx->resident_ovl != o->image_id) {
+                 ctx->resident_ovl = o->image_id;
+                 { static int _n = 0; if (PS3_LOG_FIRST(_n, 32))
+@@ -3391,7 +3391,7 @@
+                 img = 0;
+             }
+             if (img) {
+-                { extern void kz3_wacct_job(int); extern int g_kz3_wacct; if (g_kz3_wacct > 0) kz3_wacct_job(img); }   /* patch 1032 */
++                { extern void kz3_wacct_job(int); extern int g_kz3_wacct; if (__atomic_load_n(&g_kz3_wacct, __ATOMIC_RELAXED) > 0) kz3_wacct_job(img); }   /* patch 1032 */
+                 if (ctx->resident_ovl != img) {
+                     ctx->resident_ovl = img;
+                     static int _n = 0; if (PS3_LOG_FIRST(_n, 32))

@@ -95,15 +95,17 @@ def main():
                 f.write("0x00010000  # x\n")
         c = fr.Ctx(root=root, build=os.path.join(root, "build"), dump="d", eboot=os.path.join(tmp, "EBOOT.elf"))
         cmds = fr.cmd_ppu_lift(c)
-        check(len(cmds) == 1 and cmds[0][cmds[0].index("--functions") + 1].endswith("functions.json")
-              and "PPU_JT_HINTS" not in c.env(), "without a fixups file: one lift of functions.json", cmds)
+        check(len(cmds) == 2 and cmds[0][cmds[0].index("--functions") + 1].endswith("functions.json")
+              and "PPU_JT_HINTS" not in c.env() and "lua_unwind.py" in " ".join(cmds[-1]),
+              "without a fixups file: lift functions.json, then host continuations", cmds)
         with open(os.path.join(root, "port", "kz2", "ppu_lift_fixups-129.txt"), "w") as f:
             f.write(FIX)
         cmds = fr.cmd_ppu_lift(c)
         env = c.env()
-        check(len(cmds) == 2 and cmds[0][3].endswith("lift_fixups.py") and cmds[0][1:3] == ["-X", "utf8"]
+        check(len(cmds) == 3 and cmds[0][3].endswith("lift_fixups.py") and cmds[0][1:3] == ["-X", "utf8"]
               and cmds[1][cmds[1].index("--functions") + 1] == c.b("analysis", "functions.fixed.json")
-              and env.get("PPU_JT_HINTS") == c.b("analysis", "jt_hints.txt"), "with fixups: helper, then the lift",
+              and env.get("PPU_JT_HINTS") == c.b("analysis", "jt_hints.txt")
+              and cmds[-1][-2:] == ["--version", "129"], "with fixups: helper, lift, host continuations",
               cmds)
         check(env.get("KZ2_EBOOT_VER") == "129" and env.get("KZ2_ANALYSIS_DIR") == c.b("analysis")
               and env.get("KZ2_EBOOT_ELF") == c.eboot, "tools pointed at this build's EBOOT and analysis")

@@ -1,11 +1,55 @@
 {
- "comment": "Expected SHA-256 of the decrypted Killzone 2 EBOOT (from the player's own copy). A hash is a number, not game data. 1.29 and 1.01 from a disc dump and its update; empty = unknown yet, and firstrun_check.py only warns (H1). Sizes from firstrun_check.EBOOT_ELF_SIZES.",
- "1.29": {
-  "size": 16455144,
-  "sha256": "e8b0ddefc0cb1dc116fb4ae9675a5f551a26cc7eb7d74b06f00ec294ceea8c3d"
- },
- "1.01": {
-  "size": 16381928,
-  "sha256": "39a28358efd91fd0e914944392a3807b0141e4c5b6ba22e4964640c9c43b9799"
- }
+ "comment": "Killzone 2's rows of the EBOOT id table the Killzone ports share (read by firstrun_check.load_eboot_entries and the installer's EBOOT page). Ids, sizes and hashes only. size, sha256 and segment_sha256 are of the decrypted ELF, self_sha256 of the encrypted EBOOT.BIN, all read 2026-11-09 in the sandbox. The decrypted 1.29 EBOOT is byte-identical on all four discs, so its four rows share size, sha256 and segment_sha256; each region's 1.29 update has its own EBOOT.BIN, so self_sha256 differs. Status: tested = the port was built and run on it; untested = identified only; unsupported = a known build this port does not run (the US disc's own 1.01 EBOOT). Sizes = firstrun_check.EBOOT_ELF_SIZES. No braces in this comment: the installer's parser splits on them.",
+ "entries": [
+  {
+   "title_id": "BCUS98116",
+   "region": "US",
+   "app_ver": "01.29",
+   "size": 16455144,
+   "sha256": "e8b0ddefc0cb1dc116fb4ae9675a5f551a26cc7eb7d74b06f00ec294ceea8c3d",
+   "status": "tested",
+   "self_sha256": "d96121214aa437492fe28c4d3da0487311540f984d581515bf23427199971688",
+   "segment_sha256": "eb3a2eab28b59d9aecd9e0952d8ddca0accd7a65e00d85c3561fe04975a54012"
+  },
+  {
+   "title_id": "BCES00081",
+   "region": "EU",
+   "app_ver": "01.29",
+   "size": 16455144,
+   "sha256": "e8b0ddefc0cb1dc116fb4ae9675a5f551a26cc7eb7d74b06f00ec294ceea8c3d",
+   "status": "untested",
+   "self_sha256": "7a8547d8b538460d447f42f85f4d89078d9563548afe311d8f49599f28ab5c0e",
+   "segment_sha256": "eb3a2eab28b59d9aecd9e0952d8ddca0accd7a65e00d85c3561fe04975a54012"
+  },
+  {
+   "title_id": "BCAS20066",
+   "region": "Asia",
+   "app_ver": "01.29",
+   "size": 16455144,
+   "sha256": "e8b0ddefc0cb1dc116fb4ae9675a5f551a26cc7eb7d74b06f00ec294ceea8c3d",
+   "status": "untested",
+   "self_sha256": "7f5ac08f4bb4b17a9b49144835fd1049cd42cbb663781d718bb8d7fd6b59b94a",
+   "segment_sha256": "eb3a2eab28b59d9aecd9e0952d8ddca0accd7a65e00d85c3561fe04975a54012"
+  },
+  {
+   "title_id": "BCJS30032",
+   "region": "JP",
+   "app_ver": "01.29",
+   "size": 16455144,
+   "sha256": "e8b0ddefc0cb1dc116fb4ae9675a5f551a26cc7eb7d74b06f00ec294ceea8c3d",
+   "status": "untested",
+   "self_sha256": "a5cc2491b0f2e1c0d5533fcc728aaa42b44b997e1f83a3747f0a1584e6f89c41",
+   "segment_sha256": "eb3a2eab28b59d9aecd9e0952d8ddca0accd7a65e00d85c3561fe04975a54012"
+  },
+  {
+   "title_id": "BCUS98116",
+   "region": "US",
+   "app_ver": "01.01",
+   "size": 16381928,
+   "sha256": "39a28358efd91fd0e914944392a3807b0141e4c5b6ba22e4964640c9c43b9799",
+   "status": "unsupported",
+   "self_sha256": "629dbdcc6cd0c0f49a35544bae1e79bfcc3b5008c879679b5293b4f3f7518422",
+   "segment_sha256": "41ef1a067b7cd48ff2a6102779e6c1d4948b28a31fc57a55db78af78f4736ebc"
+  }
+ ]
 }

@@ -206,6 +206,11 @@ Source: "{#Payload}\kz2-setup\release\version_check.py"; DestDir: "{tmp}\vcheck"
 ; The manual EBOOT page asks rpcs3_import.py whether the picked file is still encrypted (before anything is installed)
 Source: "{#Payload}\kz2-setup\release\rpcs3_import.py"; DestDir: "{tmp}\vcheck"; Flags: dontcopy
 Source: "{#Payload}\kz2-setup\release\rpcs3_locate.py"; DestDir: "{tmp}\vcheck"; Flags: dontcopy
+; rpcs3_import.py imports firstrun_check.py (its title ids since D53, and the EBOOT verdict of --identify), which reads
+; the EBOOT id table next to itself: both go to vcheck too (without them the helper stopped at its
+; import and the page's encrypted-EBOOT test never ran)
+Source: "{#Payload}\kz2-setup\release\firstrun_check.py"; DestDir: "{tmp}\vcheck"; Flags: dontcopy
+Source: "{#Payload}\kz2-setup\release\eboot_sha256.json"; DestDir: "{tmp}\vcheck"; Flags: dontcopy
 ; The EBOOT page's version test reads firstrun_check's own table of known EBOOTs (size, SHA-256), not a copy of it
 Source: "{#Payload}\kz2-setup\release\eboot_sha256.json"; Flags: dontcopy
 ; run.cmd is the portable zip's entry point (firstrun.py --interactive); the installed copy uses the launcher
@@ -359,6 +364,9 @@ var
   HelperSeq: Integer;
   VcheckReady: Boolean;
   EbootHashPath, EbootHashValue: String;
+  { the helper's E1/H1 verdict on that file (rpcs3_import --identify: firstrun_check.check_eboot_elf and the shared
+    EBOOT id table): level OK, WARN or FAIL and the check's text; empty Path = no verdict (the helper did not run) }
+  EbootVerdictPath, EbootVerdictLevel, EbootVerdictText: String;
 
 function LogName: String;
 begin
@@ -984,8 +992,10 @@ begin
   end;
 end;
 
-{ eboot_sha256.json (firstrun_check.py's table, extracted from the setup on first use): per known EBOOT version
-  an object with its size and sha256. '' when it cannot be read (then no EBOOT is refused). From Project Helghast PR #11. }
+{ eboot_sha256.json (firstrun_check.py's table, extracted from the setup on first use): the shared EBOOT id table,
+  one flat object per title id and version with its app_ver, size and sha256 (an earlier change's builds list and the old
+  form, a "1.29" key per object, read the same way). Only the fallback version test uses it (EbootProblem without the
+  helper's verdict). '' when it cannot be read (then no EBOOT is refused). From Project Helghast PR #11. }
 function EbootTable: String;
 var
   A: AnsiString;
@@ -1059,55 +1069,96 @@ begin
   T := EbootTable;
   if (T = '') or not FileSize64(Path, Size) then Exit;
   R := T;
-  P := Pos('": ' + #123, R);
-  while P > 0 do begin
-    K := Copy(R, 1, P - 1);
-    Q := Length(K);
-    while (Q > 0) and (K[Q] <> '"') do Q := Q - 1;
-    V := Copy(K, Q + 1, MaxInt);
-    S := Copy(R, P, MaxInt);
-    E := Pos('}', S);
-    if E > 0 then S := Copy(S, 1, E);
-    if (JsonNumber(S, 'size') <> '') and (StrToInt64Def(JsonNumber(S, 'size'), -1) = Size) then begin
+  E := Pos(#125, R);
+  while E > 0 do begin
+    { each innermost object: from the last opening brace before a closing one up to it }
+    K := Copy(R, 1, E - 1);
+    P := Length(K);
+    while (P > 0) and (K[P] <> #123) do P := P - 1;
+    S := Copy(K, P, MaxInt);
+    if (P > 0) and (JsonNumber(S, 'size') <> '') and (StrToInt64Def(JsonNumber(S, 'size'), -1) = Size) then begin
+      { the per-build list: the version from app_ver ('01.29' -> '1.29'); the old form: the key before the object }
+      V := JsonString(S, 'app_ver');
+      if V <> '' then begin
+        if (Length(V) > 2) and (V[1] = '0') and (V[2] <> '.') then V := Copy(V, 2, MaxInt);
+      end else begin
+        K := Copy(K, 1, P - 1);
+        Q := Length(K);
+        while (Q > 0) and (K[Q] <> '"') do Q := Q - 1;
+        K := Copy(K, 1, Q - 1);
+        Q := Length(K);
+        while (Q > 0) and (K[Q] <> '"') do Q := Q - 1;
+        V := Copy(K, Q + 1, MaxInt);
+      end;
       Result := V;
       Want := Lowercase(JsonString(S, 'sha256'));
       Got := Lowercase(EbootSha256(Path));
       if (Want <> '') and (Got = Want) then How := 'size and SHA-256' else How := 'size only, SHA-256 ' + Got;
       Exit;
     end;
-    R := Copy(R, P + 4, MaxInt);
-    P := Pos('": ' + #123, R);
+    R := Copy(R, E + 1, MaxInt);
+    E := Pos(#125, R);
   end;
 end;
 
-{ '' when the EBOOT may be used; else why not: a known EBOOT of another version than this release's, such as the
-  disc's own one (from Project Helghast PR #11, its issue #8: the page took the disc's EBOOT and the build stopped
-  later, with the reason only in the log). UpdateDir names the update's USRDIR in the message. An unknown EBOOT
-  passes, as before (the build's first step checks it). Tested once per file name. }
+{ 'Killzone 2 1.29 (BCUS98116, US)': a version for a title id (firstrun_check.py build_name; region names of REGIONS) }
+function BuildName(V, Id: String): String;
+var
+  R: String;
+begin
+  if Id = 'BCUS98116' then R := 'US'
+  else if Id = 'BCES00081' then R := 'Europe'
+  else if Id = 'BCAS20066' then R := 'Asia'
+  else if Id = 'BCJS30032' then R := 'Japan'
+  else R := '';
+  if R = '' then Result := 'Killzone 2 ' + V else Result := 'Killzone 2 ' + V + ' (' + Id + ', ' + R + ')';
+end;
+
+{ '' when the EBOOT may be used; else why not. With the helper's verdict for this file (EbootEncrypted, the page's
+  Next): its FAIL text, the same as the first-run check's E1/H1 (another version such as the disc's 1.01 one, a build
+  this port does not run). Without it (a silent /EBOOT=, or the helper did not run): the table's version by size,
+  refused when it is another one (from Project Helghast PR #11, its issue #8: the page took the disc's EBOOT and the
+  build stopped later, with the reason only in the log). The texts name what is wrong and the needed title, version
+  and region, no paths and no how-to (shared EBOOT id table). An unknown EBOOT passes (the build's
+  first step checks it). UpdateDir is unused (kept for the callers). Tested once per file name. }
 function EbootProblem(Path, UpdateDir: String): String;
 var
-  V, How, Usr: String;
+  V, How, Id: String;
 begin
+  Result := '';
+  { a fresh verdict on every Next (a file made again under the same name is judged again) }
+  if (EbootVerdictPath <> '') and (CompareText(Path, EbootVerdictPath) = 0) then begin
+    Log('EBOOT verdict: ' + EbootVerdictLevel + ' ' + EbootVerdictText);
+    if EbootVerdictLevel = 'FAIL' then Result := EbootVerdictText;
+    Exit;
+  end;
   if CompareText(Path, EbootTested) = 0 then begin
     Result := EbootTestResult;
     Exit;
   end;
-  Result := '';
-  V := EbootVersionOf(Path, How);
-  if V <> '' then Log('EBOOT: ' + V + ' (by ' + How + ')') else Log('EBOOT: not a known size; the build checks it');
-  if (V <> '') and (V <> '{#EbootTarget}') then begin
-    { the usual place only beside a given update folder: without one (a silent /EBOOT= alone) it was named twice
-      (VM kit pre-flight) }
-    if UpdateDir <> '' then Usr := AddBackslash(UpdateDir) + 'USRDIR' + #13#10 + '(usually dev_hdd0\game\<your disc''s title id, such as BCUS98116>\USRDIR)'
-    else Usr := 'dev_hdd0\game\<your disc''s title id, such as BCUS98116>\USRDIR';
-    if V = '{#DiscEboot}' then Result := 'This is the disc''s {#DiscEboot} EBOOT.'
-    else Result := 'This is the ' + V + ' EBOOT.';
-    Result := Result + ' This release needs the EBOOT of the {#EbootTarget} update: EBOOT.elf, the decrypted form ' +
-      'of EBOOT.BIN in the update''s USRDIR folder:' + #13#10 + Usr + '.' + #13#10 + #13#10 +
-      'Pick that file, then press Next.';
+  begin
+    V := EbootVersionOf(Path, How);
+    if V <> '' then Log('EBOOT: ' + V + ' (by ' + How + ')') else Log('EBOOT: not a known size; the build checks it');
+    if (V <> '') and (V <> '{#EbootTarget}') then begin
+      if WizardSilent then Id := SfoField(DiscSfo(ExpandConstant('{param:DUMP|}')), 'TITLE_ID')
+      else Id := SfoField(DiscSfo(DumpPage.Values[0]), 'TITLE_ID');
+      if not KnownDiscId(Id) then Id := 'BCUS98116';
+      Result := 'This EBOOT is ' + BuildName(V, '');
+      if V = '{#DiscEboot}' then Result := Result + ', the disc''s own version';
+      Result := Result + '. This release needs ' + BuildName('{#EbootTarget}', Id) + '.';
+    end;
   end;
   EbootTested := Path;
   EbootTestResult := Result;
+end;
+
+{ The helper's WARN text for this file ('' when none): untested build, another region's, unknown or modified
+  (firstrun_check H1). The page asks whether to use the file anyway; the build's check shows it again. }
+function EbootWarning(Path: String): String;
+begin
+  Result := '';
+  if (EbootVerdictPath <> '') and (CompareText(Path, EbootVerdictPath) = 0) and (EbootVerdictLevel = 'WARN') then
+    Result := EbootVerdictText;
 end;
 
 { The install folder (OneDrive and the like), and for a silent install a known EBOOT of another version given with
@@ -1344,24 +1395,33 @@ end;
 function EbootEncrypted(Path: String; var Msg: String): Boolean;
 var
   Lines: TArrayOfString;
-  ResFile, Params: String;
+  ResFile, Params, Id: String;
   I: Integer;
-  Size: Int64;
 begin
   Result := False;
   Msg := '';
+  EbootVerdictPath := '';
+  EbootVerdictLevel := '';
+  EbootVerdictText := '';
   if not VcheckExtracted then Exit;
   ResFile := HelperResFile('eboot-kind');
   Params := '"' + ExpandConstant('{tmp}\vcheck\rpcs3_import.py') + '" --eboot-kind "' + Path + '" --out "' + ResFile + '"';
-  { The version test (EbootVersionOf) needs the SHA-256 only for a known EBOOT size: the same run reads it }
-  if FileSize64(Path, Size) and (EbootTable <> '') and (Pos('"size": ' + IntToStr(Size), EbootTable) > 0) then
-    Params := Params + ' --sha256';
+  { The same run hashes the file and gives the first-run check's verdict on it (E1/H1: version, build, region;
+    an earlier change), with the disc's title id when the dump page's folder names one }
+  Params := Params + ' --identify --target {#EbootTarget}';
+  Id := SfoField(DiscSfo(DumpPage.Values[0]), 'TITLE_ID');
+  if KnownDiscId(Id) then Params := Params + ' --title ' + Id;
   if not RunHelper('EBOOT check', ExpandConstant('{tmp}\vcheck\python\python.exe'), Params, '', ResFile,
       'Checking your EBOOT.elf...', 120) then Exit;
   if not LoadStringsFromFile(ResFile, Lines) then Exit;
   EbootHashPath := '';
   EbootHashValue := '';
   for I := 0 to GetArrayLength(Lines) - 1 do begin
+    if Pos('level=', Lines[I]) = 1 then begin
+      EbootVerdictPath := Path;
+      EbootVerdictLevel := Copy(Lines[I], 7, MaxInt);
+    end;
+    if Pos('text=', Lines[I]) = 1 then EbootVerdictText := Copy(Lines[I], 6, MaxInt);
     if Pos('status=encrypted', Lines[I]) = 1 then Result := True;
     if Pos('help=', Lines[I]) = 1 then Msg := Copy(Lines[I], 6, MaxInt);
     if Pos('sha256=', Lines[I]) = 1 then begin
@@ -1482,7 +1542,9 @@ begin
       if Problem <> '' then begin
         MsgBox(Problem, mbError, MB_OK);
         Result := False;
-      end;
+      end else if EbootWarning(EbootPage.Values[0]) <> '' then
+        Result := MsgBox(EbootWarning(EbootPage.Values[0]) + #13#10 + #13#10 + 'Use this file anyway?',
+          mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
     end;
   end;
 end;

@@ -66,6 +66,7 @@ python3 "$PT/tools/ppu_lifter.py" "$ELF" --functions "$AN/functions.json" \
   --hle-stubs "$AN/$STEM.imports.json" --toc "$TOC" --code-end "$CODE_END" \
   --overrides "$OVR" "${PROBES[@]}" -j 4 --chunks "$CHUNKS" --output "$RC" > "$RC/lift.log" 2>&1
 tail -5 "$RC/lift.log"
+python3 tools/release/lua_unwind.py --recomp-dir "$RC" --version "$VER"
 printf 'ver=%s elf=%s sha=%s code_end=%s toc=%s overrides=%s probes=%s patchset=%s chunks=%s date=%s\n' "$VER" "$ELF" \
   "$elf_sha" "$CODE_END" "$TOC" "$(sha256sum "$OVR" | cut -c1-16)" "${KZ2_PROBES:-none}" \
   "$(cat "$PT/.kz2-patchset" 2>/dev/null)" "$CHUNKS" "$(date -Is)" > "$RC/.lift-stamp"

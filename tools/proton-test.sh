@@ -37,7 +37,25 @@ SHOT="${SHOT:-$ROOT/work/shots/$NAME.png}"
 RUN="$ROOT/work/proton/$NAME"
 [[ -x "$PROTON_DIR/proton" ]] || { echo "no proton at $PROTON_DIR" >&2; exit 2; }
 
+# Optional scripted play: validate before staging, and never reuse old evidence.
+if [[ -n "${KZ2_PLAY_SCENARIO:-}" ]]; then
+  python3 "$ROOT/tools/gameplay/play.py" validate "$KZ2_PLAY_SCENARIO" || exit 2
+  KZ2_PLAY_SCENARIO="$(readlink -f "$KZ2_PLAY_SCENARIO")" || exit 2
+  export KZ2_PLAY_SCENARIO
+  if [[ -e "$RUN/run.json" || -e "$RUN/play.json" || -e "$RUN/play.jsonl" || -e "$RUN/app/app_stdout.txt" ]]; then
+    echo "proton-test: scripted play needs a fresh run name ($NAME)" >&2; exit 2
+  fi
+  [[ -z "${REAL:-}${KZ2_REAL_DISPLAY:-}" ]] || { echo 'proton-test: scripted captures require hidden Xvfb' >&2; exit 2; }
+  # Shared runtime logger switch: admission lines must be visible if quiet logging is enabled.
+  export KZ3_LOG="${KZ3_LOG:+$KZ3_LOG,}cellPad:debug"
+fi
+
 mkdir -p "$RUN/app" "$RUN/compat" "$RUN/steam" "$(dirname "$SHOT")"
+if [[ -n "${KZ2_PLAY_SCENARIO:-}" ]]; then
+  cp "$KZ2_PLAY_SCENARIO" "$RUN/play-scenario.json"
+  export KZ2_PLAY_SCENARIO="$RUN/play-scenario.json"
+  python3 "$ROOT/tools/gameplay/play.py" validate "$KZ2_PLAY_SCENARIO" || exit 2
+fi
 cp -a "$(dirname "$EXE")/." "$RUN/app/"
 
 # Run provenance (tools/runprov.py, when present): work/proton/<name>/run.json records the staged exe, git state,

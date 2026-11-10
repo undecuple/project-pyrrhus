@@ -1027,8 +1027,10 @@ def s_eboot_101(st, a):
     ex = Expect(st)
     st.say(f"The check with a stand-in of the disc's 1.01 EBOOT ({e}):")
     rc, text = fcheck(st, "20-check", dump, update, e)
-    ex(rc == 1 and "FAIL E1: this EBOOT is the disc's 1.01 one" in text, "FAIL E1 'this EBOOT is the disc's 1.01 one'")
-    ex(has_reason(text, "EBOOT failed:", "USRDIR"), "the stop reason is labelled 'EBOOT failed:' and names USRDIR")
+    ex(rc == 1 and "FAIL E1: This EBOOT is Killzone 2 1.01, the disc's own version." in text,
+       "FAIL E1 'This EBOOT is Killzone 2 1.01, the disc's own version.'")
+    ex(has_reason(text, "EBOOT failed:", "needs Killzone 2 1.29"),
+       "the stop reason is labelled 'EBOOT failed:' and names the needed build (no path)")
     ex(has_reason(text, "Passed:", "disc dump", "1.29 update"), "the disc dump and the update passed")
     ini = KeepIni(inst)
     try:

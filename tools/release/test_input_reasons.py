@@ -127,7 +127,7 @@ def main():
         old = os.path.join(tmp, "old", "EBOOT.elf")
         write_elf(old, 16_381_928)
         rc, rs, _ = run(["--dump", d, "--update", u, "--eboot", old])
-        check("the disc's 1.01 EBOOT: E1's message kept", rc == 1 and "Found: this EBOOT is the disc's 1.01 one" in rs[0], rs)
+        check("the disc's 1.01 EBOOT: E1's message kept", rc == 1 and "Found: This EBOOT is Killzone 2 1.01, the disc's own version." in rs[0], rs)
         for r in rs:
             check("reason fits a REASON line (firstrun.REASON_MAX 900)", len(r) <= 900, r)
 

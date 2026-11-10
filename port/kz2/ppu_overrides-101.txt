@@ -33,4 +33,6 @@
 003E6D10  # v1.01 luaD_throw (= 1.29 0x3F3160, 40 words with branches masked): diagnostic
 007AA3D8  # v1.01 exit (= 1.29 0x7B7D60, 40 words with branches masked): diagnostic
 002E3E98  # v1.01 aim assist pull (= 1.29 0x2EF0C0, the bl at 0x2E51F0): aim_assist_strength
+003EF350  # v1.01 luaG_errormsg (= 1.29 0x3FB7A0, 40 words with branches masked, unique): diagnostic
 003ED420  # v1.01 luaV_gettable (= 1.29 0x3F9870, checked by disassembly): diagnostic
+007B6084  # v1.01 libc longjmp: restore guest registers, then unwind to the host setjmp continuation (issue 49)

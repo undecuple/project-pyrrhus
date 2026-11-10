@@ -77,7 +77,8 @@ proton() { steam-run "$PROTON_DIR/proton" "$@"; }
 # (and even so the game windows outlived it in a KZ3 batch, so the game and launcher processes are also ended
 # by name: the sandbox has its own pid namespace, so this never reaches another worktree's run)
 wskill() { WINEPREFIX="${1:-$STATE/compat/pfx}" steam-run "$PROTON_DIR/files/bin/wineserver" -k >/dev/null 2>&1
-  pkill -f 'kz2\.exe|Project Pyrrhus\.exe' 2>/dev/null; true; }
+  pkill -f 'kz2\.exe|Project Pyrrhus\.exe|Pyrrhus-setup\.tmp' 2>/dev/null; true; }   # the setup too (a box of
+  # one walk outlived wineserver -k and sat over the next walk's licence page)
 winpath() { echo "Z:${1//\//\\}"; }
 cleanup() {
   wskill
@@ -237,8 +238,12 @@ rpcs3)
   #   A  RPCS3 path: wrong folder (error), a tree missing the update (the problems box), fixed (Retry), the build
   #      fixture, the save question (dry run), No
   #   B  manual path with an encrypted EBOOT.BIN (HELP_ENCRYPTED)
+  #   E  manual path, the EBOOT page with KZ2_WT_EBOOT (a Z:\ path, e.g. a real EBOOT read through the sandbox's
+  #      read-only binds) and KZ2_WT_EFX (the fixture set, manual or manual-eu): the page's answer (box or Ready page)
+  #      is shot; with KZ2_WT_EBOX=1 the box is answered with Return (its default: OK, or No for a WARN) and the page
+  #      after it shot too
   SETUP="$1" SHOTS="$2" WALK="${3:-A}"; mkdir -p "$SHOTS"
-  FX="${KZ2_WT_FX:-$WT/fx}"; P=r14
+  FX="${KZ2_WT_FX:-$WT/fx}"; P="${KZ2_WT_ETAG:-r14}"   # KZ2_WT_ETAG: the shot prefix of one E walk
   export KZ2_WT_LINUXPY="$(command -v python3)" KZ2_WT_CDRIVE="$C" KZ2_WIZARD_DEMO_SECS="${KZ2_WIZARD_DEMO_SECS:-2}"
   export KZ2_WT_WINPY="$ROOT/work/release/winpy.py"
   rm -f "$C/pyshim.log"; rm -rf "$C/users/steamuser/AppData/Local/Programs/Project Pyrrhus" "$C/users/steamuser/AppData/Roaming/Project Pyrrhus"
@@ -296,6 +301,18 @@ rpcs3)
     chg 120 keyw . Return; sleep 15; rshot A-08-build                                               # Retry: found, build fixture
     waitbox 300; rshot A-09-save-question                                                 # the dry run text
     chg 60 keyw . n; calm 10 120; rshot A-10-after-save-no
+  elif [[ "$WALK" == E ]]; then
+    EFX="$FX/${KZ2_WT_EFX:-manual}"
+    chg 60 key Down; chg 60 key Return; rshot E-03-dump
+    typ "$(winpath "$EFX/dump")"; sleep 3; chg 60 key Return
+    # KZ2_WT_EDUMPBOX=1: the dump page answers with a box first (an untested region's D1 note): shot, then OK
+    [[ "${KZ2_WT_EDUMPBOX:-0}" == 1 ]] && { calm 6 60; rshot E-03b-dump-box; chg 60 keyw . Return; }
+    rshot E-04-update
+    typ "$(winpath "$EFX/update")"; sleep 3; chg 60 key Return; rshot E-05-eboot
+    typ "${KZ2_WT_EBOOT:?}"; sleep 3; rshot E-06-eboot-typed
+    T1=$SECONDS; chg 240 key Return; calm 6 240; echo "answer after $((SECONDS - T1)) s (screen calm)"; rshot E-07-answer
+    if [[ "${KZ2_WT_EBOX:-0}" == 1 ]]; then   # a box is expected: Return = its default button (never on the Ready page)
+      chg 30 keyw . Return; calm 6 60; rshot E-08-after-return; fi
   else
     chg 60 key Down; rshot B-02-manual-choice; chg 60 key Return; rshot B-03-dump
     typ "$(winpath "$FX/manual/dump")"; sleep 3; chg 60 key Return; rshot B-04-update
@@ -303,7 +320,7 @@ rpcs3)
     typ "$(winpath "$FX/manual/update/USRDIR/EBOOT.BIN")"; sleep 3; rshot B-06-eboot-typed
     chg 120 key Return; waitbox 240; rshot B-07-encrypted-help
   fi
-  cp "$C/kz2test/setup-inno.log" "$SHOTS/inno-$WALK.log" 2>/dev/null; cp "$C/pyshim.log" "$SHOTS/pyshim-$WALK.log" 2>/dev/null
+  cp "$C/kz2test/setup-inno.log" "$SHOTS/inno-$P-$WALK.log" 2>/dev/null; cp "$C/pyshim.log" "$SHOTS/pyshim-$WALK.log" 2>/dev/null
   names; rshot "$WALK-99-end"
   grep -i -m10 "error\|exception" "$C/kz2test/setup-inno.log" 2>/dev/null | cut -c1-200
   ;;

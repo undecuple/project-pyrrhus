@@ -38,7 +38,7 @@ A park without a 41 was patched by a PPU store or before patch 6038's arm. Off: 
 @@ -3288,6 +3304,7 @@
                    if (ms > s_pmax) s_pmax = ms;
                    { extern void kz3_wacct_note(int, uint32_t, uint64_t);   /* patch 1032: KZ3_WA_PARK = 9 */
-                     extern int g_kz3_wacct; if (g_kz3_wacct > 0) kz3_wacct_note(9, 0, get_timestamp_ns() - s_park_t0); }
+                     extern int g_kz3_wacct; if (__atomic_load_n(&g_kz3_wacct, __ATOMIC_RELAXED) > 0) kz3_wacct_note(9, 0, get_timestamp_ns() - s_park_t0); }
 +                  kz2_park_trace(43, s_fifo_getoff);   /* KZ2 patch 7013 */
                    if (kz3_ft_on()) fprintf(stderr, "[ft] %llu unpark io=0x%08X after %llu ms -> 0x%08X\n", ps3_ms_now(),
                                             s_fifo_getoff, (unsigned long long)ms, tgt);

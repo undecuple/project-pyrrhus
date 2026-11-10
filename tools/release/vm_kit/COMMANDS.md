@@ -104,8 +104,8 @@ failed: ...".
 
 ### 20-eboot-101
 `"C:\Program Files\Python312\python.exe" C:\kz2\kit\vm_test.py 20-eboot-101`
-The 1.01 stand-in EBOOT. The check: "FAIL E1: this EBOOT is the disc's 1.01 one ..." and "EBOOT failed: ... USRDIR
-...". Then the console (`firstrun.py --interactive`, the step types the answers; it never builds here): it asks for
+The 1.01 stand-in EBOOT. The check: "FAIL E1: This EBOOT is Killzone 2 1.01, the disc's own version. ..." and
+"EBOOT failed: ... This release needs Killzone 2 1.29 (BCUS98116, US).". Then the console (`firstrun.py --interactive`, the step types the answers; it never builds here): it asks for
 the EBOOT alone ("The EBOOT must be the 1.29 update's one, not the disc's ..."), takes the folder
 `C:\kz2\t\eboot101` as the answer ("using C:\kz2\t\eboot101\EBOOT.elf"), refuses it again, and q ends with "Nothing
 was built. The next start checks your game files again."

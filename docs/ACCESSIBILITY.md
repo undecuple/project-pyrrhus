@@ -29,6 +29,9 @@ in `keybinds.ini` under `[prompts]`. Known problem: in the PS4/PS5 set, the STAR
 
 ## Display
 
+- **Skip intro.** Options > Display has a **Skip intro (next start)** choice. It is off by default and saves to
+  `[display] skip_intro = off | on` in `display.ini`. `KZ2_SKIP_INTRO=0|1` overrides it for one run. This skips
+  the opening movie page; it leaves later cutscenes unchanged.
 - **Window modes.** Borderless window (the default for a new install), windowed or fullscreen: pick one in the
   installer, in the portable zip's first run or with the Start menu entry "Display". Alt+Enter switches between
   borderless and a window while playing; a `display.ini` you already have keeps its mode.

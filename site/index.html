@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.11<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.12<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -128,7 +128,7 @@
 <tr><td>Gyro stand-in for SIXAXIS</td><td>ENHANCEMENT: stick or mouse</td><td><span class="st st-prog">In progress</span></td></tr>
 <tr><td>Display modes</td><td>ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini</td><td><span class="st st-prog">In progress</span></td></tr>
 <tr><td>Keyboard and mouse</td><td>ENHANCEMENT: mouse look (raw input) and the keyboard</td><td><span class="st st-part">Partial</span></td></tr>
-<tr><td>Display options in the game</td><td>ENHANCEMENT: field of view (45-75), FSR 1 upscaling and sharpness as rows on the game&#x27;s own Display page</td><td><span class="st st-part">Partial</span></td></tr>
+<tr><td>Display options in the game</td><td>ENHANCEMENT: field of view (45-75), FSR 1 upscaling, sharpness, vsync and a saved Skip intro choice on the game&#x27;s own Display page</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gamepads: PlayStation and Xbox</td><td>ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Button prompt choice and pad layouts</td><td>ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout</td><td><span class="st st-part">Partial</span></td></tr>
 <tr><td>Gameplay options: aim assist switch, crouch and cover toggles</td><td>ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE)</td><td><span class="st st-part">Partial</span></td></tr>
@@ -140,6 +140,16 @@
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">Every feature, with evidence<span aria-hidden="true"> &gt;</span></a></p>
 </article>
 <div id="news">
+<article class="news rel">
+<h2>v0.1.12</h2>
+<p class="meta">10 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Changed</span>Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that pads the file differently is still accepted. The messages name only what is wrong and the EBOOT the port needs (title id, version, region). A 1.29-sized EBOOT whose contents differ (patched or damaged) gets a warning saying so. Checked with the real EBOOTs and in the setup wizard under Proton.</li>
+<li><span class="sec">Fixed</span>The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted EBOOT was only caught at the first build step. It is packed again, and the page now gives the same verdict as the first-run check; in the wizard under Proton it answers in under a second.</li>
+<li><span class="sec">Fixed</span>When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This is what made the game quit in #49: the reported log matches the forced error line for line. Which script raises the error there is not known yet; the game&#x27;s log now records a script&#x27;s own error message, so a log from the moment it happens can name it.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
 <article class="news rel">
 <h2>v0.1.11</h2>
 <p class="meta">5 Nov 2026 · pre-release</p>
@@ -167,17 +177,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.10">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.9</h2>
-<p class="meta">4 Nov 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Fixed</span>Russian text: letters the game&#x27;s own fonts lack (Cyrillic, Greek) are drawn from a bundled Noto Sans; before, a Russian game showed only punctuation (#39).</li>
-<li><span class="sec">Added</span><code>gameplay.ini</code> is created next to <code>keybinds.ini</code> with every setting the game reads (aim assist, crouch and cover toggle, motion, the <code>[mouse]</code> keys) at its default, when the installer or the launcher finds none; an existing file is never changed.</li>
-<li><span class="sec">Added</span>Keyboard: Z and X (<code>tilt_left</code> / <code>tilt_right</code> in <code>keybinds.ini</code>) turn valves and arm demolition charges: hold one to grab and tilt, then the other; they do nothing anywhere else.</li>
-<li><span class="sec">Changed</span>An optional path for the game&#x27;s small light-probe textures, which no longer fill the texture cache: about 40 % less GPU work per draw in a heavy scene (off by default, LD_TILE_POOL=1 turns it on; not yet checked on a real display).</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.9">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -191,14 +190,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that...</span></li>
+<li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted...</span></li>
+<li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> aim_assist_strength in gameplay.ini (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game...</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> &quot;Use my RPCS3 install&quot; finds any of the four discs and always pairs it with the update of its own id.</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> With a controller and aim_assist = off, the game&#x27;s own stick smoothing stays; only the target help is removed. Mouse...</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> Japanese, Korean and Chinese text is no longer blank: the game&#x27;s system font now includes Noto Sans CJK (OFL), cut to...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -231,9 +230,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">v0.1.11</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">5 Nov 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">Download v0.1.11</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">v0.1.12</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">10 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">Download v0.1.12</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; a dump folder is read where it is, and the files of a decrypted .iso are copied once into the install folder. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>

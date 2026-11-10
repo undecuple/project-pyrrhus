@@ -94,6 +94,10 @@ if [[ -f "$ann" && "${KZ2_ALLOW_STALE_LIFT:-0}" != 1 ]]; then
   [[ "$want" == "$have" ]] || { echo "build-kz2: the lift in $recomp_l does not match ${ovr_list#$ROOT/} (lift ver $lift_ver): run tools/lift.sh" >&2; exit 3; }
 fi
 # Guards only (the remote build client, tools/remote/kz2remote.py): the checks above passed, build nothing here.
+if [[ "${KZ2_ALLOW_STALE_LIFT:-0}" != 1 && -f "$ann" ]] && grep -qE 'PPU_OVERRIDE_(007C3A0C|007B6084)' "$ann"; then
+  python3 "$ROOT/tools/release/lua_unwind.py" --recomp-dir "$recomp_l" --version "$lift_ver" --verify \
+    || { echo "build-kz2: Lua unwind continuations are missing or stale: run tools/lift.sh" >&2; exit 3; }
+fi
 [[ "${KZ2_BUILD_GUARDS_ONLY:-0}" == 1 ]] && { echo "build-kz2: guards ok" >&2; exit 0; }
 # Build slots across checkouts (tools/agents/slotlock.sh, private tooling): skipped when it is not there.
 SLOTS="${KZ2_BUILD_SLOTS:-1}"; [[ "$SLOTS" =~ ^[1-9][0-9]*$ ]] || SLOTS=1; SLOT=none; in_use=1

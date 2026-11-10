@@ -1,0 +1,235 @@
+KZ2 patch 6071: bounded byte-validated shader-program memo (experimental, off by default).
+
+Written for Project Pyrrhus. Extends Project Helghast patch 2029 by undecuple (MIT):
+https://github.com/undecuple/project-helghast . Preserves the original
+FNV/structural hash and PSO key tail. LD_PROGRAM_MEMO=1 enables eight FP address entries and eight VP start
+entries, each with full byte validation. Each FP retains four (hash mode, VP seed) hashes. Pure FP texture-unit,
+WPOS and DDY scans are reused only after byte validation; all render/window/texture state remains dynamic.
+LD_PSO_MEMO=0 disables both memo implementations. LD_PROGRAM_MEMO_SHADOW=1 checks uncached hash/key and scans
+on every candidate draw, rejecting mismatches. Shadow overhead is diagnostic, never a throughput measurement.
+Counters every 65536 draws report reuse and validation bytes; existing 6070 timers retain component timing.
+
+Memory is bounded: sixteen 64-KiB snapshots plus metadata, with two legacy snapshots retained. Entries use
+round-robin replacement. No write-generation/coherency assumptions or shader-cache-format changes.
+Host test: tools/runtime/test_shader_program_memo.c. Windows build, full host suite, visual and independent
+warm/cold/route A/B gates are pending; no measured FPS gain is claimed.
+diff --git a/libs/video/rsx_program_memo.h b/libs/video/rsx_program_memo.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_program_memo.h
+@@ -0,0 +1,59 @@
++/* Bounded byte-validated shader identity memo. Written for Project Pyrrhus.
++ * Caller owns synchronization and validates mapped bytes before accepting reuse.
++ * No guest write-generation assumptions; eviction is bounded round-robin. */
++#ifndef RSX_PROGRAM_MEMO_H
++#define RSX_PROGRAM_MEMO_H
++#include <stdint.h>
++#include <string.h>
++#define RSX_PM_SLOTS 8u
++#define RSX_PM_BYTES 0x10000u
++#define RSX_PM_HASHES 4u
++typedef struct {
++    uint32_t valid, mode;
++    uint64_t seed, value;
++} rsx_pm_hash;
++typedef struct {
++    uint32_t loc, off, size, n, hvalid, hmode;
++    uint64_t hseed, h;
++    uint32_t scans_valid, units, ddy, wpos, hash_next;
++    rsx_pm_hash hashes[RSX_PM_HASHES];
++    unsigned char bytes[RSX_PM_BYTES];
++} rsx_pm_entry;
++typedef struct {
++    rsx_pm_entry entries[RSX_PM_SLOTS];
++    uint32_t next;
++} rsx_program_memo;
++/* Location/start + offset select the candidate only. The caller must still
++ * compare all size bytes and invalidate derived values after any byte change. */
++static inline rsx_pm_entry* rsx_pm_select(rsx_program_memo* memo, uint32_t loc, uint32_t off)
++{
++    for (uint32_t i = 0; i < RSX_PM_SLOTS; i++) {
++        rsx_pm_entry* e = &memo->entries[i];
++        if (e->size && e->loc == loc && e->off == off) return e;
++    }
++    rsx_pm_entry* e = &memo->entries[memo->next];
++    memo->next = (memo->next + 1u) % RSX_PM_SLOTS;
++    memset(e, 0, sizeof *e);
++    e->loc = loc; e->off = off;
++    return e;
++}
++static inline void rsx_pm_invalidate(rsx_pm_entry* e)
++{
++    e->hvalid = e->scans_valid = e->hash_next = 0;
++    memset(e->hashes, 0, sizeof e->hashes);
++}
++static inline int rsx_pm_hash_get(const rsx_pm_entry* e, uint32_t mode, uint64_t seed, uint64_t* out)
++{
++    for (uint32_t i = 0; i < RSX_PM_HASHES; i++) {
++        const rsx_pm_hash* h = &e->hashes[i];
++        if (h->valid && h->mode == mode && h->seed == seed) { *out = h->value; return 1; }
++    }
++    return 0;
++}
++static inline void rsx_pm_hash_put(rsx_pm_entry* e, uint32_t mode, uint64_t seed, uint64_t value)
++{
++    rsx_pm_hash* h = &e->hashes[e->hash_next];
++    e->hash_next = (e->hash_next + 1u) % RSX_PM_HASHES;
++    h->valid = 1; h->mode = mode; h->seed = seed; h->value = value;
++}
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10156,8 +10156,28 @@
+     if (on < 0) { const char* e = getenv("LD_PSO_MEMO"); on = e ? atoi(e) != 0 : 1; }
+     return on;
+ }
+-static struct { u32 n; u64 h; u8 bytes[RSX_DSP_VP_INSTR * 16]; } g_ld_vpm;
+-static struct { u32 loc, off, size, hvalid, hmode; u64 hseed, h; u8 bytes[0x10000]; } g_ld_fpm;
++/* Patch 6071: bounded multi-entry experiment, off by default. The existing
++ * LD_PSO_MEMO=0 remains the master disable. Byte validation is mandatory. */
++#include "rsx_program_memo.h"
++static rsx_pm_entry g_ld_vpm_last, g_ld_fpm_last;
++static rsx_program_memo g_ld_vp_multi, g_ld_fp_multi;
++static rsx_pm_entry* g_ld_vpm_cur = &g_ld_vpm_last;
++static rsx_pm_entry* g_ld_fpm_cur = &g_ld_fpm_last;
++#define g_ld_vpm (*g_ld_vpm_cur)
++#define g_ld_fpm (*g_ld_fpm_cur)
++static int ld_program_memo_multi(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_PROGRAM_MEMO"); on = e && atoi(e) != 0; }
++    return on && ld_pso_memo();
++}
++static int ld_program_memo_shadow(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("LD_PROGRAM_MEMO_SHADOW"); on = e && atoi(e) != 0; }
++    return on && ld_program_memo_multi();
++}
++static struct { u64 draws, fp_hit, vp_hit, hash_hit, bytes, mismatch; } g_ld_pm_stats;
+ 
+ static ID3D12PipelineState* get_pso(
+     const rsx_vertex_layout_plan* masked_layout, int packed_payload)
+@@ -10174,10 +10194,15 @@
+     const u32 fp_off = rsx_dsp_fragment_program(&g.rsx, &fp_loc);
+     const u8* fp_uc = guest_ptr(fp_loc, fp_off, 16);
+     if (!fp_uc) { LD_PSO_BAIL("fragment program address does not resolve to guest memory"); return NULL; }
++    const int pm_multi = ld_program_memo_multi();
++    g_ld_fpm_cur = pm_multi ? rsx_pm_select(&g_ld_fp_multi, fp_loc, fp_off) : &g_ld_fpm_last;
++    g_ld_vpm_cur = pm_multi ? rsx_pm_select(&g_ld_vp_multi, start, 0) : &g_ld_vpm_last;
+     u32 fp_size = 0; int fp_same = 0;   /* patch 2029 memo */
+     if (ld_pso_memo() && g_ld_fpm.size && g_ld_fpm.loc == fp_loc && g_ld_fpm.off == fp_off) {
+         const u8* q = guest_ptr(fp_loc, fp_off, g_ld_fpm.size);
++        if (pm_multi && q) g_ld_pm_stats.bytes += g_ld_fpm.size;
+         if (q && !memcmp(q, g_ld_fpm.bytes, g_ld_fpm.size)) { fp_size = g_ld_fpm.size; fp_same = 1; }
++        if (pm_multi && fp_same) g_ld_pm_stats.fp_hit++;
+     }
+     if (!fp_same) fp_size = rsx_fp_program_size(fp_uc, 0x10000);
+     if (!fp_size) {
+@@ -10223,7 +10248,8 @@
+     fp_uc = guest_ptr(fp_loc, fp_off, fp_size);
+     if (!fp_uc) { LD_PSO_BAIL("fragment program is not fully mapped in guest memory"); return NULL; }
+     if (ld_pso_memo() && !fp_same && fp_size <= sizeof g_ld_fpm.bytes) {
+-        g_ld_fpm.loc = fp_loc; g_ld_fpm.off = fp_off; g_ld_fpm.size = fp_size; g_ld_fpm.hvalid = 0;
++        rsx_pm_invalidate(&g_ld_fpm);
++        g_ld_fpm.loc = fp_loc; g_ld_fpm.off = fp_off; g_ld_fpm.size = fp_size;
+         memcpy(g_ld_fpm.bytes, fp_uc, fp_size);
+     }
+     LDW_ADD(RSX_PERF_W_PSO_PRE_T, gp_t0);
+@@ -10236,7 +10262,15 @@
+     static int all_units = -1;
+     if (all_units < 0) { const char* e = getenv("LD_PSO_ALL_UNITS"); all_units = (e && e[0] == '1') ? 1 : 0;
+                          fprintf(stderr, "[pso-key] %s\n", all_units ? "all texture units (LD_PSO_ALL_UNITS=1)" : "sampled units only"); }
+-    const u32 fp_units = all_units ? 0xFFFFu : rsx_fp_texture_unit_mask(fp_uc, fp_size);
++    if (pm_multi && !g_ld_fpm.scans_valid) {
++        /* These three properties depend only on the complete validated bytes.
++         * Window origin, surface AA, controls and texture bindings stay dynamic. */
++        g_ld_fpm.units = rsx_fp_texture_unit_mask(fp_uc, fp_size);
++        g_ld_fpm.ddy = rsx_fp_uses_ddy(fp_uc, fp_size);
++        g_ld_fpm.wpos = rsx_fp_reads_wpos(fp_uc, fp_size);
++        g_ld_fpm.scans_valid = 1;
++    }
++    const u32 fp_units = all_units ? 0xFFFFu : pm_multi ? g_ld_fpm.units : rsx_fp_texture_unit_mask(fp_uc, fp_size);
+     g_ld_fp_units_cur = fp_units;   /* patch 2045: the texture loop binds only these units */
+ 
+     /* Fragment output register mode (fp16 h0 vs fp32 r0) is driven by the
+@@ -10351,13 +10385,15 @@
+     u64 vp_h;   /* patch 2029: FNV of the VP, memoized; also g_ld_current_pso.vp_hash */
+     {
+         const u32 vn = vp_instrs * 16;
++        if (pm_multi && vn == g_ld_vpm.n) g_ld_pm_stats.bytes += vn;
+         if (ld_pso_memo() && vn == g_ld_vpm.n && !memcmp(vp_uc, g_ld_vpm.bytes, vn)) {
++            if (pm_multi) g_ld_pm_stats.vp_hit++;
+             vp_h = g_ld_vpm.h;
+             if (rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_PSO_MEMO_N, 1);
+         } else {
+             vp_h = fnv1a(vp_uc, vn, 1469598103934665603ull);
+             if (ld_pso_memo() && vn <= sizeof g_ld_vpm.bytes) {
+-                g_ld_vpm.n = vn; g_ld_vpm.h = vp_h; memcpy(g_ld_vpm.bytes, vp_uc, vn);
++                g_ld_vpm.n = vn; g_ld_vpm.size = vn; g_ld_vpm.h = vp_h; memcpy(g_ld_vpm.bytes, vp_uc, vn);
+             }
+         }
+     }
+@@ -10365,7 +10401,9 @@
+     LDW_T0(pk_t2);
+     u64 key = vp_h;
+     const u32 fp_hmode = ld_fp_constants_buffered() ? 1u : 2u;
+-    if (fp_same && g_ld_fpm.hvalid && g_ld_fpm.hmode == fp_hmode && g_ld_fpm.hseed == key) {
++    if (pm_multi && rsx_pm_hash_get(&g_ld_fpm, fp_hmode, key, &key)) {
++        g_ld_pm_stats.hash_hit++;
++    } else if (!pm_multi && fp_same && g_ld_fpm.hvalid && g_ld_fpm.hmode == fp_hmode && g_ld_fpm.hseed == key) {
+         key = g_ld_fpm.h;
+     } else {
+         const u64 seed = key;
+@@ -10374,6 +10412,7 @@
+         else
+             key = fnv1a(fp_uc, fp_size, key);
+         if (ld_pso_memo() && g_ld_fpm.size == fp_size && g_ld_fpm.loc == fp_loc && g_ld_fpm.off == fp_off) {
++            if (pm_multi) rsx_pm_hash_put(&g_ld_fpm, fp_hmode, seed, key);
+             g_ld_fpm.hvalid = 1; g_ld_fpm.hmode = fp_hmode; g_ld_fpm.hseed = seed; g_ld_fpm.h = key;
+         }
+     }
+@@ -10432,10 +10471,10 @@
+         if (wsf.aa_sx != 1u || wsf.aa_sy != 1u) xi.wpos_aa = wsf.aa_sx | (wsf.aa_sy << 8);
+     }
+     xi.deriv_flip = 0;   /* KZ2 patch 2096 */
+-    if (ld_ddy_origin_on() && ((rsx_dsp_reg(&g.rsx, 0x1D88) >> 12) & 0xFu) == 1u && rsx_fp_uses_ddy(fp_uc, fp_size))
++    if (ld_ddy_origin_on() && ((rsx_dsp_reg(&g.rsx, 0x1D88) >> 12) & 0xFu) == 1u && (pm_multi ? (g_ld_fpm.ddy != 0u) : rsx_fp_uses_ddy(fp_uc, fp_size)))
+         xi.deriv_flip = 1;
+     xi.wpos_flip = 0;   /* KZ2 patch 2090 */
+-    if (rsx_fp_reads_wpos(fp_uc, fp_size)) {
++    if (pm_multi ? (g_ld_fpm.wpos != 0u) : rsx_fp_reads_wpos(fp_uc, fp_size)) {
+         if (g_ph_cur) ld_ph_note_wpos();   /* patch 6052: a HUD draw at output size that reads WPOS (logged) */
+         const u32 sw = rsx_dsp_reg(&g.rsx, 0x1D88), sw_h = sw & 0xFFFu, sw_origin = (sw >> 12) & 0xFu;
+         if (sw_origin == 1u && sw_h && ld_wpos_origin_on()) xi.wpos_flip = sw_h;
+@@ -10462,6 +10501,29 @@
+     LDW_T0(pk_t4);
+     key = ld_pso_key_tail(key, &xi, packed_payload, &kl_pre_rs);   /* patch 2071: shared with the prewarm */
+     LDW_ADD(RSX_PERF_W_PK_TAIL_T, pk_t4);   /* patch 6070: the key tail hash */
++    if (pm_multi) {
++        if (ld_program_memo_shadow()) {
++            const u64 uncached_vp = fnv1a(vp_uc, vp_instrs * 16, 1469598103934665603ull);
++            const u64 uncached_fp = fp_hmode == 1u ? rsx_fp_structural_hash(fp_uc, fp_size, uncached_vp)
++                                                  : fnv1a(fp_uc, fp_size, uncached_vp);
++            u64 unused_pre_rs = 0;
++            const u64 uncached_key = ld_pso_key_tail(uncached_fp, &xi, packed_payload, &unused_pre_rs);
++            if (rsx_fp_program_size(fp_uc, 0x10000) != fp_size ||
++                uncached_vp != vp_h || uncached_key != key ||
++                g_ld_fpm.units != rsx_fp_texture_unit_mask(fp_uc, fp_size) ||
++                g_ld_fpm.ddy != (u32)rsx_fp_uses_ddy(fp_uc, fp_size) ||
++                g_ld_fpm.wpos != (u32)rsx_fp_reads_wpos(fp_uc, fp_size)) {
++                g_ld_pm_stats.mismatch++;
++                fprintf(stderr, "[program-memo] shadow mismatch; rejecting draw\n");
++                return NULL; /* fail closed; never create/use the mismatched PSO */
++            }
++        }
++        if ((++g_ld_pm_stats.draws & 0xFFFFu) == 0)
++            fprintf(stderr, "[program-memo] draws=%llu fp-hit=%llu vp-hit=%llu hash-hit=%llu validate-bytes=%llu mismatch=%llu\n",
++                    (unsigned long long)g_ld_pm_stats.draws, (unsigned long long)g_ld_pm_stats.fp_hit,
++                    (unsigned long long)g_ld_pm_stats.vp_hit, (unsigned long long)g_ld_pm_stats.hash_hit,
++                    (unsigned long long)g_ld_pm_stats.bytes, (unsigned long long)g_ld_pm_stats.mismatch);
++    }
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_note_fp_variants(
+         fp_uc, fp_size, fp_ctrl_key, cube_mask, &rs);

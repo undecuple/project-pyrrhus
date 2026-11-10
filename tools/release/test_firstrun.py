@@ -40,6 +40,10 @@ def check(cond, what):
         print("FAIL", what)
 
 
+def ppu_lift_command(c):
+    return next(cmd for cmd in fr.cmd_ppu_lift(c) if "--functions" in cmd)
+
+
 def py(code):
     return [PY, "-c", code]
 
@@ -248,7 +252,7 @@ def main():
         check([fr.jobs_for(x, clang=True, cores=12) for x in (None, 2 * G, 4 * G, 8.5 * G, 64 * G)] == [1, 1, 1, 5, 12]
               and fr.jobs_for(64 * G, clang=True, cores=32) == 16, "11 clang jobs rule (measured)")
         cj = fr.Ctx(root=tmp, build=os.path.join(tmp, "bj"), jobs=12)
-        check(" -j 4 " in " ".join(fr.cmd_ppu_lift(cj)[-1]) + " "
+        check(" -j 4 " in " ".join(ppu_lift_command(cj)) + " "
               and fr.cmd_compile(cj)[0][-1] == "12", "11 lift capped at 4 workers, compile uses all jobs")
         # 11b. EBOOT version of the tree: tools/lift.sh's default code end and TOC pick the lift constants and env
         vr = os.path.join(tmp, "verroot")
@@ -259,14 +263,14 @@ def main():
         with open(lsh, "w") as f:
             f.write('CODE_END="${KZ2_CODE_END:-0xbba45c}"\nTOC="${KZ2_TOC:-0xeb2958}"\n')
         c = fr.Ctx(root=vr, build=os.path.join(vr, "b"))
-        lift = " ".join(fr.cmd_ppu_lift(c)[-1])
+        lift = " ".join(ppu_lift_command(c))
         check(c.ver == "101" and "--toc 0xeb2958 --code-end 0xbba45c" in lift and c.env()["KZ2_EBOOT_VER"] == "101"
               and "port/kz2/ppu_overrides-101.txt" in lift.replace(os.sep, "/"),
               "11b lift.sh 1.01 defaults: 1.01 constants and lift.sh's 1.01 override list")
         with open(lsh, "w") as f:
             f.write('CODE_END="${KZ2_CODE_END:-0xBD0D0C}"\nTOC="${KZ2_TOC:-0xEC3038}"\n')
         c = fr.Ctx(root=vr, build=os.path.join(vr, "b"))
-        lift = " ".join(fr.cmd_ppu_lift(c)[-1])
+        lift = " ".join(ppu_lift_command(c))
         check(c.ver == "129" and "--toc 0xec3038 --code-end 0xbd0d0c" in lift
               and "port/kz2/ppu_overrides.txt" in lift.replace(os.sep, "/"), "11b lift.sh 1.29 constants: 129")
         for v in ("101", "129"):    # lift.sh since the 1.29 move: VER="${KZ2_EBOOT_VER:-129}" and a version table
@@ -277,7 +281,7 @@ def main():
             f.write('CODE_END="${KZ2_CODE_END:-0xBD0D0C}"\nTOC="${KZ2_TOC:-0xEC3038}"\n')
         c = fr.Ctx(root=vr, build=os.path.join(vr, "b"))
         c.eboot = os.path.join(vr, "EBOOT-129.elf")
-        lj = " ".join(fr.cmd_load(c)[-1] + fr.cmd_ppu_lift(c)[-1])
+        lj = " ".join(fr.cmd_load(c)[-1] + ppu_lift_command(c))
         check("EBOOT-129.functions.json" in lj and "EBOOT-129.imports.json" in lj,
               "11b the loader outputs are named after the player's EBOOT file (as lift.sh's STEM)")
         # 11c. SPU lift step: same scripts as BUILDING.md 3b, EBOOT version in step with the PPU lift, output under build/spu
@@ -535,7 +539,7 @@ def main():
         fr.dry_run(c14, [fr.Step("ppu-lift", "Lifting", 1, fr.cmd_ppu_lift)], "x.log", False, out=o14)
         check("STOP: the 1.01 PPU override table" in o14.getvalue(), "14 dry-run prints the stop")
         tables(t14, ("ppu_overrides-101.txt",))
-        lift = fr.cmd_ppu_lift(c14)[-1]
+        lift = ppu_lift_command(c14)
         check(lift[lift.index("--overrides") + 1] == os.path.join(t14, "port", "kz2", "ppu_overrides-101.txt"),
               "14 the 1.01 lift uses ppu_overrides-101.txt")
         hdr = "\n".join(fr.header(c14, "x.log", False))
@@ -831,7 +835,8 @@ def main():
         o18 = io.StringIO()
         go = fr.interactive(a18, root12, "x.log", [], ask=lambda q: (asked18.append(q), next(answers))[1], out=o18)
         o = o18.getvalue()
-        check("FAIL E1" in o and "disc's 1.01 one" in o and "not the disc's" in o, f"18 E1 FAIL shown: {o[-500:]!r}")
+        check("FAIL E1" in o and "Killzone 2 1.01, the disc's own version" in o and "needs Killzone 2 1.29" in o,
+              f"18 E1 FAIL shown: {o[-500:]!r}")
         check(asked18 and asked18[0].startswith("Decrypted EBOOT of the 1.29 update [" + good18 + "]")
               and not any("Disc dump" in q or "update folder" in q for q in asked18),
               f"18 the EBOOT is asked again first, with the update's one offered: {asked18[:2]}")
@@ -850,7 +855,8 @@ def main():
         st = open(sf18).read().splitlines()
         # the input reasons (Project Helghast PR #14): the EBOOT's line with E1's message, then which inputs passed
         check(rc == 1 and st[1].startswith("RESULT ok=0 step=quit") and len(st) == 4 and
-              st[2].startswith("REASON EBOOT failed: the file ") and "disc's 1.01 one" in st[2] and
+              st[2].startswith("REASON EBOOT failed: the file ") and "the disc's own version" in st[2] and
+              ".." not in st[2] and
               st[3] == "REASON Passed: the disc dump and the 1.29 update.",
               f"18 quit at a failed check: the input reasons in the status file {st}")
         check("Nothing was built" in o18.getvalue(), f"18 quit: the console's last line {o18.getvalue()[-200:]!r}")

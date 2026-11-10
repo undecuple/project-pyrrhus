@@ -350,7 +350,7 @@ def test_firstrun(tmp, payload_dir):
     check("-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" in cfg and "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" in cfg,
           "Release at -O2 like the verified build")
     check(fr.cmd_compile(c)[0][0] == found["cmake"], "compile runs the bundled cmake")
-    lift = fr.cmd_ppu_lift(c)[-1]
+    lift = next(cmd for cmd in fr.cmd_ppu_lift(c) if "--functions" in cmd)
     check(lift[lift.index("--chunks") + 1] == "64" if "--chunks" in lift else False,
           "PPU lift asks for 64 chunks like tools/lift.sh", lift)
     cross = fr.cmd_configure(fr.Ctx(root=root, build=os.path.join(root, "build")))[0]

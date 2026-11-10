@@ -43,7 +43,7 @@ How far the port is, feature by feature, against the PS3 game. Statuses: works, 
 | Enhancement | Gyro stand-in for SIXAXIS | ENHANCEMENT: stick or mouse | in progress |
 | Enhancement | Display modes | ENHANCEMENT: windowed, borderless, exclusive fullscreen, Alt+Enter, display.ini | in progress |
 | Enhancement | Keyboard and mouse | ENHANCEMENT: mouse look (raw input) and the keyboard | partial |
-| Enhancement | Display options in the game | ENHANCEMENT: field of view (45-75), FSR 1 upscaling and sharpness as rows on the game's own Display page | partial |
+| Enhancement | Display options in the game | ENHANCEMENT: field of view (45-75), FSR 1 upscaling, sharpness, vsync and a saved Skip intro choice on the game's own Display page | partial |
 | Enhancement | Gamepads: PlayStation and Xbox | ENHANCEMENT: pads through SDL3: DualShock 4 tried by hand, with its motion sensor; Xbox and DualSense pads in code only | partial |
 | Enhancement | Button prompt choice and pad layouts | ENHANCEMENT: PS3, PS4/PS5, Xbox or keyboard prompt symbols; Original or Modern button layout | partial |
 | Enhancement | Gameplay options: aim assist switch, crouch and cover toggles | ENHANCEMENT, all off or original by default: gameplay.ini [gameplay] aim_assist auto|on|off, crouch_toggle, cover_toggle (KZ2_AIM_ASSIST / KZ2_CROUCH_TOGGLE / KZ2_COVER_TOGGLE) | partial |

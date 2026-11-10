@@ -91,6 +91,7 @@ RULES = [
     ("tools/release/launch.py", "kz2-setup/release/launch.py", "file", {}),
     ("tools/release/install_ini.py", "kz2-setup/release/install_ini.py", "file", {}),
     ("tools/release/lift_fixups.py", "kz2-setup/release/lift_fixups.py", "file", {}),
+    ("tools/release/lua_unwind.py", "kz2-setup/release/lua_unwind.py", "file", {}),
     ("tools/release/eboot_sha256.json", "kz2-setup/release/eboot_sha256.json", "file", {}),
     ("tools/release/psarc_sha256.json", "kz2-setup/release/psarc_sha256.json", "file", {}),   # firstrun_check A1
     ("tools/release/iso9660.py", "kz2-setup/release/iso9660.py", "file", {}),   # a decrypted disc ISO as the dump

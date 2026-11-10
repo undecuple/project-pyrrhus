@@ -2491,6 +2491,22 @@ void func_003D9640(ppu_context* ctx) { kz2_fov_frustum(ctx, func_003D9640__lifte
  * chain, the log flushed, a message box (KZ2_NO_ERROR_DIALOG=1 skips it) and exit code 5 (kz2_guest_fatal_exit,
  * main.cpp). The store itself is not replayed: it only ever existed to fault. */
 #include "kz2_guest_fatal.h"
+#include "kz2_lua_unwind.h"
+#if (defined(PPU_OVERRIDE_007C3A0C) || defined(PPU_OVERRIDE_007B6084)) && !defined(KZ2_LUA_UNWIND_READY)
+#error "Missing host jump continuations: run tools/release/lua_unwind.py after the PPU lift (see BUILDING.md)."
+#endif
+
+/* The lifted libc routine restores guest registers but cannot leave its host
+ * caller. Continue at the setjmp return in one of the three generated host
+ * boundaries (tools/release/lua_unwind.py), never in the abandoned throw path.
+ * Both libc bodies were located in their respective executable versions. */
+#ifdef PPU_OVERRIDE_007C3A0C
+void func_007C3A0C(ppu_context* ctx) { kz2lua::jump(ctx, func_007C3A0C__lifted); }
+#endif
+#ifdef PPU_OVERRIDE_007B6084
+void func_007B6084(ppu_context* ctx) { kz2lua::jump(ctx, func_007B6084__lifted); }
+#endif
+
 extern "C" void ppu_dump_guest_stack(ppu_context*, const char*);
 extern "C" void kz2_guest_fatal_exit(const char* what);   /* main.cpp: log flush, message box, TerminateProcess(5) */
 [[maybe_unused]] static void kz2_guest_abort(ppu_context* ctx, uint32_t self)
@@ -2508,27 +2524,59 @@ void func_00028030(ppu_context* ctx) { kz2_guest_abort(ctx, 0x00028030u); }   //
 void func_00027F60(ppu_context* ctx) { kz2_guest_abort(ctx, 0x00027F60u); }   // @0x00027F60 abort (v1.01)
 #endif
 
-/* luaD_throw(L, errcode) @0x003F3160 (1.29) / @0x003E6D10 (v1.01): diagnostic only, the lifted body always runs.
+/* luaD_throw(L, errcode) @0x003F3160 (1.29) / @0x003E6D10 (v1.01) and luaG_errormsg(L) @0x003FB7A0 (1.29) /
+ * @0x003EF350 (v1.01): diagnostic only, the lifted bodies always run.
+ * Runtime an earlier change: the compiler inlined luaD_throw into luaG_errormsg (0x3FB7A0: errorJmp [L+0x5C] set -> status 2/5
+ * at lj+0x224, `bl longjmp`; else L->status, the panic function, exit(1) at 0x3FB858), so every script runtime error
+ * (luaG_runerror 0x3FC190, lua_error and the two other callers 0x3FFF1C, 0x402D6C) bypasses 0x3F3160; only memory
+ * and similar errors (luaM_realloc_ 0x3F29AC, ...) reach the luaD_throw body. Hence both hooks.
  * When no pcall catches the error (L->errorJmp 0) the game is about to call exit(1); say so, with the error text when
  * L is readable, the errcode (2 run, 3 syntax, 4 memory, 5 error handler) and the guest chain. #49's log shows such a
- * throw on L = 0x00000001 (a bad lua_State pointer, not a script error), right after a checkpoint restart. */
-[[maybe_unused]] static void kz2_lua_throw(ppu_context* ctx, void (*lifted)(ppu_context*))
+ * throw on L = 0x00000001 (a bad lua_State pointer, not a script error), right after a checkpoint restart.
+ * A protected error (a pcall catches it; on the PS3 the script call fails and play goes on) is logged too, with its
+ * text ("chunk:line: message", on top of L's stack at both entries) and the guest chain read before the longjmp
+ * unwinds it: an earlier change found #49's first error was one of these. First 8 per session; KZ2_LUA_LOG=1 prints all. */
+static void kz2_lua_report(ppu_context* ctx, int errcode)
 {
     const uint32_t L = (uint32_t)ctx->gpr[3];
     char msg[200];
+    static std::atomic<unsigned> n_prot{0};
+    static const char* const log_env = getenv("KZ2_LUA_LOG");
+    const bool want_prot = kz2fatal::protected_log_allowed(n_prot.load(std::memory_order_relaxed), log_env);
     const int k = kz2fatal::classify_throw(L, [](uint32_t a) { return vm_read32(a); },
-                                           [](uint32_t a) { return vm_read8(a); }, msg, sizeof msg);
+                                           [](uint32_t a) { return vm_read8(a); }, msg, sizeof msg, want_prot);
     if (k) {
-        static int n = 0;
+        static std::atomic<int> n{0};
         if (n++ < 4) {
             fprintf(stderr, "[lua] unprotected error %d on lua_State 0x%08X%s (lr=0x%08X, guest tid %u): \"%s\"; the game "
-                            "calls exit(1) next\n", (int)(uint32_t)ctx->gpr[4], L,
+                            "calls exit(1) next\n", errcode, L,
                     k == 2 ? " (not a valid pointer)" : "", (uint32_t)ctx->lr, (unsigned)ctx->thread_id, msg);
             ppu_dump_guest_stack(ctx, "lua-throw");
         }
+    } else if (want_prot && kz2fatal::protected_log_allowed(n_prot.fetch_add(1, std::memory_order_relaxed), log_env)) {
+        fprintf(stderr, "[lua] script error %d caught by pcall: \"%s\" (lr 0x%08X, tid %u, lua_State 0x%08X)\n",
+                errcode, msg, (uint32_t)ctx->lr, (unsigned)ctx->thread_id, L);
+        ppu_dump_guest_stack(ctx, "lua-pcall-error");
     }
+}
+[[maybe_unused]] static void kz2_lua_throw(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    kz2_lua_report(ctx, (int)(uint32_t)ctx->gpr[4]);
     lifted(ctx);
 }
+/* luaG_errormsg: errcode 2 (LUA_ERRRUN); 5 (LUA_ERRERR) only when the error handler itself fails (L->errfunc +0x60 set
+ * and its slot not a function), which the line does not tell apart. */
+[[maybe_unused]] static void kz2_lua_errormsg(ppu_context* ctx, void (*lifted)(ppu_context*))
+{
+    kz2_lua_report(ctx, 2);
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_003FB7A0
+void func_003FB7A0(ppu_context* ctx) { kz2_lua_errormsg(ctx, func_003FB7A0__lifted); }   // @0x003FB7A0 luaG_errormsg (1.29)
+#endif
+#ifdef PPU_OVERRIDE_003EF350
+void func_003EF350(ppu_context* ctx) { kz2_lua_errormsg(ctx, func_003EF350__lifted); }   // @0x003EF350 luaG_errormsg (v1.01)
+#endif
 #ifdef PPU_OVERRIDE_003F3160
 void func_003F3160(ppu_context* ctx) { kz2_lua_throw(ctx, func_003F3160__lifted); }   // @0x003F3160 luaD_throw (1.29)
 #endif

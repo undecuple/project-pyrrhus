@@ -277,7 +277,7 @@ def _h16(text):
 
 LIFT_INPUTS = [   # (base: "root" | "tools" | "toolkit", glob) : what the PPU lift reads besides the EBOOT
     ("root", "port/kz2/ppu_overrides*.txt"), ("root", "port/kz2/ppu_lift_fixups-*.txt"),
-    ("tools", "lift.sh"), ("tools", "release/lift_fixups.py"),
+    ("tools", "lift.sh"), ("tools", "release/lift_fixups.py"), ("tools", "release/lua_unwind.py"),
     ("tools", "release/spu_step.py"), ("tools", "spu/lift_spu.py"), ("tools", "spu/gen_spu_register.py"),
     ("tools", "spu/kz2ver.py"), ("root", "re/wws_jobs_v*.tsv"),      # the SPU lift's scripts and image tables
     ("toolkit", "tools/*.py"), ("toolkit", ".kz2-patchset"),
@@ -392,7 +392,8 @@ def cmd_ppu_lift(c):
                     "--hle-stubs", os.path.join(an, eboot_stem(c) + ".imports.json"), "--toc", EBOOT_VERS[c.ver]["toc"],
                     "--code-end", EBOOT_VERS[c.ver]["code_end"],
                     "--overrides", overrides_file(c),
-                    "-j", str(min(c.jobs, LIFT_JOBS_MAX)), "--chunks", str(LIFT_CHUNKS), "--output", c.b("recomp")]]
+                    "-j", str(min(c.jobs, LIFT_JOBS_MAX)), "--chunks", str(LIFT_CHUNKS), "--output", c.b("recomp")],
+                   [*c.py, c.tool("release", "lua_unwind.py"), "--recomp-dir", c.b("recomp"), "--version", c.ver]]
 
 
 def cmd_spu_lift(c):
@@ -1906,9 +1907,10 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
             a.fail_reasons = check_reasons(checks, text_reasons(text))   # the launcher's dialog when the player quits here
             codes = {c["code"] for c in checks if c["level"] == "FAIL"}
             inputs = {INPUT_OF.get(c) for c in codes}
-            if codes == {"E1"} and elf and os.path.isfile(elf):
-                # only the chosen EBOOT is wrong (another version, e.g. the disc's 1.01 one): ask for it again, not
-                # for the folders (from Project Helghast PR #11; no EBOOT at all keeps the question below)
+            if codes and codes <= {"E1", "H1"} and elf and os.path.isfile(elf):
+                # only the chosen EBOOT is wrong (another version, e.g. the disc's 1.01 one, or a build this port does
+                # not run, H1): ask for it again, not for the folders (from Project Helghast PR #11; no EBOOT at all
+                # keeps the question below)
                 say("")
                 say(EBOOT_AGAIN.format(want=target, usrdir=os.path.join(upd, "USRDIR") if upd else "USRDIR"))
                 auto = os.path.join(upd, "USRDIR", "EBOOT.elf") if upd else ""

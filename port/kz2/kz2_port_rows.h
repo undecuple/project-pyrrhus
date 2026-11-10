@@ -61,6 +61,7 @@ static const Row kz2_port_rows[] = {
     { "upscale", "PcUpscale", "UPSCALING", CHOICE, 0.0, 1.0, 1.0, 0.0, 0, UPSCALE_INI, UPSCALE_SHOWN, 2, "display.ini", "display", "upscale" },
     { "sharpness", "PcSharpness", "SHARPNESS", RANGE, 0.0, 2.0, 0.1, 0.2, 1, nullptr, nullptr, 0, "display.ini", "display", "sharpness" },
     { "vsync", "PcVsync", "VSYNC", CHOICE, 0.0, 1.0, 1.0, 1.0, 0, VSYNC_INI, VSYNC_SHOWN, 2, "display.ini", "display", "vsync" },
+    { "skip_intro", "PcSkipIntro", "SKIP INTRO (NEXT START)", CHOICE, 0.0, 1.0, 1.0, 0.0, 0, VSYNC_INI, VSYNC_SHOWN, 2, "display.ini", "display", "skip_intro" },
 };
 static const int NROWS = (int)(sizeof kz2_port_rows / sizeof kz2_port_rows[0]);
 

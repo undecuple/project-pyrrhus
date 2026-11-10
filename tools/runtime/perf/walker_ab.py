@@ -6,12 +6,15 @@
 LOG holds RSX_PERF=1's per-second blocks ([perf] t=Ns ..., then [perf-walk], [perf-walk2], [perf-flush], [perf-gpu] of
 the same second) and the toggle's switch lines `[walker-toggle] t=... phase=N on|off` (even N = off). A second whose
 block has a switch line since the previous block is mixed and dropped (log order). --from/--to are in the [perf]
-lines' own t (seconds). Per phase the clean seconds' sums give per-frame values (ms per frame = sum / flips); every
-on-phase is paired with the mean of its off neighbours (N-1, N+1); the paired median difference, the count of
-on-phases that are better and the two-sided sign-test p are printed per metric. Several logs are pooled (each its own
-phases). Same pairing and sign test as tools/spu/park_ab.py, on the walker's own counters.
+lines' own t (seconds). FPS uses the sum of each accepted block's wall milliseconds.
+Every on-phase is paired with the mean of its off neighbours (N-1, N+1).
+Phase contrasts share off neighbours and may be autocorrelated: all summaries are
+DESCRIPTIVE, with no phase-level significance test. Each log contributes at most one
+median phase contrast to the run summary. Separate log files do not establish
+independent runs or comparable scenes; verify provenance and use inverted-order and
+no-change controls before drawing performance conclusions.
 """
-import argparse, math, re, statistics, sys
+import argparse, re, statistics, sys
 from collections import defaultdict
 
 SW = re.compile(r"\[walker-toggle\] t=([\d.]+)s phase=(\d+) (on|off)")
@@ -32,9 +35,9 @@ SUB = re.compile(r"^\[(perf-walk2|perf-walk|perf-flush|perf-gpu)\] t=(\d+)s")
 
 
 def phases(path, lo, hi):
-    """{phase: {metric: sum}} over the clean seconds of one log"""
+    """{phase: {metric: sum}} over accepted reporting blocks of one log."""
     acc = defaultdict(lambda: defaultdict(float))
-    phase, switched, cur_t, cur_ok = None, False, None, False
+    phase, switched, cur_t, cur_ok, cur_phase = None, False, None, False, None
     with open(path, errors="replace") as f:
         for ln in f:
             m = SW.search(ln)
@@ -44,18 +47,21 @@ def phases(path, lo, hi):
             m = PERF.search(ln)
             if m:
                 cur_t = int(m[1])
-                cur_ok = not switched and phase is not None and lo <= cur_t <= hi
+                wall_ms = int(m[2])
+                cur_ok = not switched and phase is not None and lo <= cur_t <= hi and wall_ms > 0
                 switched = False
+                cur_phase = phase
                 if cur_ok:
                     a = acc[phase]
-                    a["secs"] += 1; a["flips"] += int(m[3]); a["draws"] += int(m[4])
+                    a["secs"] += wall_ms / 1000.0
+                    a["blocks"] += 1; a["flips"] += int(m[3]); a["draws"] += int(m[4])
                     a["walk"] += float(m[5]); a["gpuwait"] += float(m[6])
                 continue
             m = SUB.search(ln)
             if m and cur_ok and int(m[2]) == cur_t:
                 for name, rx in FIELDS[m[1]]:
                     v = re.search(rx, ln)
-                    if v: acc[phase][name] += float(v[1])
+                    if v: acc[cur_phase][name] += float(v[1])
     return acc
 
 
@@ -77,13 +83,6 @@ METRICS = [("fps", lambda a: a["flips"] / a["secs"] if a["secs"] else None, Fals
           [("cbv reuse/frame", per_frame("cbv reuse n"), None), ("srv wraps/frame", per_frame("wraps srv n"), None)]
 
 
-def sign_p(k, n):
-    if n == 0:
-        return 1.0
-    tail = sum(math.comb(n, i) for i in range(0, min(k, n - k) + 1)) / 2 ** n
-    return min(1.0, 2 * tail)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("logs", nargs="+")
@@ -93,37 +92,48 @@ def main():
     a = ap.parse_args()
     pooled = {False: defaultdict(float), True: defaultdict(float)}
     pairs = defaultdict(list)
+    run_contrasts = defaultdict(list)
     for path in a.logs:
         acc = phases(path, a.lo, a.hi)
         for ph, s in acc.items():
             for k, v in s.items():
                 pooled[bool(ph & 1)][k] += v
+        run_pairs = defaultdict(list)
         for ph in sorted(acc):
             if not ph & 1 or (ph - 1) not in acc or (ph + 1) not in acc:
                 continue
             for name, fn, low in METRICS:
                 on, o1, o2 = fn(acc[ph]), fn(acc[ph - 1]), fn(acc[ph + 1])
                 if None not in (on, o1, o2):
-                    pairs[name].append((on - (o1 + o2) / 2, low))
+                    delta = on - (o1 + o2) / 2
+                    pairs[name].append(delta)
+                    run_pairs[name].append(delta)
+        for name, contrasts in run_pairs.items():
+            run_contrasts[name].append(statistics.median(contrasts))
     if not pooled[False]["secs"] or not pooled[True]["secs"]:
         print("walker_ab: no clean off and on seconds in the window"); return 1
-    print("| metric | off | on | on-off | paired median | on better | sign p |\n|---|---|---|---|---|---|---|" if a.md else
-          f"{'metric':24s} {'off':>8s} {'on':>8s} {'on-off':>8s} {'p.median':>9s} better  sign p")
+    print("| metric | off | on | on-off | phase median | phases better | run median | runs better |\n|---|---|---|---|---|---|---|---|" if a.md else
+          f"{'metric':24s} {'off':>8s} {'on':>8s} {'on-off':>8s} {'p.median':>9s} better  {'run median':>10s} runs better")
     for name, fn, low in METRICS:
         off, on = fn(pooled[False]), fn(pooled[True])
         d = pairs.get(name, [])
         if off is None or on is None:
             continue
-        med = statistics.median(x for x, _ in d) if d else 0.0
-        better = sum(1 for x, _ in d if (x < 0 if low else x > 0)) if low is not None else 0
-        p = sign_p(better, len(d)) if low is not None else 1.0
+        med = f"{statistics.median(d):+.2f}" if d else "n/a"
+        better = sum(1 for x in d if (x < 0 if low else x > 0)) if low is not None else 0
+        rd = run_contrasts.get(name, [])
+        rmed = f"{statistics.median(rd):+.2f}" if rd else "n/a"
+        rbetter = sum(1 for x in rd if (x < 0 if low else x > 0)) if low is not None else 0
+        rcount = f"{rbetter}/{len(rd)}" if low is not None else "-"
         if a.md:
-            print(f"| {name} | {off:.2f} | {on:.2f} | {on-off:+.2f} | {med:+.2f} | "
-                  f"{(str(better) + '/' + str(len(d))) if low is not None else '-'} | {p:.3f} |")
+            print(f"| {name} | {off:.2f} | {on:.2f} | {on-off:+.2f} | {med} | "
+                  f"{(str(better) + '/' + str(len(d))) if low is not None else '-'} | {rmed} | {rcount} |")
         else:
-            print(f"{name:24s} {off:8.2f} {on:8.2f} {on-off:+8.2f} {med:+9.2f} "
-                  f"{(str(better) + '/' + str(len(d))) if low is not None else '-':>6s} {p:7.3f}")
-    print(f"clean seconds: off {pooled[False]['secs']:.0f}, on {pooled[True]['secs']:.0f}; pairs {len(pairs.get('fps', []))}")
+            print(f"{name:24s} {off:8.2f} {on:8.2f} {on-off:+8.2f} {med:>9s} "
+                  f"{(str(better) + '/' + str(len(d))) if low is not None else '-':>6s} {rmed:>10s} {rcount:>11s}")
+    print(f"clean seconds: off {pooled[False]['secs']:.6g}, on {pooled[True]['secs']:.6g}; pairs {len(pairs.get('fps', []))}")
+    print("Descriptive only: phase contrasts share off neighbours; run medians give each log one contribution. "
+          "No significance test; log count does not prove independent runs.")
     return 0
 
 

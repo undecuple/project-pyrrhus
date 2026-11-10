@@ -22,10 +22,27 @@ export VK_ICD_FILENAMES=/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json
 export KZ2_LOG_STDOUT="${KZ2_LOG_STDOUT:-1}" KZ2_NO_ERROR_BOX="${KZ2_NO_ERROR_BOX:-1}"
 cd "$RUN/app" || exit 1
 
+# From Project Helghast's scripted-play integration, undecuple, MIT.
+# Timed pad input may bootstrap the menu/save; the controller owns later PAD_FILE input.
+if [[ -n "${KZ2_PLAY_SCENARIO:-}" ]]; then
+  [[ -z "${KZ2_REAL_DISPLAY:-}" ]] || { echo 'scripted captures require hidden Xvfb' >&2; exit 2; }
+  export PAD_FILE=play-input.txt
+  export PAD_SCRIPT="${PAD_SCRIPT:-9999:0x0001}" GCM_FLIPCOUNT=1
+fi
+
 # Proton does not wire a console program's stdout to ours; capture it with cmd's redirect instead
 # and pass the program's exit code back with delayed expansion (!errorlevel!). Proton's log: proton.log.
+# A run that reuses its folder must not see the last start's "[exit code" line before cmd truncates the file
+# (KZ2_EXIT_EARLY then stopped the next start at once; release 102).
+rm -f "$RUN/app/app_stdout.txt"
 steam-run "$PROTON_DIR/proton" run cmd /v:on /c "$EXE $* > app_stdout.txt 2>&1 & echo [exit code !errorlevel!]>> app_stdout.txt & exit !errorlevel!" >"$RUN/proton.log" 2>&1 &
 APP=$!
+PLAY=""; PLAY_RC=0; PLAY_STARTED=$(date +%s)
+if [[ -n "${KZ2_PLAY_SCENARIO:-}" ]]; then
+  python3 "$(dirname "$0")/gameplay/play.py" drive "$KZ2_PLAY_SCENARIO" "$RUN" "$SECS" \
+    >"$RUN/play-controller.log" 2>&1 &
+  PLAY=$!
+fi
 # KZ2_VIDEO=START:SECONDS (clips with an fps counter): snapshot the hidden display from START s
 # for SECONDS s as fast as import manages (~5-10/s), then tools/make_clip.py builds <shot>.mp4 at wall-clock speed
 # with the game's own fps (from its [flip] log, GCM_FLIPCOUNT=1) burned in. Xvfb only, never the user's display.
@@ -43,7 +60,19 @@ if [[ -n "${KZ2_VIDEO:-}" && -n "$XVFB" ]]; then
 fi
 # KZ2_EXIT_EARLY=1 (opt-in, for runs that end by themselves such as a toolchain trial): stop waiting once the
 # program has exited, so a long --seconds cap does not hold the GPU lock after the work is done.
-if [[ "${KZ2_EXIT_EARLY:-0}" == 1 ]]; then
+if [[ -n "$PLAY" ]]; then
+  for (( _t = 0; _t < SECS; _t++ )); do
+    kill -0 "$PLAY" 2>/dev/null || break
+    grep -aq '\[exit code' "$RUN/app/app_stdout.txt" 2>/dev/null && break
+    sleep 1
+  done
+  kill "$PLAY" 2>/dev/null || true
+  wait "$PLAY" || PLAY_RC=$?
+  if [[ "$PLAY_RC" == 0 ]]; then
+    PLAY_REMAIN=$(( SECS - $(date +%s) + PLAY_STARTED ))
+    (( PLAY_REMAIN <= 0 )) || sleep "$PLAY_REMAIN"
+  fi
+elif [[ "${KZ2_EXIT_EARLY:-0}" == 1 ]]; then
   for (( _t = 0; _t < SECS; _t += 5 )); do
     grep -aq '\[exit code' "$RUN/app/app_stdout.txt" 2>/dev/null && break
     sleep 5
@@ -69,12 +98,16 @@ if [[ -n "$VID" && -s "$RUN/clip/times.txt" && -f "$(dirname "$0")/make_clip.py"
   python3 "$(dirname "$0")/make_clip.py" "$RUN/clip" "$RUN/app/app_stdout.txt" "${SHOT%.png}.mp4" || echo "clip: failed"
 fi
 STATUS=0
+[[ "$PLAY_RC" == 0 ]] || STATUS=5
 if [[ $ALIVE -eq 1 ]]; then
-  echo "program still running after ${SECS}s (expected for a render loop); stopping it"
+  if [[ -n "$PLAY" ]]; then echo "scripted play ended (status $PLAY_RC); stopping game"
+  else echo "program still running after ${SECS}s (expected for a render loop); stopping it"; fi
 else
   wait "$APP" 2>/dev/null
-  STATUS="$(grep -ao 'exit code -\?[0-9]*' "$RUN/app/app_stdout.txt" 2>/dev/null | tail -1 | grep -o -- '-\?[0-9]*$')"
-  STATUS="${STATUS:-255}"; echo "program exited with status $STATUS"
+  GAME_STATUS="$(grep -ao 'exit code -\?[0-9]*' "$RUN/app/app_stdout.txt" 2>/dev/null | tail -1 | grep -o -- '-\?[0-9]*$')"
+  GAME_STATUS="${GAME_STATUS:-255}"
+  if [[ "$GAME_STATUS" != 0 && "$PLAY_RC" == 0 ]]; then STATUS="$GAME_STATUS"; fi
+  echo "program exited with status $GAME_STATUS"
 fi
 # Stop Proton/wine for this prefix and Xvfb; everything is inside this sandbox's PID namespace.
 STEAM_COMPAT_DATA_PATH="$RUN/compat" steam-run "$PROTON_DIR/files/bin/wineserver" -k >/dev/null 2>&1 || true

@@ -97,6 +97,9 @@ and the newest log file).
 
 ## Stability
 
+- **Checkpoint crash reported in #49.** The earlier returning-abort defect is fixed in 0.1.11. The next version
+  also corrects guest Lua protected-error recovery. The original checkpoint failure has not been reproduced on
+  the reporter's setup, so keep the log from any recurrence.
 - **A stop in the SPU job system.** A `Gfx.PB.ShadowMap` assert stops a level load. It was seen once in a run with
   verbose logging on a heavily loaded machine, and in every test run with the per-event log lines switched off. The
   cause was a timing race in how SPU task ids were handed over; after the fix (patch 7004) the quiet-log runs loaded

@@ -53,10 +53,44 @@ int main()
     w32(L + L_ERRORJMP, 0x20003000u);
     CHECK(classify_throw(L, r32, r8, msg, sizeof msg) == 0, "negative control");
 
+    /* protected throws with the text flag (#49's trigger) */
+    w32(top - 4, LUA_TSTRING);
+    const char* ptext = "levels/x.lua:12: attempt to index a nil value";
+    w32(ts + TS_LEN, (uint32_t)strlen(ptext));
+    for (size_t i = 0; i < strlen(ptext); i++) mem[ts + TS_CHARS + (uint32_t)i] = (uint8_t)ptext[i];
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && !strcmp(msg, ptext), "protected text: '%s'", msg);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, false) == 0 && msg[0] == 0, "protected without the flag reads nothing");
+    /* bad text fails soft: garbage length, bad string pointer, bad top, a number on top */
+    w32(ts + TS_LEN, 0x7FFFFFF0u);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && msg[0] == 0, "garbage length must give no text");
+    w32(ts + TS_LEN, (uint32_t)strlen(ptext));
+    w32(top - 8, 0x00000005u);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && msg[0] == 0, "bad string pointer");
+    w32(top - 8, 0xF8000000u);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && msg[0] == 0, "string pointer in the RSX window");
+    w32(top - 8, ts); w32(L + L_TOP, 4);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && msg[0] == 0, "bad top");
+    w32(L + L_TOP, top); w32(top - 4, 3);
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && msg[0] == 0, "number on top");
+    w32(top - 4, LUA_TSTRING);
+    CHECK(classify_throw(L, r32, r8, msg, 0, true) == 0, "cap 0 must not write");
+    CHECK(classify_throw(L, r32, r8, msg, sizeof msg, true) == 0 && !strcmp(msg, ptext), "text again after repair");
+    /* the cap: 8 lines per session, all with KZ2_LUA_LOG=1 */
+    unsigned shown = 0;
+    for (unsigned i = 0; i < 20; i++) shown += protected_log_allowed(i, nullptr);
+    CHECK(shown == 8 && PROTECTED_LOG_CAP == 8u, "cap: %u", shown);
+    shown = 0;
+    for (unsigned i = 0; i < 20; i++) shown += protected_log_allowed(i, "0");
+    CHECK(shown == 8, "KZ2_LUA_LOG=0 keeps the cap: %u", shown);
+    shown = 0;
+    for (unsigned i = 0; i < 20; i++) shown += protected_log_allowed(i, "1");
+    CHECK(shown == 20, "KZ2_LUA_LOG=1 lifts the cap: %u", shown);
+
     /* the override rows and bodies, both EBOOTs */
     const std::string o129 = slurp("port/kz2/ppu_overrides.txt"), o101 = slurp("port/kz2/ppu_overrides-101.txt");
     const std::string body = slurp("port/kz2/kz2_ppu_overrides.cpp");
-    const char* rows129[] = {"00028030", "003F3160", "007B7D60", "003F9870"}, *rows101[] = {"00027F60", "003E6D10", "007AA3D8", "003ED420"};
+    const char* rows129[] = {"00028030", "003F3160", "007B7D60", "003F9870", "003FB7A0"},
+               *rows101[] = {"00027F60", "003E6D10", "007AA3D8", "003ED420", "003EF350"};
     for (const char* a : rows129) {
         CHECK(has_row(o129, a), "ppu_overrides.txt lacks %s", a);
         CHECK(body.find(std::string("PPU_OVERRIDE_") + a) != std::string::npos, "no body for %s", a);
@@ -65,6 +99,7 @@ int main()
         CHECK(has_row(o101, a), "ppu_overrides-101.txt lacks %s", a);
         CHECK(body.find(std::string("PPU_OVERRIDE_") + a) != std::string::npos, "no body for %s", a);
     }
+    CHECK(body.find("script error %d caught by pcall") != std::string::npos, "no protected-error line in the luaD_throw body");
     CHECK(ABORT_129 == 0x28030u && ABORT_101 == 0x27F60u && ABORT_POISON == 0x0DEADCA7u, "constants");
     if (fails) { fprintf(stderr, "test_guest_fatal: %d failure(s)\n", fails); return 1; }
     return 0;

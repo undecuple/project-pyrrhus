@@ -7,7 +7,7 @@
 
 **Killzone 2 (PS3) as a native Windows program, built on your PC from your own copy: an unofficial port by static recompilation.**
 
-[![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml) <!-- version -->[![pre-release 0.1.11](https://img.shields.io/badge/pre--release-0.1.11-b4500f?style=flat-square&labelColor=17130f)](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version --> [![Licence: MIT](https://img.shields.io/badge/licence-MIT-b4500f?style=flat-square&labelColor=17130f)](LICENSE) [![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-b4500f?style=flat-square&labelColor=17130f)](https://deepwiki.com/undecuple/project-pyrrhus)
+[![CI](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg)](https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml) <!-- version -->[![pre-release 0.1.12](https://img.shields.io/badge/pre--release-0.1.12-b4500f?style=flat-square&labelColor=17130f)](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version --> [![Licence: MIT](https://img.shields.io/badge/licence-MIT-b4500f?style=flat-square&labelColor=17130f)](LICENSE) [![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-b4500f?style=flat-square&labelColor=17130f)](https://deepwiki.com/undecuple/project-pyrrhus)
 
 > **Bring your own game.** This repository holds no game code, assets, keys or firmware, and downloads none. You
 > need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
@@ -51,7 +51,7 @@ saves back, 5.1 surround sound, and multiplayer (offline bots and self-hosted on
 
 ## Status
 
-**Status:** <!-- version -->[v0.1.11](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs. MIT licence. Direct3D 12 only.
+**Status:** <!-- version -->[v0.1.12](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version --> is a pre-release, partly playable: the intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs. MIT licence. Direct3D 12 only.
 
 ### Compatibility
 
@@ -87,7 +87,7 @@ No CPU emulator runs while you play. If you play the game in the PS3 emulator RP
 your RPCS3 install ("Use my RPCS3 install"). What each must contain:
 [docs/GETTING-FILES.md](docs/GETTING-FILES.md). This project ships none of them and gives no decryption steps.
 
-1. Download the Windows installer (recommended) or the portable zip from <!-- version -->[v0.1.11](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) (every release is a pre-release for now).
+1. Download the Windows installer (recommended) or the portable zip from <!-- version -->[v0.1.12](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) (every release is a pre-release for now).
 2. Run it and point it at your disc dump, the 1.29 update and the decrypted EBOOT.
 3. It translates and builds the game's code on your machine; no game code, assets or keys are shipped or downloaded.
 4. Start the game from the launcher.

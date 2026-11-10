@@ -83,4 +83,6 @@
 003F3160  # 1.29 luaD_throw(L, errcode): "[lua] unprotected error" line before the game's exit(1); lifted runs
 007B7D60  # 1.29 exit(code): "[guest-exit]" line + guest chain; lifted runs
 002EF0C0  # 1.29 aim assist pull (= v1.01 0x2E3E98): aim_assist_strength scales its stick change
+003FB7A0  # 1.29 luaG_errormsg(L) (luaD_throw inlined): "[lua] script error N caught by pcall" / unprotected line; lifted runs (#49)
 003F9870  # 1.29 luaV_gettable(L, t, key, val): logs a bad L or t with its caller (lr); lifted runs (#49)
+007C3A0C  # libc longjmp: restore guest registers, then unwind to the host setjmp continuation (issue 49)

@@ -105,6 +105,23 @@ def stale(repo, version):
     return found
 
 
+def marker_line_starts(repo):
+    """['relative/path:line'] for each Markdown line that starts with a version marker. GitHub takes a line that starts
+    with an HTML comment as a raw HTML block and leaves the Markdown in it unrendered (the 2026-11-09 README badge)."""
+    found = []
+    for p in files(repo):
+        if not p.lower().endswith(".md"):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        found += [f"{os.path.relpath(p, repo)}:{no}" for no, line in enumerate(text.splitlines(), 1)
+                  if line.lstrip().startswith("<!-- version -->")]
+    return found
+
+
 FAILS = []
 
 
@@ -137,6 +154,10 @@ def selftest():
             s = stale(tmp, "0.2.0")
             check(len(s) == 1 and s[0].startswith(os.path.join(*(["public"] if lay == "public" else []), "docs", "A.md")),
                   f"layout {lay}: the one stale mention is found and nothing else", s)
+            open(os.path.join(pages, "docs", "B.md"), "w").write("Badges: <!-- version -->v0.2.0<!-- /version -->\n"
+                                                              "<!-- version -->[![v](x)](y)<!-- /version -->\n")
+            m = marker_line_starts(tmp)
+            check(len(m) == 1 and m[0].endswith("B.md:2"), f"layout {lay}: a marker starting a Markdown line is found", m)
 
 
 def main(argv):
@@ -150,6 +171,8 @@ def main(argv):
     s = stale(repo, version)
     check(len(scanned) > 3, f"{layout(repo)[0]} layout: {len(scanned)} public files read", scanned[:5])
     check(not s, f"every release-version mention agrees with installer/VERSION ({version})", "\n     ".join(s))
+    m = marker_line_starts(repo)
+    check(not m, "no Markdown line starts with a version marker (GitHub would show it as raw text)", m)
     print("FAILED" if FAILS else "all ok")
     return 1 if FAILS else 0
 

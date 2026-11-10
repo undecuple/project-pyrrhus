@@ -40,7 +40,9 @@ void apply(int i)
     const std::string id = kz2rows::kz2_port_rows[i].id;
     if (id == "fov") kz2_fov_set(g_st.v[i]);
     else if (id == "vsync") rsx_live_draw_set_vsync(g_st.v[i] >= 0.5 ? 1 : 0);
-    else rsx_upscale_live_set(g_st.v[row("upscale")] >= 0.5 ? 1 : 0, (float)g_st.v[row("sharpness")]);   /* 1 = RSX_UPSCALE_FSR1 */
+    else if (id == "upscale" || id == "sharpness")
+        rsx_upscale_live_set(g_st.v[row("upscale")] >= 0.5 ? 1 : 0, (float)g_st.v[row("sharpness")]);   /* 1 = RSX_UPSCALE_FSR1 */
+    /* skip_intro is saved now and consumed once at the next boot. */
 }
 
 std::string read_file(const char* name, std::string* shown)
@@ -94,13 +96,14 @@ void load_locked(void)
     }
     std::string env;
     struct { const char* var; const char* id; } envs[] = { { "KZ2_FOV", "fov" }, { "RSX_UPSCALE", "upscale" }, { "RSX_UPSCALE_SHARPNESS", "sharpness" },
-                                                    { "KZ2_VSYNC", "vsync" } };
+                                                    { "KZ2_VSYNC", "vsync" }, { "KZ2_SKIP_INTRO", "skip_intro" } };
     for (auto& e : envs) {
         const char* s = getenv(e.var);
         if (!s || !*s) continue;
         const int i = row(e.id);
         double d;
         std::string sv = s;
+        if (!strcmp(e.id, "skip_intro") && (sv == "0" || sv == "1")) sv = sv == "1" ? "on" : "off";
         if (!strcmp(e.id, "upscale") && kz2rows::ieq(sv, "none")) sv = "off";
         if (kz2rows::parse(kz2rows::kz2_port_rows[i], sv, &d)) { g_st.v[i] = d; env += std::string(" ") + e.var; }
         else bad++;
@@ -121,6 +124,13 @@ extern "C" void kz2_port_settings_load(void)
 {
     std::lock_guard<std::mutex> lk(g_mu);
     load_locked();
+}
+
+extern "C" int kz2_skip_intro_enabled(void)
+{
+    std::lock_guard<std::mutex> lk(g_mu);
+    load_locked();
+    return g_st.v[row("skip_intro")] >= 0.5 ? 1 : 0;
 }
 
 /* The page's "pc:<cmd>" (kz2_menu_pages.cpp). The reply goes back through GetTimeZone. */
@@ -156,7 +166,8 @@ extern "C" int kz2_display_ini_set3(const char* mode, const char* scaling, const
     if (t.empty())
         t = "# Project Pyrrhus display settings (Alt+Enter toggles the mode; the Display page's port rows set fov, upscale, sharpness, vsync).\n"
             "# mode = windowed | borderless | fullscreen, scaling = fit | stretch, filter = bilinear | nearest, fov = 45..75 (vertical\n"
-            "# degrees, 45 = the game's own), upscale = off | fsr1, sharpness = 0..2, vsync = on | off. KZ2_DISPLAY,\n"
+            "# degrees, 45 = the game's own), upscale = off | fsr1, sharpness = 0..2, vsync = on | off,\n"
+            "# skip_intro = off | on (next start). KZ2_SKIP_INTRO=0|1 overrides this for one run. KZ2_DISPLAY,\n"
             "# KZ2_DISPLAY_SCALING, KZ2_DISPLAY_FILTER, KZ2_FOV, RSX_UPSCALE, RSX_UPSCALE_SHARPNESS, KZ2_VSYNC override them for\n"
             "# one run.\n";
     t = kz2rows::ini_set(t, "display", "mode", mode);

@@ -8,7 +8,10 @@ Cases: a complete dump + update + 1.29-sized ELF passes; wrong TITLE_ID fails; m
 whose EBOOT.BIN is already an ELF passes; a v1.01-sized ELF fails E1 on the 1.29 build (naming the update's USRDIR); a wrong-machine ELF fails; a truncated psarc
 fails; no --update warns; --json has the documented shape; H1 (EBOOT SHA-256): the shipped hashes file
 with empty values warns "unknown yet", a matching hash is OK, a mismatch warns with the size and both hashes (exit 0),
-an unreadable hashes file warns, a failed E1 gives no H1. D53: the European, Asian and Japanese discs pass with a D1
+an unreadable hashes file warns, a failed E1 gives no H1; an earlier change: the shipped file is the shared per-build list
+(1.29 entry naming all four discs), its match is OK, a mismatch warns, a build not listed warns "unknown yet", a
+build not known-good is no match, each malformed entry (and a list mixed with old keys, or a duplicate app_ver) is
+refused with a message naming builds[i] and the fault, and the old {"1.29": {...}} form still loads. D53: the European, Asian and Japanese discs pass with a D1
 WARN "untested", each region's disc VERSION and disc EBOOT size, every mixed region pair fails U1 naming both,
 the shipped psarc_sha256.json has one entry per disc, A1 per disc (another disc's archive = a mixed dump, FAIL).
 """
@@ -60,6 +63,30 @@ def write_elf(path, size, machine=fc.EM_PPC64, cls=2, data=2):
     with open(path, "wb") as f:
         f.write(h)
         f.truncate(size)
+
+
+def seg_elf(path, segs, gap=16, tail=b"", size=None):
+    """A 64-bit big-endian PPC64 ELF with program headers: segs = [(p_type, p_vaddr, p_paddr, data, p_memsz)], the
+    data laid out after the headers with gap bytes before each; tail appended; then truncated or padded to size."""
+    phoff, n = 64, len(segs)
+    off = phoff + 56 * n
+    body, phs = b"", b""
+    for typ, va, pa, data, mem in segs:
+        off += gap
+        body += b"\0" * gap + data
+        phs += struct.pack(">IIQQQQQQ", typ, 5, off, va, pa, len(data), mem, 0x10000)
+        off += len(data)
+    h = bytearray(64)
+    h[:4] = fc.ELF_MAGIC
+    h[4], h[5], h[6] = 2, 2, 1
+    h[18:20] = struct.pack(">H", fc.EM_PPC64)
+    struct.pack_into(">Q", h, 0x20, phoff)
+    struct.pack_into(">HH", h, 0x36, 56, n)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(bytes(h) + phs + body + tail)
+        if size is not None:
+            f.truncate(size)
 
 
 def make_dump(root, title_id="BCUS98116", eboot_magic=fc.SELF_MAGIC, psarc_bytes=4096, version="01.01"):
@@ -550,16 +577,16 @@ def main():
 
         u100 = make_update(os.path.join(tmp, "v100"), elf_size=16_381_928)
         rc, out = run(["--dump", d, "--update", u100] + small)
-        check("v1.01 ELF on the 1.29 build fails E1 naming the update's USRDIR (Project Helghast PR #11)",
-              rc == 1 and levels(out, "E1") == {"FAIL"} and "disc's 1.01 one" in out
-              and os.path.join(u100, "USRDIR") in out and "not the disc's" in out, out)
+        check("v1.01 ELF (by size) on the 1.29 build fails E1 naming the needed build (Project Helghast PR #11; "
+              "an earlier change: no path, no how-to)", rc == 1 and levels(out, "E1") == {"FAIL"} and "FAIL E1: This EBOOT is "
+              "Killzone 2 1.01, the disc's own version. This release needs Killzone 2 1.29 (BCUS98116, US)." in out, out)
         rc, out = run(["--dump", d, "--eboot", os.path.join(u100, "USRDIR", "EBOOT.elf")] + small)
-        check("E1 without --update names the usual dev_hdd0 USRDIR", rc == 1 and
-              os.path.join("dev_hdd0", "game", "BCUS98116", "USRDIR") in out, out)
+        check("E1 without --update: the same text", rc == 1 and "the disc's own version" in out, out)
         rc, out = run(["--dump", d, "--update", u100, "--target", "1.01"] + small)
         check("v1.01 ELF on a 1.01 tree (--target 1.01) is OK", rc == 0 and levels(out, "E1") == {"OK"}, out)
         rc, out = run(["--dump", d, "--update", u, "--target", "1.01"] + small)
-        check("1.29 ELF on a 1.01 tree fails", rc == 1 and levels(out, "E1") == {"FAIL"} and "for the 1.01" in out, out)
+        check("1.29 ELF on a 1.01 tree fails", rc == 1 and levels(out, "E1") == {"FAIL"}
+              and "needs Killzone 2 1.01 (BCUS98116, US)" in out, out)
 
         ux = make_update(os.path.join(tmp, "x86"), elf_size=16_455_144)
         write_elf(os.path.join(ux, "USRDIR", "EBOOT.elf"), 16_455_144, machine=0x3E, data=1)
@@ -572,33 +599,199 @@ def main():
         rc, out = run(["--dump", os.path.join(tmp, "missing"), "--update", u] + small)
         check("missing dump dir fails", rc == 1 and "FAIL D0" in out, out)
 
-        # H1: EBOOT SHA-256 against tools/release/eboot_sha256.json (or --hashes)
+        # H1 and E1 against the shared EBOOT id table (tools/release/eboot_sha256.json or --hashes)
         with open(fc.HASHES_FILE, encoding="utf-8") as f:
             shipped = json.load(f)
-        check("shipped hashes file has 1.29 and 1.01 entries", {"1.29", "1.01"} <= set(shipped)
-              and shipped["1.29"]["size"] == 16_455_144, shipped)
-        elf = os.path.join(u, "USRDIR", "EBOOT.elf")
-        got = fc.file_sha256(elf)
+        rows = fc.load_eboot_entries(fc.HASHES_FILE)
+        r129 = [x for x in rows if x["version"] == "1.29"]
+        check("shipped table: an entries list, one title id per entry, four 1.29 rows and the US 1.01 row",
+              isinstance(shipped.get("entries"), list) and "builds" not in shipped
+              and all(isinstance(e["title_id"], str) for e in shipped["entries"])
+              and [(x["title_id"], x["region"]) for x in r129] == list(zip(fc.REGIONS, ("US", "EU", "Asia", "JP")))
+              and [(x["title_id"], x["version"]) for x in rows if x["version"] == "1.01"] == [("BCUS98116", "1.01")],
+              shipped)
+        check("shipped table: 1.29 rows share size, sha256 and segment_sha256; self_sha256 per region",
+              len({(x["size"], x["sha256"], x["segment_sha256"]) for x in r129}) == 1
+              and all(len(x["sha256"]) == 64 and len(x["segment_sha256"]) == 64 for x in rows)
+              and len({x["self_sha256"] for x in r129}) == 4, rows)
+        check("shipped table: statuses tested (US 1.29), untested (the other 1.29), unsupported (1.01)",
+              [x["status"] for x in rows] == ["tested", "untested", "untested", "untested", "unsupported"], rows)
+        check("shipped table: sizes = EBOOT_ELF_SIZES", {x["size"]: x["version"] for x in rows} ==
+              fc.EBOOT_ELF_SIZES, rows)
+        check("shipped table: the comment holds no brace (the installer's parser)",
+              not [c for c in shipped["comment"] if c in "{}"])
+
+        # segment_sha256 on a fixture: p_paddr differs from p_filesz (a wrong-offset read fails), a PT_NOTE and an
+        # empty PT_LOAD are skipped, a PT_LOAD with p_filesz 0 but p_memsz set counts (header only)
+        segs = [(fc.PT_LOAD, 0x10000, 0x7777, b"\x11" * 300, 0x400), (4, 0x20000, 0x5555, b"\x22" * 40, 40),
+                (fc.PT_LOAD, 0x30000, 0x9999, b"", 0), (fc.PT_LOAD, 0x40000, 0x1234, b"", 0x800),
+                (fc.PT_LOAD, 0x50000, 0xabcd, b"\x33" * 123, 0x200)]
+        fx = os.path.join(tmp, "seg", "a.elf")
+        seg_elf(fx, segs, gap=16)
+        want = hashlib.sha256()
+        for typ, va, pa, data, mem in segs:
+            if typ == fc.PT_LOAD and (data or mem):
+                want.update(struct.pack(">QQQ", va, len(data), mem) + data)
+        check("segment_sha256: the spec's definition on a fixture with p_paddr != p_filesz",
+              fc.segment_sha256(fx) == want.hexdigest() and all(pa != len(d) for _t, _v, pa, d, _m in segs))
+        fx2 = os.path.join(tmp, "seg", "b.elf")
+        seg_elf(fx2, segs, gap=4096, tail=b"\0" * 999)
+        check("segment_sha256: another layout (padding, trailing bytes) keeps the value, the whole hash changes",
+              fc.segment_sha256(fx2) == fc.segment_sha256(fx) and fc.file_sha256(fx2) != fc.file_sha256(fx))
+        fx3 = os.path.join(tmp, "seg", "c.elf")
+        seg_elf(fx3, [(t, v, len(d), d, m) for t, v, _p, d, m in segs], gap=16)
+        check("segment_sha256: p_paddr is not used (the same segments with p_paddr = p_filesz hash the same)",
+              fc.segment_sha256(fx3) == fc.segment_sha256(fx))
+        seg_elf(fx3, [(t, v, p, d.replace(b"\x33", b"\x34"), m) for t, v, p, d, m in segs], gap=16)
+        check("control: one changed segment byte changes segment_sha256", fc.segment_sha256(fx3) != fc.segment_sha256(fx))
+        cut = os.path.join(tmp, "seg", "cut.elf")
+        open(cut, "wb").write(open(fx, "rb").read()[:-50])
+        try:
+            fc.segment_sha256(cut)
+            check("segment_sha256: a segment past the end of the file is refused", False)
+        except ValueError as e:
+            check("segment_sha256: a segment past the end of the file is refused", "past the end" in str(e), e)
+
+        # the outcomes, on a fixture of the 1.29 size (E1's version by size) and on padded copies
+        e129 = os.path.join(tmp, "seg", "EBOOT.elf")
+        seg_elf(e129, segs, gap=16, size=16_455_144)
+        pad = os.path.join(tmp, "seg", "padded.elf")
+        seg_elf(pad, segs, gap=4096, size=16_455_144 + 8192)
+        sha, seg = fc.file_sha256(e129), fc.segment_sha256(e129)
         hf = os.path.join(tmp, "hashes.json")
 
-        def hashes(v):
-            with open(hf, "w", encoding="utf-8") as f:
-                json.dump({"1.29": {"size": 16_455_144, "sha256": v}}, f)
-            return ["--hashes", hf]
+        def entry(sha256=sha, segment=seg, tid="BCUS98116", region="US", app_ver="01.29", size=16_455_144,
+                  status="tested", **kw):
+            return dict({"title_id": tid, "region": region, "app_ver": app_ver, "size": size, "sha256": sha256,
+                         "status": status, "self_sha256": "", "segment_sha256": segment}, **kw)
 
-        rc, out = run(["--dump", d, "--update", u] + small + hashes(""))
-        check("H1 unknown yet warns only", rc == 0 and levels(out, "H1") == {"WARN"} and "unknown yet" in out
-              and got in out, out)
-        rc, out = run(["--dump", d, "--update", u] + small + hashes(got.upper()))
-        check("H1 match is OK", rc == 0 and levels(out, "H1") == {"OK"}, out)
-        rc, out = run(["--dump", d, "--update", u] + small + hashes("ab" * 32))
-        check("H1 mismatch warns with size and both hashes", rc == 0 and levels(out, "H1") == {"WARN"}
-              and got in out and "ab" * 32 in out and "16,455,144" in out, out)
-        rc, out = run(["--dump", d, "--update", u, "--json"] + small + hashes(got))
-        check("H1 hash in json facts", json.loads(out)["facts"]["eboot_elf"]["sha256"] == got, out)
-        rc, out = run(["--dump", d, "--update", u] + small + ["--hashes", os.path.join(tmp, "nohashes.json")])
-        check("H1 unreadable hashes file warns", rc == 0 and levels(out, "H1") == {"WARN"}, out)
-        rc, out = run(["--dump", d, "--update", ux] + small + hashes(got))
+        def table(*entries, key="entries", extra=None):
+            with open(hf, "w", encoding="utf-8") as f:
+                json.dump(dict({"comment": "test", key: list(entries)}, **(extra or {})), f)
+            return hf
+
+        def verdict(elf, tbl, disc="BCUS98116", target="1.29"):
+            rep = fc.Report()
+            if disc:
+                rep.facts["disc"] = {"TITLE_ID": disc}
+            fc.check_eboot_elf(rep, elf, target, None, tbl)
+            return {c["code"]: (c["level"], c["message"]) for c in rep.checks}, rep.facts.get("eboot_elf", {})
+
+        v, facts = verdict(e129, table(entry()))
+        check("whole-file match, tested: E1 OK and H1 OK by SHA-256", v["E1"][0] == "OK" and v["H1"][0] == "OK"
+              and "by SHA-256" in v["H1"][1] and facts["sha256"] == sha and facts["segment_sha256"] == seg
+              and facts["match"] == {"by": "sha256", "title_id": "BCUS98116", "app_ver": "01.29", "status": "tested"}, v)
+        v, facts = verdict(e129, table(entry(sha256="ab" * 32)))
+        check("segment fallback: the whole hash differs, the segments match: OK by its segments",
+              v["E1"][0] == "OK" and v["H1"] == ("OK", "EBOOT matches the known build Killzone 2 1.29 (BCUS98116, US), "
+                                                        "by its segments"), v)
+        v, facts = verdict(pad, table(entry()))
+        check("segment fallback: a padded copy (another size, another whole hash) is the 1.29 build",
+              fc.file_sha256(pad) != sha and v["E1"][0] == "OK" and v["H1"][0] == "OK" and facts["version"] == "1.29"
+              and facts["match"]["by"] == "segments", v)
+        v, _ = verdict(e129, table(entry(status="untested", tid="BCES00081", region="EU")), disc="BCES00081")
+        check("untested build: H1 WARN", v["E1"][0] == "OK" and v["H1"] == (
+            "WARN", "This EBOOT is Killzone 2 1.29 (BCES00081, Europe): untested on this port."), v)
+        v, _ = verdict(e129, table(entry(status="unsupported")))
+        check("unsupported build: H1 FAIL", v["H1"] == ("FAIL", "This EBOOT is Killzone 2 1.29 (BCUS98116, US), a "
+                                                        "build this port does not run. This release needs Killzone 2 "
+                                                        "1.29 (BCUS98116, US)."), v)
+        v, _ = verdict(e129, table(entry(status="withdrawn")))
+        check("a status this reader does not know FAILs on a match (fail closed)", v["H1"][0] == "FAIL"
+              and "'withdrawn'" in v["H1"][1], v)
+        v, _ = verdict(e129, table(entry(status="withdrawn", sha256="ab" * 32, segment="cd" * 32), entry(
+            sha256="ef" * 32, segment="", tid="BCES00081", region="EU")))
+        check("control: an unknown status on a row that does not match is no FAIL", v["H1"][0] == "WARN", v)
+        v, _ = verdict(e129, table(entry(tid="BCES00081", region="EU")))
+        check("another region's title id: H1 WARN wrong region", v["H1"] == (
+            "WARN", "Wrong region: this EBOOT is Killzone 2 1.29 (BCES00081, Europe), but the disc is BCUS98116 (US). "
+                    "This release needs Killzone 2 1.29 (BCUS98116, US)."), v)
+        v, facts = verdict(e129, table(entry(tid="BCES00081", region="EU", status="untested"), entry()), disc="BCES00081")
+        check("several rows match: the disc's own row decides (European disc: untested)",
+              v["H1"][0] == "WARN" and "untested" in v["H1"][1] and facts["match"]["title_id"] == "BCES00081", v)
+        v, _ = verdict(e129, table(entry(), entry(tid="BCES00081", region="EU", status="untested")), disc="")
+        check("no disc known: the first matching row (US, tested)", v["H1"][0] == "OK", v)
+        v, _ = verdict(e129, table(entry(app_ver="01.01")))
+        check("same title, another app_ver: E1 FAIL (the hash is certain), no H1", v.get("E1") == (
+            "FAIL", "This EBOOT is Killzone 2 1.01 (BCUS98116, US), the disc's own version. This release needs "
+                    "Killzone 2 1.29 (BCUS98116, US).") and "H1" not in v, v)
+        v, _ = verdict(e129, table(entry(sha256="ab" * 32, segment="cd" * 32)))
+        check("unknown or modified (the 1.29 size, no match): H1 WARN with the unknown-or-modified text", v["E1"][0] == "OK" and v["H1"] == (
+            "WARN", "Your EBOOT is the 1.29 size but its contents differ from a clean copy. It may be patched or "
+                    "damaged. Make it again from your own 1.29 update's EBOOT.BIN, without patches, and pick the new "
+                    "file."), v)
+        v, _ = verdict(pad, table(entry(sha256="ab" * 32, segment="cd" * 32)))
+        check("unknown size, no match: E1 WARN and H1 WARN naming the needed build", v["E1"][0] == "WARN"
+              and v["H1"] == ("WARN", f"This EBOOT ({16_455_144 + 8192:,} bytes) matches no known Killzone 2 build. "
+                                      "This release needs Killzone 2 1.29 (BCUS98116, US)."), v)
+        v, _ = verdict(e129, table(entry(sha256="", segment="")))
+        check("no reference recorded (empty sha256): H1 WARN unknown yet", v["H1"][0] == "WARN"
+              and "unknown yet" in v["H1"][1], v)
+        enc = os.path.join(tmp, "seg", "self.elf")
+        open(enc, "wb").write(fc.SELF_MAGIC + b"\0" * 200)
+        v, _ = verdict(enc, table(entry()), disc="BCJS30032")
+        check("encrypted SELF: E1 FAIL naming the needed build of the disc's region", v == {"E1": (
+            "FAIL", "This EBOOT is an encrypted SELF, not an ELF. This release needs Killzone 2 1.29 (BCJS30032, Japan) "
+                    "as an ELF file.")}, v)
+        junk = os.path.join(tmp, "seg", "junk.elf")
+        open(junk, "wb").write(b"MZ" + b"\0" * 200)
+        v, _ = verdict(junk, table(entry()))
+        check("not a PS3 executable: E1 FAIL", v == {"E1": (
+            "FAIL", "This file is not a PS3 executable (a 64-bit big-endian PowerPC ELF). This release needs "
+                    "Killzone 2 1.29 (BCUS98116, US).")}, v)
+        x86 = os.path.join(tmp, "seg", "x86.elf")
+        write_elf(x86, 4096, machine=0x3E, data=1)
+        v, _ = verdict(x86, table(entry()))
+        check("a little-endian x86 ELF is not a PS3 executable either", v["E1"][0] == "FAIL"
+              and "not a PS3 executable" in v["E1"][1], v)
+        msgs = [m for c in (verdict(e129, table(t))[0] for t in (entry(status="unsupported"), entry(app_ver="01.01"),
+                entry(tid="BCES00081", region="EU"))) for _l, m in c.values()]
+        check("the player texts carry no path and no word on decrypting or dumping",
+              not [m for m in msgs if tmp in m or "decrypt" in m.lower() or "dump" in m.lower()], msgs)
+
+        # the older formats still load: an earlier change's builds list (lists of ids, known-good) and the per-version form
+        v, _ = verdict(e129, table({"title_id": ["BCUS98116", "BCES00081"], "region": ["US", "Europe"],
+                                    "app_ver": "01.29", "size": 16_455_144, "sha256": sha, "status": "known-good"},
+                                   key="builds"))
+        check("round-100 builds list still reads (known-good = tested)", v["H1"][0] == "OK", v)
+        v, facts = verdict(e129, table({"title_id": ["BCUS98116", "BCES00081"], "region": ["US", "Europe"],
+                                        "app_ver": "01.29", "size": 16_455_144, "sha256": sha,
+                                        "status": "known-good"}, key="builds"), disc="BCES00081")
+        check("round-100 builds list: its title id list expands pairwise", v["H1"][0] == "OK"
+              and facts["match"]["title_id"] == "BCES00081", v)
+        with open(hf, "w", encoding="utf-8") as f:
+            json.dump({"1.29": {"size": 16_455_144, "sha256": sha.upper()}}, f)
+        v, _ = verdict(e129, hf)
+        check("the old per-version form still reads (US, tested)", v["H1"][0] == "OK", v)
+        with open(hf, "w", encoding="utf-8") as f:
+            json.dump({"1.29": {"size": 16_455_144, "sha256": ""}}, f)
+        v, _ = verdict(e129, hf)
+        check("old form, empty value: unknown yet", v["H1"][0] == "WARN" and "unknown yet" in v["H1"][1], v)
+        for bad, why in ((entry(sha256="xyz"), "entries[1].sha256 must be 64 hex digits"),
+                         ({k: x for k, x in entry().items() if k != "status"}, "entries[1] lacks status"),
+                         (entry(app_ver="1.29"), "entries[1].app_ver must look like PARAM.SFO's APP_VER"),
+                         (entry(size="16455144"), "entries[1].size must be a positive whole number"),
+                         (entry(tid=["BCUS98116"], region=["US"]), "entries[1].title_id must be a non-empty string"),
+                         (entry(segment="12"), "entries[1].segment_sha256 must be 64 hex digits"),
+                         (entry(colour="red"), "entries[1] has unknown keys colour"),
+                         ("1.29", "entries[1] is not an object")):
+            v, _ = verdict(e129, table(entry(app_ver="01.01", size=16_381_928, sha256="ab" * 32), bad))
+            check(f"malformed entry refused: {why}", v["H1"][0] == "WARN" and why in v["H1"][1]
+                  and "not identified" in v["H1"][1], v)
+        v, _ = verdict(e129, table(entry(), entry()))
+        check("two entries for one title id and app_ver refused", "a second entry for BCUS98116" in v["H1"][1], v)
+        v, _ = verdict(e129, table(entry(), extra={"builds": []}))
+        check("an entries and a builds list together refused", "keep one" in v["H1"][1], v)
+        v, _ = verdict(e129, table(entry(), extra={"1.29": {"size": 1, "sha256": sha}}))
+        check("an entries list and old keys together refused", "old per-version keys" in v["H1"][1], v)
+        v, _ = verdict(e129, os.path.join(tmp, "nohashes.json"))
+        check("unreadable table: H1 WARN", v["E1"][0] == "OK" and v["H1"][0] == "WARN", v)
+        rc, out = run(["--dump", d, "--update", u, "--json", "--eboot", e129, "--hashes", table(entry())] + small)
+        j = json.loads(out)
+        check("CLI: --hashes reaches the check; facts carry both hashes and the match", rc == 0
+              and j["facts"]["eboot_elf"]["segment_sha256"] == seg and j["facts"]["eboot_elf"]["match"]["by"] == "sha256",
+              out)
+        rc, out = run(["--dump", d, "--update", ux] + small + ["--hashes", table(entry())])
         check("no H1 when E1 failed", "H1:" not in out, out)
         # B1: the finished build must hold kz2.exe and at3_standalone.dll (kz2.exe imports it)
         ob = os.path.join(tmp, "obj")
