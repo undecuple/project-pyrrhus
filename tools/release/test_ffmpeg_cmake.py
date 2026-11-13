@@ -54,6 +54,10 @@ def cached(cache, name):
     return m.group(1) if m else None
 
 
+def same_path(a, b):
+    return bool(a and b) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
 def main():
     body = block()
     check("CMakeLists.txt has the ffmpeg-headers block", body is not None and "FATAL_ERROR" in body
@@ -81,7 +85,7 @@ def main():
               and cached(cache, "PS3RECOMP_FFMPEG_RUNTIME") == "OFF", out)
         rc, out, cache = configure(src, os.path.join(tmp, "b3"), [f"-DKZ2_FFMPEG_INCLUDE_DIR={inc}"])
         check("headers given: the FFmpeg loader is built", rc == 0 and cached(cache, "PS3RECOMP_FFMPEG_RUNTIME") == "ON"
-              and cached(cache, "PS3RECOMP_FFMPEG_INCLUDE_DIR") == inc, out)
+              and same_path(cached(cache, "PS3RECOMP_FFMPEG_INCLUDE_DIR"), inc), out)
         rc, out, _ = configure(src, os.path.join(tmp, "b4"), [f"-DKZ2_FFMPEG_INCLUDE_DIR={tmp}"])
         check("a folder without libavcodec/avcodec.h stops", rc != 0 and "has no libavcodec/avcodec.h" in out, out)
 
@@ -91,7 +95,7 @@ def main():
         rc, out, cache = configure(src, os.path.join(tmp, "b5"), args)
         check("firstrun.py's configure arguments build the loader from the payload's ffmpeg/include",
               args and rc == 0 and cached(cache, "PS3RECOMP_FFMPEG_RUNTIME") == "ON"
-              and cached(cache, "PS3RECOMP_FFMPEG_INCLUDE_DIR") == inc, f"{args}\n{out}")
+              and same_path(cached(cache, "PS3RECOMP_FFMPEG_INCLUDE_DIR"), inc), f"{args}\n{out}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"test_ffmpeg_cmake: {'PASS' if not FAILS else 'FAIL ' + ', '.join(FAILS)}")

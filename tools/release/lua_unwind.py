@@ -84,7 +84,7 @@ def apply(directory, version):
             tmp = path.with_suffix(path.suffix + ".unwind-new")
             tmp.write_text(updated)
             tmp.replace(path)
-        receipts.append({"file": path.name, "sha256": hashlib.sha256(updated.encode()).hexdigest()})
+        receipts.append({"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     if READY not in header:
         tmp = announcements.with_suffix(".h.unwind-new")
         tmp.write_text(header.rstrip() + "\n" + READY)

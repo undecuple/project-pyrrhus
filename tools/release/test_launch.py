@@ -155,7 +155,10 @@ def link_tests(tmp):
         if any(link.startswith(b) for b in bad_dirs) or not bad_dirs:
             raise OSError(22, "[WinError 1392] The file or directory is corrupted and unreadable")
         os.rmdir(link)
-        os.symlink(target, link, target_is_directory=True)
+        if junction is not None:
+            junction(target, link)
+        else:
+            os.symlink(target, link, target_is_directory=True)
 
     def no_symlink(target, link, target_is_directory=False):
         if os.path.lexists(link):

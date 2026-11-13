@@ -4,6 +4,11 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Fixed
+- A native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked.
+
 ## [0.1.12] - 2026-11-10 (pre-release)
 
 ### Added

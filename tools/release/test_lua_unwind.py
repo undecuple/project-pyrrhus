@@ -47,6 +47,8 @@ class GenerationTests(unittest.TestCase):
                 for i in range(3):
                     (Path(tmp) / f"ppu_recomp_{i:03d}.cpp").write_text(fixture(f"{0x100000+i*256:08X}", target))
                 self.assertEqual(lu.apply(tmp, version), 3)
+                source = Path(tmp) / "ppu_recomp_000.cpp"
+                source.write_bytes(source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
                 self.assertEqual(lu.apply(tmp, version), 3)
                 self.assertTrue((Path(tmp) / "lua-unwind.json").is_file())
                 self.assertEqual(lu.verify(tmp, version), 3)

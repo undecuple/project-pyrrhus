@@ -19,7 +19,9 @@ builder, done-marker). Standard library only, Python 3.11+, Windows and Linux.
                anything is written.
   --root       the install (or source tree) holding the toolkit and our tools; default: two folders above this script
   --build      where everything generated goes; default <root>/build (the dump is never written to)
-  --jobs       compile/lift job count; default from free RAM: (available - 8 GB) / 1.5 GB, clamped 1..8 (build-kz2.sh)
+  --jobs       compile/lift job count; default from free RAM. The bundled llvm-mingw compiler reserves 3 GiB, budgets
+               1 GiB per job and caps at 16/logical CPUs; the GCC fallback reserves 8 GiB, budgets 1.5 GiB per job
+               and caps at 8. PPU and SPU lifting use at most 4 of those jobs.
   --toolchain  an llvm-mingw folder (bin/x86_64-w64-mingw32-clang[.exe]), built with port/cmake/llvm-mingw.cmake;
                default: the payload's <root>/toolchain/llvm-mingw when present, else port/cmake/mingw-w64.cmake
                (the GCC MinGW-w64 cross compiler on PATH; a NOTE line says so, public #34). Another toolchain than

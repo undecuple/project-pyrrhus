@@ -115,7 +115,9 @@ nix develop          # everything, plus Xvfb and steam-run for Proton runs
 
 - **Works with plain Python 3.11 or newer** (standard library only): the release tools and their tests, one file at
   a time, e.g. `python3 tools/release/test_firstrun.py`. Every `tools/release/test_*.py` passes with plain `python3`
-  on Linux outside Nix; they have not been run on Windows.
+  on Linux outside Nix; all 38 passed with Python 3.12.10 on native Windows 11 on 2026-11-12. A v0.1.12 portable
+  payload carrying the current Lua receipt fix also completed the seven-step first run there and started through the
+  packaged launcher. No screenshot was taken, so that smoke does not validate the picture.
 - **The installer script** (`installer/kz2.iss`) needs Inno Setup to compile. That compile has only been run in the
   maintainers' setup.
 - **Does not work without the flake toolchain:** the lift and the build (`ps3recomp-patched.sh`, `lift.sh`,

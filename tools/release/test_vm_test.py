@@ -36,6 +36,12 @@ def write(path, data=b"x"):
         f.write(data)
 
 
+def copy_release(src, dst):
+    if os.path.isdir(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+
+
 def step(base, *args):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -61,11 +67,11 @@ def make_base(tmp):
 
 
 def fake_install(tmp):
-    """An install folder whose kz2-setup/release is this tools/release and whose toolchain python.exe runs this
+    """An install folder whose kz2-setup/release is a copy of tools/release and whose toolchain python.exe runs this
     Python with -I (as the embeddable Python's ._pth: the script's folder is not on sys.path)."""
     inst = os.path.join(tmp, "inst-r30")
     os.makedirs(os.path.join(inst, "kz2-setup"))
-    os.symlink(HERE, os.path.join(inst, "kz2-setup", "release"))
+    copy_release(HERE, os.path.join(inst, "kz2-setup", "release"))
     py = vt.py_of(inst)
     os.makedirs(os.path.dirname(py))
     if os.name == "nt":
@@ -160,12 +166,10 @@ def round30(tmp):
         os.makedirs(bad)
         with open(os.path.join(bad, "firstrun_check.py"), "w") as f:
             f.write("print('first-run checks: pass')\n")
-        os.remove(os.path.join(inst, "kz2-setup", "release"))
-        os.symlink(bad, os.path.join(inst, "kz2-setup", "release"))
+        copy_release(bad, os.path.join(inst, "kz2-setup", "release"))
         rc, text = step(base, "15-empty-folder")
         check(rc == 1 and "RESULT 15-empty-folder FAIL" in text, "control: 15 fails without the reason lines", text[-800:])
-        os.remove(os.path.join(inst, "kz2-setup", "release"))
-        os.symlink(HERE, os.path.join(inst, "kz2-setup", "release"))
+        copy_release(HERE, os.path.join(inst, "kz2-setup", "release"))
         # 11 and 12 with the setup stood in by its log lines (exit 7 and the refusal text)
         def fake_setup(text_line, code, slog=None):
             def run(st_, argv, *x, **k):

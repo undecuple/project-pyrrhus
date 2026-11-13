@@ -181,25 +181,44 @@ ran to the end and produced `kz2.exe`, linked with the lifted SPU code. Step 5 w
 
 ## Building on Windows
 
-**Status: partly tested.** The installer's first-run build (the bundled compiler translating and building the game on
-Windows) ran in a Windows 10 virtual machine with no GPU (6 cores, 8 GB of memory) on 2026-10-27 and again on 2026-10-28 and produced kz2.exe in 18.6 minutes with 2 jobs. Building
-from the repository by hand on Windows is not tested. We test play under Proton on Linux; players report play on
-native Windows 11 (issue #13), which we have not tested ourselves.
+**Status: the installer and portable first-run build are tested; a source-tree build by hand is not.** The bundled
+compiler translated and built the game in a Windows 10 virtual machine with no GPU (6 cores, 8 GB of memory) on
+2026-10-27 and again on 2026-10-28, producing `kz2.exe` in 18.6 minutes with 2 jobs. A contributor also completed the
+portable route and two native start-up smokes on Windows 11 on 2026-11-12, described below. Maintainer play testing
+is under Proton on Linux; players report native Windows 11 play in issue #13.
 
-1. **The route to try first (untested): build on Linux, run on Windows.** Do the [Steps](#steps) 1 to 4 on a Linux
+1. **The installer or portable zip (recommended):** it does the lift and build on Windows without WSL2 or Nix (see
+   the top of this page). From an unpacked portable zip, `run.cmd` accepts the three game paths as defaults for its
+   normal interactive check and build, which makes a test run reproducible:
+
+   ```powershell
+   .\run.cmd `
+     --dump "E:\PS3\Killzone 2.iso" `
+     --update "D:\RPCS3\dev_hdd0\game\BCUS98116" `
+     --eboot "D:\RPCS3\dev_hdd0\game\BCUS98116\USRDIR\EBOOT.elf" `
+     --rpcs3 "D:\RPCS3"
+   ```
+
+   Pick paths on your machine; the EBOOT is the separate decrypted 1.29 `EBOOT.elf`, not the update's encrypted
+   `EBOOT.BIN`. On Windows 11 on 2026-11-12, a v0.1.12 portable payload with the Unreleased Lua receipt fix completed
+   all seven steps in 665.2 seconds of recorded step time (about 668 seconds wall-clock). It selected 15 compiler
+   jobs, spent 187 seconds compiling and passed the final build check. The packaged `Project Pyrrhus.exe` launcher
+   then kept a game window running for a 30-second smoke and both closed normally; a separate 90-second direct smoke
+   selected an RTX 5070 and stayed running. No screenshot was taken, so these runs do not establish picture, audio or
+   gameplay correctness. The resulting portable folder measured 13.9 GiB after the smokes; see
+   [requirements](requirements.md#hardware-to-build-the-port-yourself).
+2. **Build on Linux, run on Windows (untested).** Do the [Steps](#steps) 1 to 4 on a Linux
    machine. Copy `kz2.exe` and `at3_standalone.dll` (and, for movies, `avcodec-63.dll` and `avutil-61.dll` from
    [Movie decoders](#movie-decoders-ffmpeg-dlls)) into one folder, and your game folder (`PS3_GAME`, which holds
    the game's data and takes many gigabytes) to a Windows PC with a Direct3D 12 GPU, keeping the layout
    `PS3_GAME\USRDIR\...`. Put the decrypted `EBOOT-129.elf` in `PS3_GAME\USRDIR\` (beside the disc's own files) and, in a terminal
    in the folder with `kz2.exe`, run `kz2.exe .\PS3_GAME\USRDIR\EBOOT-129.elf`. Set `KZ2_UPDATE_DIR` to the update's `USRDIR` first.
-2. **Build inside WSL2 (untested):** install WSL2 with Ubuntu (`wsl --install -d Ubuntu`), install Nix there with
+3. **Build inside WSL2 (untested):** install WSL2 with Ubuntu (`wsl --install -d Ubuntu`), install Nix there with
    flakes enabled, give WSL2 at least 16 GB of memory in `%UserProfile%\.wslconfig`, keep the repository in the
    Linux file system (not under `/mnt/c`), link your dump from `/mnt/...` as in step 1, and run the Steps 1 to 4. Then
-   copy the result to a Windows folder as in route 1. No one has run this on WSL2.
-3. **The installer or portable zip:** it does the lift and the build on Windows without WSL2 or Nix (see the top of
-   this page).
+   copy the result to a Windows folder as in route 2. No one has run this on WSL2.
 
-If you try either route, open an issue with your Windows version, GPU and driver, how far it got, and the log.
+If a Windows route fails, open an issue with your Windows version, GPU and driver, how far it got, and the log.
 
 **Cloning on Windows: turn off git's line-ending conversion.** Git for Windows installs with `core.autocrlf=true`, which
 checks LF files out with CRLF line endings. The patches in `port/patches/` then stop applying part-way through the
@@ -229,9 +248,10 @@ nix develop .#re --command python3 tools/release/test_installer_art.py
 data and no GPU. Each line is a command to run inside the Nix shell shown on that line.
 
 On Windows without Nix, the Python tests run with Python 3.12 (`python tools/release/test_....py`), and the shell
-tests in `tools/` with Git Bash. The exception is the shell tests in `tools/spu/` and `tools/runtime/` that compile C
-test programs against the runtime with the Nix shell's Linux compilers: they are Linux tests, run by CI, and are not
-expected to pass on Windows.
+tests in `tools/` with Git Bash. All 38 `tools/release/test_*.py` files passed with Python 3.12.10 on native Windows
+11 on 2026-11-12. The exception is the shell tests in `tools/spu/` and `tools/runtime/` that compile C test programs
+against the runtime with the Nix shell's Linux compilers: they are Linux tests, run by CI, and are not expected to
+pass on Windows.
 
 ## Which tools and which route
 
