@@ -68,7 +68,17 @@ def run(*args):
     return rc, out.getvalue(), err.getvalue()
 
 
+def thursdays():
+    nt = release_notes.next_thursday
+    check(str(nt("2030-01-02")) == "2030-01-03", "D55: Wednesday -> the next day")
+    check(str(nt("2030-01-03")) == "2030-01-10", "D55: a Thursday release -> a week later, not itself")
+    check(str(nt("2030-01-04")) == "2030-01-10", "D55: Friday -> next Thursday")
+    check(str(nt("2030-12-31")) == "2031-01-02", "D55: across a year end")
+    check(nt("2030-01-02").weekday() == 3 and str(nt("2030-01-02")) != "2030-01-02", "negative control: never the release date itself on a non-Thursday check")
+
+
 def main():
+    thursdays()
     for layout in ("public", "root"):
         with tempfile.TemporaryDirectory() as t:
             root = pathlib.Path(t)
@@ -85,7 +95,7 @@ def main():
                                                 encoding="utf-8")
             rc, out, err = run("--tag", "v0.1.1", "--root", str(first))
             fp = out.strip().split("\n\n")
-            check(rc == 0 and len(fp) == 4 and "earlier version" not in out and "Fixed:" not in out
+            check(rc == 0 and len(fp) == 5 and "earlier version" not in out and "Fixed:" not in out
                   and fp[1] == "New in 0.1.1:\n- A new thing.\n- A fixed thing.",
                   f"{layout}: the first published release has no install-over line and no Fixed label", (rc, err, fp))
             # A version tagged but never released hands its items to the next release's notes.
@@ -103,8 +113,8 @@ def main():
                   (rc, err, out))
             rc, out, err = run("--tag", "v0.2.0", "--root", t)
             paras = out.strip().split("\n\n")
-            check(rc == 0 and len(paras) == 6, f"{layout}: v0.2.0 gives six paragraphs", (rc, err, paras))
-            if len(paras) == 6:
+            check(rc == 0 and len(paras) == 7, f"{layout}: v0.2.0 gives seven paragraphs", (rc, err, paras))
+            if len(paras) == 7:
                 check(paras[0] == "Project Pyrrhus 0.2.0, a pre-release: partly playable, see [docs/RELEASE-CRITERIA.md]"
                       "(https://github.com/undecuple/project-pyrrhus/blob/v0.2.0/docs/RELEASE-CRITERIA.md).",
                       f"{layout}: first line", paras[0])
@@ -119,6 +129,10 @@ def main():
                              "decrypted EBOOT made from your own copy", "none of them is included or downloaded",
                              "SHA256SUMS", "What goes online: [docs/PRIVACY.md]", "blob/v0.2.0/docs/GETTING-FILES.md"):
                     check(want in paras[5], f"{layout}: the fixed paragraph says {want}", paras[5])
+            check(len(paras) == 7 and paras[6] == "Next planned release: Thursday 2030-01-03.",
+                  f"{layout}: D55 last line: the Thursday after the release date", paras[-1:])
+            check(re.search(r"\bNext planned release: Thursday \d{4}-\d\d-\d\d\.\n$", run("--preview", "0.3.0", "--root", t)[1]),
+                  f"{layout}: --preview of an undated entry still names a Thursday")
             check(not re.search(r"\b(PM|lanes?|rounds?|D\d\d)\b", out), f"{layout}: public wording only", out)
             out_file = root / "o" / "notes.md"
             rc, _, _ = run("--tag", "v0.2.0", "--root", t, "--out", str(out_file))

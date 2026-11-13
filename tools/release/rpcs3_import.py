@@ -60,7 +60,8 @@ HELP_DISC_LAYOUT = ("RPCS3 lists Killzone 2, but not as a disc dump (no PS3_GAME
                     "dump; pick the folders yourself.")
 HELP_BY_CODE = {"no_decrypted_eboot": HELP_DECRYPT, "missing_update": HELP_UPDATE, "wrong_version": HELP_VERSION,
                 "missing_disc": HELP_DISC, "encrypted_eboot": HELP_ENCRYPTED, "not_disc_layout": HELP_DISC_LAYOUT}
-
+# problems whose help text is the whole message
+HELP_SAYS_IT = ("no_decrypted_eboot", "encrypted_eboot")
 
 BREAK = "\x1f"   # line-break marker in problem= text; kz2.iss turns it into CR LF (the wizard's box clips long words)
 
@@ -170,7 +171,17 @@ def resolve(root, allow_outside=False):
     probs = list(t["problems"])
     disc, upd = t["disc"], t["update"] or {}
     bad_upd = ""
-    if disc.get("ok"):
+    if disc.get("ok") and disc.get("is_iso"):
+        # an ISO file: the same checks as the manual route's picked ISO (firstrun_check.check_dump_iso). An encrypted
+        # or unreadable image is refused with that check's own message.
+        rep = fc.Report()
+        fc.check_dump_iso(rep, disc["disc_dir"], fc.MIN_PSARC_BYTES)
+        bad = [c for c in rep.checks if c["level"] == "FAIL"]
+        if bad:
+            probs.append({"code": "bad_disc_iso", "text": f"{loc.redact(disc['disc_dir'], [cand])}: {bad[0]['message']}"})
+        else:
+            res["dump"] = disc["disc_dir"]
+    elif disc.get("ok"):
         if disc.get("has_ps3_game"):
             res["dump"] = disc["disc_dir"]
         else:
@@ -393,7 +404,11 @@ def _main(argv=None):
     if a.resolve:
         pairs = [("status", res["status"])] + [(k, res[k]) for k in ("dump", "update", "eboot", "title")]
         pairs += [("outside", p) for p in res["outside"]]
-        pairs += [("problem", f"{p['code']}|{soft_wrap(loc.redact(p['text'], [res['root']]))}") for p in res["problems"]]
+        # a problem whose help text already says the same thing is sent without its own sentence (the dialog showed
+        # the fact twice); the code stays for the log
+        pairs += [("problem", f"{p['code']}|" + ("" if p["code"] in HELP_SAYS_IT else
+                                                  soft_wrap(loc.redact(p["text"], [res["root"]]))))
+                  for p in res["problems"]]
         pairs += [("help", h) for h in res["help"]]
         pairs.append(("saves", len(pick_saves(res))))
         _write(a.out, pairs)

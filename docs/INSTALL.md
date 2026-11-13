@@ -1,6 +1,6 @@
 # Getting it, in detail
 
-**Pre-release <!-- version -->[v0.1.12](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version -->:** a Windows installer (recommended) and
+**Pre-release <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version -->:** a Windows installer (recommended) and
 a portable zip, on the [releases page](https://github.com/undecuple/project-pyrrhus/releases) with a `.sha256` file for each and `SHA256SUMS`. They check your
 own disc dump (a folder or a decrypted ISO file), the 1.29 update and the decrypted EBOOT ([what each must
 contain](GETTING-FILES.md)), then

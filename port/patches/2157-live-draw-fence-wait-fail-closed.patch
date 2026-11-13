@@ -1,0 +1,53 @@
+KZ2 patch 2157 (from KZ3 2157, the fence-wait part only): ld_wait_fence fails closed when the device is lost.
+
+ld_wait_fence ignored WaitForSingleObject's result and the fence's completed value after the wait. D3D12 reports a removed
+device as an all-ones completed value (which also completes every event), so a caller could treat a range or a frame
+slot as free when the GPU had not finished with it. Now an all-ones value before the wait, a wait that did not signal,
+or a completed value below the target after it sets g.ready = 0, prints "[d3d-fail] ..." and returns 0. Every caller
+that reuses memory after the wait (tile allocation, frame slots) already checks the return. Nothing changes while the
+device is alive.
+
+From Project Helghast port/patches/2157-live-draw-ring-fail-closed.patch (snapshot work/kz3-import/2026-11-11-rsx-47e0c238),
+imported by KZ2 an earlier change, ld_wait_fence hunks only (copied). The rest of KZ3 2157 hardens the ring-mark paths of
+KZ3 2153/2155 (ld_rm_ensure, LD_RING_FENCE_WAIT, LD_TAKE_FAIL descriptor takers, the occlusion query before a no-drain
+wrap), which KZ2 does not have: KZ2's rings wrap through the drain in ld_flush. No switch, no A/B (a failure path);
+not exercised (no device removal was provoked).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -2608,7 +2608,14 @@
+ /* Block until the queue fence reaches v. 0 on a D3D12 failure. */
+ static int ld_wait_fence(u64 v)
+ {
+-    if (!v || g.fence->lpVtbl->GetCompletedValue(g.fence) >= v) return 1;
++    if (!v) return 1;
++    const u64 done0 = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    if (done0 == ~(u64)0) {   /* patch 2157: D3D12 reports a removed device as an all-ones completed value */
++        fprintf(stderr, "[d3d-fail] fence completed value is all ones (device removed) frame=%u\n", g_ld_frames);
++        g.ready = 0;
++        return 0;
++    }
++    if (done0 >= v) return 1;
+     const HRESULT event_hr =
+         g.fence->lpVtbl->SetEventOnCompletion(g.fence, v, g.fence_event);
+     if (FAILED(event_hr)) {
+@@ -2620,8 +2627,17 @@
+         return 0;
+     }
+     const long long w0 = rsx_perf_now();
+-    WaitForSingleObject(g.fence_event, INFINITE);
++    const DWORD wait_rc = WaitForSingleObject(g.fence_event, INFINITE);
+     rsx_perf_add(RSX_PERF_GPUWAIT_T, rsx_perf_now() - w0);
++    /* patch 2157: a wait that did not signal, or a fence that did not reach v (device removal completes the event
++     * with an all-ones value), is a failure: the caller must not treat the range as free. */
++    const u64 done1 = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    if (wait_rc != WAIT_OBJECT_0 || done1 == ~(u64)0 || done1 < v) {
++        fprintf(stderr, "[d3d-fail] fence wait rc=0x%08lX completed=%llu wanted=%llu frame=%u\n",
++                (unsigned long)wait_rc, (unsigned long long)done1, (unsigned long long)v, g_ld_frames);
++        g.ready = 0;
++        return 0;
++    }
+     return 1;
+ }
+ static void ld_fr_release_retired(u32 i)

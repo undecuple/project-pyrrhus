@@ -1,4 +1,6 @@
 KZ2 patch 6071: bounded byte-validated shader-program memo (experimental, off by default).
+Runtime an earlier change fix: rsx_pm_select clears an entry's metadata, not its 64 KiB snapshot (offsetof(bytes)); the
+full memset on every miss made LD_PROGRAM_MEMO=1 slower than off (b-walk heavy view: pso pre 5.9 -> 35.8 ms/s).
 
 Written for Project Pyrrhus. Extends Project Helghast patch 2029 by undecuple (MIT):
 https://github.com/undecuple/project-helghast . Preserves the original
@@ -17,7 +19,7 @@ diff --git a/libs/video/rsx_program_memo.h b/libs/video/rsx_program_memo.h
 new file mode 100644
 --- /dev/null
 +++ b/libs/video/rsx_program_memo.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,63 @@
 +/* Bounded byte-validated shader identity memo. Written for Project Pyrrhus.
 + * Caller owns synchronization and validates mapped bytes before accepting reuse.
 + * No guest write-generation assumptions; eviction is bounded round-robin. */
@@ -25,6 +27,7 @@ new file mode 100644
 +#define RSX_PROGRAM_MEMO_H
 +#include <stdint.h>
 +#include <string.h>
++#include <stddef.h>
 +#define RSX_PM_SLOTS 8u
 +#define RSX_PM_BYTES 0x10000u
 +#define RSX_PM_HASHES 4u
@@ -53,7 +56,10 @@ new file mode 100644
 +    }
 +    rsx_pm_entry* e = &memo->entries[memo->next];
 +    memo->next = (memo->next + 1u) % RSX_PM_SLOTS;
-+    memset(e, 0, sizeof *e);
++    /* Runtime an earlier change: clear the metadata only. Clearing the whole entry wrote 64 KiB per miss (two misses per
++     * draw when the program changes): pre 5.9 -> 35.8 ms/s in b-walk's heavy view. bytes[] is read only up to size/n,
++     * which are 0 here and set by the fill's memcpy. */
++    memset(e, 0, offsetof(rsx_pm_entry, bytes));
 +    e->loc = loc; e->off = off;
 +    return e;
 +}

@@ -253,11 +253,19 @@ add_executable(${PROJECT_NAME}
     kz2_session_log.c   # KZ2_CONSOLE, logs/kz2-<date>-<time>.log, the EBOOT beside the exe (kz2_session_log.h)
     kz2_edge_zlib.c     # patch 6039: the Edge zlib job on the host (KZ2_NATIVE_ZLIB, kz2_edge_zlib.h)
     kz2_edge_guest.c    # patch 6039: a guest write standing in for the task's DMA put
+    kz2_online.cpp      # an earlier change: repsn.ini / community.ini read before main(), the online switch
     ${PS3RECOMP_SCAFFOLD}
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}
     ${SPU_SOURCES}
 )
+
+# Private developer diagnostics of the online reader: compiled only when the file is present (the
+# public tree has none); kz2_online.cpp then calls it (KZ2_ONLINE_DIAG). Only these two sources change.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/kz2_online_diag.cpp")
+    target_sources(${PROJECT_NAME} PRIVATE kz2_online_diag.cpp)
+    set_property(SOURCE kz2_online.cpp APPEND PROPERTY COMPILE_DEFINITIONS KZ2_ONLINE_DIAG=1)
+endif()
 
 # The lifted SPU sources use bare #include "spu_context.h". Scope that include
 # directory (and their flags) to those TUs alone: adding it to the whole target

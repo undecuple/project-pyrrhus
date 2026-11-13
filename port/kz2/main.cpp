@@ -56,6 +56,7 @@
 #include "ps3emu/split_file.h"   /* patch 6034: ps3_sf_has_parts for the update miss hook */
 #include "kz2_fios_stamp.h"       /* FIOS disk cache stamp (patch 6035 pre-open hook) */
 #include "kz2_cache_root.h"       /* KZ2_CACHE_ROOT: the dump read in place, writes apart */
+#include "kz2_online.h"           /* the online settings files, read before main() (D56) */
 #include "ps3emu/input_latency.h" /* patch 6037: input-to-present probe (KZ2_LATENCY=1) */
 
 #ifdef _WIN32
@@ -821,7 +822,20 @@ static bool alloc_guest_vm(void)
 {
 #ifdef _WIN32
     AddVectoredExceptionHandler(1, vm_commit_veh);
-    vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, MEM_RESERVE, PAGE_READWRITE);
+    /* KZ2 patch 6077 (default on since an earlier change, 2026-11-10; LD_TEX_WW=0 off): the OS write
+     * watch on guest memory, which the live draw's texture cache reads (GetWriteWatch) instead of hashing. Only a
+     * reservation made with MEM_WRITE_WATCH carries it, so the choice is made here, once; the live draw checks it and
+     * says "[tex-ww] off" when it is missing. Every page committed in a write-watched reservation is reported from its
+     * first write until a reset; pages nobody resets cost one minor fault each (0.4 us under Proton,
+     * tools/runtime/ww_probe.sh). */
+    const char* ww = getenv("LD_TEX_WW");
+    const DWORD ww_flag = (ww && ww[0] == '0') ? 0 : MEM_WRITE_WATCH;
+    vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, ww_flag ? (MEM_RESERVE | MEM_WRITE_WATCH) : MEM_RESERVE,
+                                     PAGE_READWRITE);
+    if (ww_flag) fprintf(stderr, "[vm] guest memory reserved with MEM_WRITE_WATCH (LD_TEX_WW=%s)%s\n",
+                         ww ? ww : "default", vm_base ? "" : ": FAILED, reserving without it");
+    if (!vm_base && ww_flag)   /* default on since an earlier change: a host without the write watch still starts ([tex-ww] off) */
+        vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, MEM_RESERVE, PAGE_READWRITE);
     ppu_vm_size = 0;              /* the whole space is backed; no OOB guard needed */
 #else
     /* No vectored exception handlers off Windows, so the arena is committed up
@@ -1015,6 +1029,7 @@ int main(int argc, char** argv)
 #endif
 
     printf("=== Killzone 2 (ps3recomp) ===\n");
+    kz2_online_log_replay();    /* the [online] lines kz2_online.cpp kept from before main(), now in the session log */
 
     /* No launch option needed (ENHANCEMENT, as KZ3's kz3_boot_inputs): argv[1] if given, else
      * <exe dir>/PS3_GAME/USRDIR/EBOOT.elf, so kz2.exe dropped into the dump's folder (a Steam shortcut to it) starts

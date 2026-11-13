@@ -20,7 +20,7 @@ or unfinished: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 | 🔧 | **Audio and movies:** menu and in-game sound and music play; the intro movie plays (the other 27 are not tried yet); sound is mixed down to stereo |
 | 🔧 | **Motion-control sections** (valves, charges) without motion sensors: the right stick now drives the game's valve and charge code (`motion = auto|on|off`); host-tested, not yet played through in the game |
 | 📋 | **The whole campaign, start to finish:** only the first level has been played so far |
-| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.12](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12)<!-- /version -->) |
+| 🔧 | **Installer and portable zip** (Windows): check your own disc dump, the 1.29 update and the decrypted EBOOT, then build the port on your machine with a bundled compiler; nothing of the game is shipped or downloaded. Versioned as pre-releases (current <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version -->) |
 | ✅ | **Install without the link** to your game files: done for 0.1.8 (the game folder is read in place; an update keeps the caches where they are) |
 
 ## 2. PC display and settings  🔧

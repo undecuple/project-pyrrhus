@@ -266,6 +266,10 @@ Name: "{group}\Controls"; Filename: "{app}\{#LauncherExe}"; Parameters: "--contr
 Name: "{group}\Button prompts"; Filename: "{app}\{#LauncherExe}"; Parameters: "--prompts"; WorkingDir: "{app}"
 ; --display: moves to the next display mode (Windowed, Borderless, Fullscreen), writes [display] mode
 Name: "{group}\Display"; Filename: "{app}\{#LauncherExe}"; Parameters: "--display"; WorkingDir: "{app}"
+; --online: the Online settings window (Off, re-psn or a community server; launch.py, online_dialog.py, D56). It writes
+; repsn.ini and community.ini in the shared folder %APPDATA%\PS3Recomp (every port's; never removed by this uninstaller)
+; or {app}\shared for a portable install (the player's settings, kept like keybinds.ini)
+Name: "{group}\Online settings"; Filename: "{app}\{#LauncherExe}"; Parameters: "--online"; WorkingDir: "{app}"
 Name: "{group}\Project page"; Filename: "{#SiteURL}"
 Name: "{group}\Uninstall {#AppDirName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\kz2-uninstall.ico"
 Name: "{autodesktop}\{#AppDirName}"; Filename: "{app}\{#LauncherExe}"; WorkingDir: "{app}"; Tasks: desktopicon
@@ -1681,7 +1685,7 @@ begin
     end else begin
       Probs := '';
       for I := 0 to GetArrayLength(Lines) - 1 do
-        if Pos('problem=', Lines[I]) = 1 then
+        if (Pos('problem=', Lines[I]) = 1) and (Pos('|', Lines[I]) < Length(Lines[I])) then   { empty text: the help says it }
           Probs := Probs + Copy(Lines[I], Pos('|', Lines[I]) + 1, MaxInt) + #13#10;
       StringChangeEx(Probs, #31, #13#10, True);   { the lookup breaks long paths with #31 (the box clips long words) }
       Msg := Probs + #13#10 + KVAll(Lines, 'help', #13#10#13#10);

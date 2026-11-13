@@ -78,8 +78,8 @@ static int pool_ok(const uint8_t* ls, const kz2_native_entry* e)
 
 int kz2_native_run(spu_context* ctx, const kz2_native_entry* e)
 {
-    kz2_native_count(e->slot);
+    kz2_native_count(e->slot, ctx);
     if (!spu_ls_dbg_armed() && pool_ok(ctx->ls, e) && e->fn(ctx)) return 1;
-    __atomic_fetch_add(&g_kz2_native_fallback[e->slot], 1, __ATOMIC_RELAXED);
+    kz2_native_fell_back(e->slot, ctx);
     return 0;
 }

@@ -1,0 +1,79 @@
+KZ2 patch 6081: count the NV406E semaphore ACQUIREs the FIFO walker reaches before their label
+holds the value (diagnostic only; nothing the walker does changes).
+
+KZ2 runs with GCM_SEMA_ACQUIRE unset, so cellGcmSys.c consumes an ACQUIRE whose label is not there yet and the walker
+goes on: commands behind it may then read a producer's data (an SPU job's vertex output, a PPU-written buffer) before
+it is written. On hardware the RSX waits. Before deciding anything (a D28 correctness question), this counts how
+often it happens. GCM_ACQ_STATS=1 prints, per 10 s of walker time:
+  [acq] T s: seen=N met=N unmet=N (behind=N other=N) mode=pass|block; most unmet labels 0xL=n ...
+behind = the label is below the value (signed 32-bit difference; the producer has not reached it), other = past it or
+unrelated. Label indices are (semaphore offset & 0xFFFF) >> 4, as the [SEMA] lines print them. With GCM_SEMA_ACQUIRE=1
+an unmet acquire stops the pass and is met again later, so each return is counted.
+Own diagnostic; not from upstream.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2955,6 +2955,54 @@
+ /* The diagnostic switches below are tested on every drain pass, and GCM_RECDBG
+  * on every semaphore method. getenv walks the whole environment and showed in
+  * RSX-thread profiles, so each is read once and cached, like the other knobs. */
++/* KZ2 patch 6081 (diagnostic only; no behaviour change): the NV406E ACQUIREs the walker reaches,
++ * and those whose label does not hold the value yet. With GCM_SEMA_ACQUIRE unset (KZ2's default) such an acquire is
++ * consumed anyway and the walker runs on, so commands after it may read a producer's data before it is written
++ * (D28 correctness question); with it set the walker stops the pass and comes back (each return is counted again).
++ * GCM_ACQ_STATS=1 prints one line per 10 s of walker time: totals, the unmet ones split into behind (label < value,
++ * the producer has not reached it) and other (label past or unrelated), and the four labels with the most unmet. */
++static struct {
++    unsigned long long seen, met, unmet, behind, other, t0;
++    u32 unmet_by_label[4096];
++} s_acq;
++static int gcm_acq_stats_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("GCM_ACQ_STATS"); on = e && atoi(e) != 0; }
++    return on;
++}
++static void gcm_acq_note(u32 sema_offset, u32 have, u32 want)
++{
++    const u32 li = (sema_offset & 0xFFFFu) >> 4;
++    s_acq.seen++;
++    if (have == want) s_acq.met++;
++    else {
++        s_acq.unmet++;
++        if ((int32_t)(have - want) < 0) s_acq.behind++; else s_acq.other++;
++        s_acq.unmet_by_label[li & 4095u]++;
++    }
++    const unsigned long long now = ps3_ms_now();
++    if (!s_acq.t0) s_acq.t0 = now;
++    if (now - s_acq.t0 < 10000ull) return;
++    static int blk = -1;
++    if (blk < 0) { const char* e = getenv("GCM_SEMA_ACQUIRE"); blk = e ? atoi(e) : 0; }
++    u32 top[4] = {0, 0, 0, 0}, topn[4] = {0, 0, 0, 0};
++    for (u32 i = 0; i < 4096u; i++) {
++        const u32 n = s_acq.unmet_by_label[i];
++        for (int k = 0; k < 4; k++)
++            if (n > topn[k]) {
++                for (int j = 3; j > k; j--) { top[j] = top[j - 1]; topn[j] = topn[j - 1]; }
++                top[k] = i; topn[k] = n; break;
++            }
++    }
++    fprintf(stderr, "[acq] %.1f s: seen=%llu met=%llu unmet=%llu (behind=%llu other=%llu) mode=%s; most unmet labels "
++                    "0x%X=%u 0x%X=%u 0x%X=%u 0x%X=%u\n", (now - s_acq.t0) / 1000.0, s_acq.seen, s_acq.met, s_acq.unmet,
++            s_acq.behind, s_acq.other, blk ? "block (each return counted)" : "pass (consumed unmet)",
++            top[0], topn[0], top[1], topn[1], top[2], topn[2], top[3], topn[3]);
++    memset(&s_acq, 0, sizeof s_acq);
++    s_acq.t0 = now;
++}
++
+ static void gcm_rsx_process_fifo_unlocked(void)
+ {
+     { static unsigned _n = 0; static unsigned long long _t0 = 0;
+@@ -3466,6 +3514,7 @@
+                      * not hold the value yet, the producer may still write, so the stands are held until it does
+                      * (rsx_live_draw_vr_acquire, checked at each draw). */
+                     if (m == 0x68u && rsx_live_draw_enabled()) rsx_live_draw_vr_acquire(la, v, vm_read32(la) == v);
++                    if (m == 0x68u && gcm_acq_stats_on()) gcm_acq_note(s_sema_offset, vm_read32(la), v);   /* KZ2 patch 6081 */
+                     { static int sn = 0, recdbg = -1; if (recdbg < 0) recdbg = getenv("GCM_RECDBG") ? 1 : 0;
+                       if (recdbg && PS3_LOG_FIRST(sn, 12))
+                         fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }

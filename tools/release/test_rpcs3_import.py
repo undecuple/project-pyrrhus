@@ -269,6 +269,73 @@ def main():
         os.remove(root4 / "dev_hdd0/game" / T / "USRDIR/EBOOT.elf")
         # the disc's own (1.01) EBOOT.elf is not offered for the 1.29 build
         check(not r["eboot"], "the disc's EBOOT.elf is not used")
+        # one cause, one sentence: the dialog shows problem texts and then the help; for these codes the help is the
+        # whole message, so --resolve sends the problem without its own sentence (the code stays for the log)
+        outp = os.path.join(tmp, "dup.txt")
+        root4n, _ = tree(tmp, "noelf3", disc_inside=True, elf=False)
+        root4e, _ = tree(tmp, "encdup", disc_inside=True)
+        w(root4e / "dev_hdd0/game" / T / "USRDIR/EBOOT.elf", b"SCE\x00rest")
+        rc = ri.main(["--resolve", "--rpcs3", str(root4e), "--out", outp])
+        t = open(outp, encoding="utf-8-sig").read()
+        check("problem=encrypted_eboot|\n" in t and "help=" + ri.HELP_ENCRYPTED in t and "still encrypted" not in t.split("help=")[0],
+              "--resolve: an encrypted EBOOT is said once (help only)")
+        rc = ri.main(["--resolve", "--rpcs3", str(root4n), "--out", outp])
+        t = open(outp, encoding="utf-8-sig").read()
+        check("problem=no_decrypted_eboot|\n" in t and "EBOOT.BIN" not in t and t.count("EBOOT.elf was found") == 1,
+              "--resolve: a missing EBOOT.elf is said once (help only)")
+        check("problem=wrong_version|" not in t, "(other codes are unaffected: see the wrong-version --resolve case)")
+
+        # --- RPCS3 lists the disc as an .iso file (the manual route accepts the same file; same ISO checks)
+        from iso_fixture import build_iso
+        import firstrun_check as fc
+
+        def sfo_iso(**kw):
+            f = {"APP_VER": "01.01", "CATEGORY": "DG", "TITLE": "Synthetic", "TITLE_ID": T, "VERSION": "01.01"}
+            f.update(kw)
+            return sfo(**f)
+        isodir = Path(tmp) / "isos"
+        isodir.mkdir()
+        good = {"PS3_DISC.SFB": b".SFB" + b"\0" * 8, "PS3_GAME/PARAM.SFO": sfo_iso(),
+                "PS3_GAME/USRDIR/EBOOT.BIN": fc.SELF_MAGIC + b"\0" * 60,
+                "PS3_GAME/USRDIR/data_ps3.psarc": fc.PSARC_MAGIC + b"\0" * 6000}
+        iso_ok = build_iso(str(isodir / "KZ2.dec.iso"), good)
+        iso_enc = build_iso(str(isodir / "enc.iso"), dict(good, **{"PS3_GAME/USRDIR/data_ps3.psarc": bytes(range(200)) * 30}))
+        with mock.patch.object(fc, "MIN_PSARC_BYTES", 100):
+            def with_disc(name, target):
+                rt, _d = tree(tmp, name, disc=False)
+                w(rt / "config" / "games.yml", f"{T}: {target}\n")
+                return rt
+            rt = with_disc("isook", iso_ok)
+            r = ri.resolve(str(rt), True)
+            check(r["ok"] and r["dump"] == iso_ok and not r["problems"] and r["update"] and r["eboot"],
+                  f"an .iso entry is accepted ({codes(r)})")
+            check(r["eboot"].endswith("USRDIR/EBOOT.elf") and T in r["update"], "ISO disc: the update and EBOOT.elf are found in dev_hdd0")
+            dec = isodir / "Killzone 2 (USA).dec.iso"
+            dec.write_bytes(open(iso_ok, "rb").read())
+            r = ri.resolve(str(with_disc("isodec", str(dec))), True)
+            check(r["ok"] and r["dump"] == str(dec) and not r["problems"],
+                  f"a '.dec.iso' entry (spaces, brackets in the name) is accepted like a plain .iso ({codes(r)})")
+            rt = with_disc("isoenc", iso_enc)
+            r = ri.resolve(str(rt), True)
+            check(not r["ok"] and not r["dump"] and codes(r) == ["bad_disc_iso"]
+                  and fc.ISO_ENCRYPTED in r["problems"][0]["text"], f"an encrypted .iso is refused with the usual message ({codes(r)})")
+            rt = with_disc("isogone", str(isodir / "gone.iso"))
+            r = ri.resolve(str(rt), True)
+            check("missing_disc" in codes(r) and not r["dump"] and "not a folder or an .iso file" in r["problems"][0]["text"],
+                  f"a missing .iso file is refused ({codes(r)})")
+            txt = isodir / "notes.txt"
+            txt.write_bytes(b"x")
+            r = ri.resolve(str(with_disc("isotxt", txt)), True)
+            check("missing_disc" in codes(r) and not r["dump"], "a file that is not an .iso is refused")
+            # negative control: the same good ISO with its bytes scrambled must not pass
+            bad = isodir / "junk.iso"
+            bad.write_bytes(b"hello" * 100000)
+            r = ri.resolve(str(with_disc("isojunk", bad)), True)
+            check(not r["ok"] and codes(r) == ["bad_disc_iso"], f"negative control: a non-ISO .iso file is refused ({codes(r)})")
+            # locate alone: an .iso entry has no folder checks of its own
+            gp = L.game_path(str(rt.parent / "isook"), T)
+            check(gp["ok"] and gp.get("is_iso") and gp["has_ps3_game"], "locate: an .iso entry is passed on, flagged is_iso")
+
         w(root4 / "dev_hdd0/game" / T / "USRDIR/EBOOT.elf", ELF+b"now")
         r = ri.resolve(str(root4))
         check(r["ok"], "check again after decrypting finds it")

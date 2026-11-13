@@ -1,0 +1,155 @@
+KZ2 5007 (Medius step 1): the two imports Killzone 2 1.29's online start reached unimplemented, and
+one signed-in test for every NP manager answer. Release an earlier change's listener run (KZ2_NET_LISTEN=1) stopped at both
+with no socket opened.
+- sys_net_show_ifconfig (sys_net NID 0xB48636C4; stub 0xBCCC84, bl @0x00812228 and @0x00A5BE1C): a libnet debug
+  call that lists the interfaces on the TTY and returns 0. Answers 0 with one log line; the host's interfaces are not
+  listed. No network path.
+- sceNpManagerGetAvatarUrl (sceNp NID 0x36D0C2C5; stub 0xBCF064, bl @0x004D144C in the online start @0x004D13C8):
+  not initialized NOT_INITIALIZED, null INVALID_ARGUMENT, signed out SCE_NP_ERROR_OFFLINE (0x8002AA0C, nothing
+  written), signed in CELL_OK with an empty URL (no avatar server here; no host name, so no network path).
+- np_manager_signed_in() (psnr, or a port's own server through KZ3 4003's ps3_net_np_signed_in) now decides
+  GetStatus, the RegisterCallback event, RequestTicket2, GetAccountRegion, GetNetworkTime and GetAvatarUrl alike. Before,
+  4003 had changed only GetStatus and the callback: signed in through a port (KZ2_NET_LISTEN=np), GetStatus said
+  ONLINE while GetAccountRegion said OFFLINE, and the online start @0x004D13C8 stores any error and stops (state
+  0xC). Signed in through a port the ticket request gets the same failed GOT_TICKET as psnr (no ticket server: a
+  signed-in console with no ticket); no ticket is ever issued, nothing DNAS. psnr behaviour is unchanged.
+Names from the NID hash of the firmware names (both checked: ps3_compute_nid gives the import's NID) and RPCS3's
+rpcs3/Emu/Cell/Modules/sys_net_.cpp and sceNp.cpp (GitHub master, 2026-11-11): behaviour followed, read, not copied.
+Test: tools/runtime/test_np_online_stubs.sh (also checks gen_hle_nids.py --all registers both NIDs).
+
+diff --git a/libs/network/sceNp.c b/libs/network/sceNp.c
+--- a/libs/network/sceNp.c
++++ b/libs/network/sceNp.c
+@@ -227,6 +227,16 @@ s32 sceNpGetMyLanguages(SceNpMyLanguages* langs)
+ static SceNpManagerCallback s_npmgr_cb = NULL;
+ static void*                s_npmgr_cb_arg = NULL;
+ 
++/* KZ2 patch 5007: the one signed-in test every manager answer uses (GetStatus, the RegisterCallback event, the ticket
++ * request, the account region, the network time, the avatar URL): signed in through psnr, or through a port's own
++ * server (KZ3 4003's ps3_net_np_signed_in). 4003 changed only GetStatus and the callback, so a port-signed-in title
++ * saw ONLINE from GetStatus and SCE_NP_ERROR_OFFLINE from GetAccountRegion in the same frame (Killzone 2's online
++ * start @0x004D13C8 reads both and gave up). */
++static int np_manager_signed_in(void)
++{
++    return np_psnr_enabled() || ps3_net_np_signed_in();
++}
++
+ s32 sceNpManagerGetStatus(s32* status)
+ {
+     if (!s_np_initialized)
+@@ -239,7 +249,7 @@ s32 sceNpManagerGetStatus(s32* status)
+      * cellGcmSys had. Tokyo Jungle calls this during its online init. */
+     /* Signed in when there is a psnr server to be signed in to. */
+     /* KZ3 4003: signed in through psnr, or through a port's own server (ps3_net_np_signed_in). */
+-    s32 st = (np_psnr_enabled() || ps3_net_np_signed_in()) ? SCE_NP_MANAGER_STATUS_ONLINE
++    s32 st = np_manager_signed_in() ? SCE_NP_MANAGER_STATUS_ONLINE
+                                                          : SCE_NP_MANAGER_STATUS_OFFLINE;
+     vm_write32((uint32_t)(uintptr_t)status, (uint32_t)st);
+     { static s32 last = -2;
+@@ -257,7 +267,7 @@ s32 sceNpManagerRegisterCallback(SceNpManagerCallback callback, void* arg)
+     printf("[sceNp] ManagerRegisterCallback()\n");
+     /* Online: tell the title it is signed in, as the console does once the
+      * manager reaches ONLINE. Delivered on its next cellSysutilCheckCallback. */
+-    if ((np_psnr_enabled() || ps3_net_np_signed_in()) && callback) {   /* KZ3 4003 */
++    if (np_manager_signed_in() && callback) {   /* KZ3 4003, KZ2 5007 */
+         const u64 args[8] = { (u64)(u32)SCE_NP_MANAGER_STATUS_ONLINE, 0,
+                               (u64)(u32)(uintptr_t)arg, 0, 0, 0, 0, 0 };
+         cellSysutilQueueGuestCallbackArgs((u32)(uintptr_t)callback, args);
+@@ -303,6 +313,30 @@ s32 sceNpManagerGetChatRestrictionFlag(s32* isRestricted)
+     return CELL_OK;
+ }
+ 
++/* KZ2 patch 5007: sceNpManagerGetAvatarUrl (NID 0x36D0C2C5), SceNpAvatarUrl* (char data[128]), the signed-in
++ * account's avatar picture URL. Checks in the SDK's order, as RPCS3's sceNp.cpp (read, not copied): not initialized
++ * NOT_INITIALIZED, null INVALID_ARGUMENT, signed out SCE_NP_ERROR_OFFLINE (nothing written). Signed in, the URL comes
++ * from the account server; there is none here (psnr and a port's own server keep no avatar), so the answer is
++ * CELL_OK with an empty URL (all 128 bytes 0): no host name to fetch, so nothing can reach the network through it,
++ * and the length bound holds. Killzone 2 1.29 calls it in its online start (bl @0x004D144C, stub 0xBCF064) between
++ * GetOnlineName and GetAccountRegion and copies the string (@0x004D1470); any error there ends the online start.
++ * ASSUMPTION: an empty URL is accepted where a PSN account always had one (only stored at that site). */
++s32 sceNpManagerGetAvatarUrl(SceNpAvatarUrl* avatarUrl)
++{
++    const u32 ea = (u32)(uintptr_t)avatarUrl;
++    if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
++    if (!ea) return SCE_NP_ERROR_INVALID_ARGUMENT;
++    if (!np_manager_signed_in()) {
++        static int logged = 0;
++        if (!logged) { logged = 1; printf("[sceNp] ManagerGetAvatarUrl() -> OFFLINE (signed out)\n"); }
++        return SCE_NP_ERROR_OFFLINE;
++    }
++    for (u32 i = 0; i < (u32)sizeof(SceNpAvatarUrl); i++) vm_write8(ea + i, 0);
++    { static int logged = 0;
++      if (!logged) { logged = 1; printf("[sceNp] ManagerGetAvatarUrl() -> \"\" (signed in, no avatar server)\n"); } }
++    return CELL_OK;
++}
++
+ /* Tickets, the account region and the network time come from the PSN
+  * servers. Unimplemented, these imports answered CELL_OK with nothing
+  * written: a title that requested a ticket waited for a GOT_TICKET event
+@@ -323,7 +357,7 @@ s32 sceNpManagerRequestTicket2(u32 npId, u32 version, u32 serviceId, u32 cookie,
+     if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
+     if (!npId || !serviceId || cookieSize > SCE_NP_COOKIE_MAX_SIZE)
+         return SCE_NP_AUTH_EINVALID_ARGUMENT;
+-    if (!np_psnr_enabled()) {
++    if (!np_manager_signed_in()) {   /* KZ2 5007 */
+         printf("[sceNp] ManagerRequestTicket2() -> OFFLINE\n");
+         return SCE_NP_ERROR_OFFLINE;
+     }
+@@ -332,7 +366,8 @@ s32 sceNpManagerRequestTicket2(u32 npId, u32 version, u32 serviceId, u32 cookie,
+                               (u64)(u32)(uintptr_t)s_npmgr_cb_arg, 0, 0, 0, 0, 0 };
+         cellSysutilQueueGuestCallbackArgs((u32)(uintptr_t)s_npmgr_cb, args);
+     }
+-    printf("[sceNp] ManagerRequestTicket2() -> GOT_TICKET failed (psnr issues no tickets)\n");
++    /* KZ2 5007: also signed in through a port's server: there is no ticket server either way. */
++    printf("[sceNp] ManagerRequestTicket2() -> GOT_TICKET failed (no ticket server)\n");
+     return CELL_OK;
+ }
+ 
+@@ -357,7 +392,7 @@ s32 sceNpManagerGetAccountRegion(u32 countryCode, u32 language)
+ {
+     if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
+     if (!countryCode || !language) return SCE_NP_ERROR_INVALID_ARGUMENT;
+-    if (!np_psnr_enabled()) return SCE_NP_ERROR_OFFLINE;
++    if (!np_manager_signed_in()) return SCE_NP_ERROR_OFFLINE;   /* KZ2 5007 */
+     vm_write8(countryCode + 0, 'u'); vm_write8(countryCode + 1, 's');   /* SceNpCountryCode */
+     vm_write8(countryCode + 2, 0);   vm_write8(countryCode + 3, 0);
+     vm_write32(language, 1);         /* CELL_SYSUTIL_LANG_ENGLISH_US */
+@@ -368,7 +403,7 @@ s32 sceNpManagerGetNetworkTime(u32 pTick)
+ {
+     if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
+     if (!pTick) return SCE_NP_ERROR_INVALID_ARGUMENT;
+-    if (!np_psnr_enabled()) return SCE_NP_ERROR_OFFLINE;
++    if (!np_manager_signed_in()) return SCE_NP_ERROR_OFFLINE;   /* KZ2 5007 */
+     /* CellRtcTick: microseconds since 0001-01-01 00:00 UTC. */
+     const u64 unix_us = (u64)time(NULL) * 1000000ull;
+     vm_write64(pTick, unix_us + 62135596800000000ull);
+diff --git a/libs/network/sceNp.h b/libs/network/sceNp.h
+--- a/libs/network/sceNp.h
++++ b/libs/network/sceNp.h
+@@ -145,6 +145,7 @@ s32 sceNpManagerGetTicket(u32 buffer, u32 bufferSize);
+ s32 sceNpManagerGetTicketParam(s32 paramId, u32 param);
+ s32 sceNpManagerGetAccountRegion(u32 countryCode, u32 language);
+ s32 sceNpManagerGetNetworkTime(u32 pTick);
++s32 sceNpManagerGetAvatarUrl(SceNpAvatarUrl* avatarUrl);   /* KZ2 5007 */
+ 
+ /* NPDRM availability checks. The guest passes its klicensee (16 bytes) and the
+  * path of an EDAT/SELF; the klicensee is handed to the EDAT reader, which then
+diff --git a/libs/network/sysNet.c b/libs/network/sysNet.c
+--- a/libs/network/sysNet.c
++++ b/libs/network/sysNet.c
+@@ -1179,3 +1179,15 @@ int32_t sys_net_if_ctl(int32_t prefix, int32_t cmd, uint32_t arg, int32_t len)
+     (void)prefix; (void)cmd; (void)arg; (void)len;
+     return fail(50);
+ }
++
++/* KZ2 patch 5007: sys_net_show_ifconfig (NID 0xB48636C4 = ps3_compute_nid("sys_net_show_ifconfig")), no arguments.
++ * A libnet debug call: the firmware prints its interface table on the console's TTY and returns 0; it changes no
++ * state and opens nothing. Killzone 2 1.29 calls it from two sites (bl @0x00812228 and @0x00A5BE1C, stub 0xBCCC84);
++ * an earlier change's run reached it once, right after the network start dialog. The host's own interfaces are not listed (they are the player's machine, not the console's); one log line,
++ * then 0. RPCS3's sys_net_.cpp also answers CELL_OK (read, not copied). */
++int32_t sys_net_show_ifconfig(void)
++{
++    static int logged = 0;
++    if (!logged) { logged = 1; printf("[sys_net] show_ifconfig() -> 0 (TTY listing not printed)\n"); }
++    return 0;
++}

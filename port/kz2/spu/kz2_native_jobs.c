@@ -18,7 +18,21 @@
 
 extern int (*g_kz2_native_gate[KZ2_NATIVE_SLOTS])(spu_context*);   /* generated spu_workloads.c (tools/spu/gen_spu_register.py) */
 
-volatile long g_kz2_native_calls[KZ2_NATIVE_SLOTS], g_kz2_native_fallback[KZ2_NATIVE_SLOTS];
+__attribute__((aligned(64))) kz2_native_ctr g_kz2_native_ctr[KZ2_NATIVE_SLOTS][KZ2_NATIVE_SHARDS];
+
+long kz2_native_calls_sum(int slot)
+{
+    long n = 0;
+    for (int k = 0; k < KZ2_NATIVE_SHARDS; k++) n += g_kz2_native_ctr[slot & (KZ2_NATIVE_SLOTS - 1)][k].calls;
+    return n;
+}
+
+long kz2_native_fallback_sum(int slot)
+{
+    long n = 0;
+    for (int k = 0; k < KZ2_NATIVE_SHARDS; k++) n += g_kz2_native_ctr[slot & (KZ2_NATIVE_SLOTS - 1)][k].fallback;
+    return n;
+}
 
 static const char* s_rec_dir;
 static long s_rec_n = 24, s_rec_every = 61;
@@ -30,7 +44,7 @@ static const kz2_native_entry* s_ent[KZ2_NATIVE_SLOTS];
 void kz2_native_count_print(int slot, long calls)
 {
     fprintf(stderr, "[native] slot %d %s 0x%05X calls=%ld fallback=%ld\n", slot, s_ent[slot] ? s_ent[slot]->job : "?",
-            s_ent[slot] ? s_ent[slot]->addr : 0u, calls, g_kz2_native_fallback[slot]);
+            s_ent[slot] ? s_ent[slot]->addr : 0u, calls, kz2_native_fallback_sum(slot));
 }
 
 static long env_long(const char* k, long d)
@@ -79,7 +93,7 @@ static void rec_write(spu_context* ctx, int slot, const char* path, long n, long
 
 static int rec(spu_context* ctx, int slot)
 {
-    kz2_native_count(slot);
+    kz2_native_count(slot, ctx);
     if (rec_skip(ctx, s_ent[slot])) return 0;
     if (difftime(time(NULL), s_t0) < s_rec_after) return 0;
     char path[1024];

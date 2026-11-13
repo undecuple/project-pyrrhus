@@ -1,0 +1,245 @@
+KZ2 patch 6076: LD_VP_GEN, the vertex program's identity from write stamps instead of a byte
+compare. Default off; LD_VP_GEN=1 on, LD_VP_GEN=verify computes as before on every hit and compares.
+
+Root cause ([perf-psokey]): get_pso finds the vertex program's length by scanning for its END instruction,
+then compares the whole program (up to 8.5 KB) with a one-entry memo on every draw, and on a miss (the previous draw
+used another program: ~30 % of draws in b-walk's heavy view, memo hits 27.8 k of ~40 k draws/s) hashes it again
+(FNV) and rescans it for TXL units; vp 8.7 ms/s plus part of pre and units in the heavy view.
+
+The transform program store (rsx_dispatch.vp) is host memory written only by rsx_dispatch.c: the upload method window,
+rsx_dispatch_seed_transform_program and rsx_dispatch_init (checked by grep over libs/ and runtime/ in an earlier change:
+every other use reads). Each of these now stamps the 16-instruction blocks whose words changed with a new value of
+one monotonic 64-bit clock (rsx_dsp_vp_clock; an upload of an equal word stamps nothing; init and seed stamp all).
+rsx_vp_gen.h keeps 16 entries by start slot (length, FNV hash, TXL mask, the clock when computed); an entry is used
+only while no block of [start, start + length) carries a newer stamp, so it describes exactly the words the
+computation read. A reliable write signal, not a guess: there is no other writer. The PSO key, the hash and the
+shader inputs are unchanged (the memo returns the values the old code computes); [vp-gen] hits/puts/stale/bad every
+65,536 draws. Test: tools/runtime/test_vp_gen.sh (the header with the patched rsx_dispatch.c: repeat, equal-word
+re-upload, writes outside, changed word inside, seed, init, and a 200,000-step random stress with no false hit;
+negative control TEST_NEG=1: a memo keyed by start alone gives false hits).
+
+Written for Project Pyrrhus (KZ2 runtime); no outside code.
+
+diff --git a/libs/video/rsx_dispatch.h b/libs/video/rsx_dispatch.h
+--- a/libs/video/rsx_dispatch.h
++++ b/libs/video/rsx_dispatch.h
+@@ -127,6 +127,8 @@
+     u32 vp[RSX_DSP_VP_WORDS];         /* transform (vertex) program words   */
+     u32 constants[RSX_DSP_NUM_CONSTANTS][4]; /* vec4 f32 bit patterns       */
+     u32 const_gen;                    /* bumped whenever a stored constant changes (patch 6064) */
++    /* patch 6076: per 16-instruction block of vp[], the rsx_dsp_vp_clock value of its last changed word */
++    u64 vp_blk_gen[(RSX_DSP_VP_INSTR + 15) / 16];
+ 
+     rsx_dispatch_sink sink;
+ 
+@@ -330,6 +332,8 @@
+ 
+ /* Transform program execution start slot (VP_START_FROM_ID) */
+ u32 rsx_dsp_vp_start(const rsx_dispatch* rsx);
++/* patch 6076: the global clock rsx_dispatch.vp_blk_gen stamps come from (monotonic, never 0 after the first stamp) */
++u64 rsx_dsp_vp_clock(void);
+ 
+ /* Primitive restart (NV4097_SET_RESTART_INDEX_ENABLE/_INDEX): a sentinel
+  * index value that ends the current TRIANGLE_STRIP/FAN run with NO
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -144,9 +144,21 @@
+         rsx->klass[(method >> 2) + i] = klass;
+ }
+ 
++/* Patch 6076: the transform program store's write clock. Every change of vp[] stamps its 16-instruction block
++ * with a new value, so a memo entry computed at clock C is exact while its blocks carry stamps <= C
++ * (rsx_vp_gen.h). The three writers of vp[] are below: init, the seed and the upload window. */
++static u64 s_vp_clock;
++u64 rsx_dsp_vp_clock(void) { return s_vp_clock; }
++static void vp_stamp_all(rsx_dispatch* rsx)
++{
++    const u64 c = ++s_vp_clock;
++    for (u32 b = 0; b < (RSX_DSP_VP_INSTR + 15) / 16; b++) rsx->vp_blk_gen[b] = c;
++}
++
+ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
+ {
+     memset(rsx, 0, sizeof(*rsx));
++    vp_stamp_all(rsx);   /* patch 6076: vp[] was just zeroed */
+     if (sink)
+         rsx->sink = *sink;
+ 
+@@ -243,6 +255,7 @@
+     if (count > RSX_DSP_VP_WORDS)
+         count = RSX_DSP_VP_WORDS;
+     memcpy(rsx->vp, words, count * sizeof(u32));
++    vp_stamp_all(rsx);   /* patch 6076 */
+ }
+ 
+ void rsx_dispatch_seed_transform_constants(rsx_dispatch* rsx, const u32* words, u32 count)
+@@ -367,8 +380,10 @@
+         const u32 lane = ((method - M_VP_UPLOAD_INST) >> 2) & 3;
+         u32* load = &rsx->regs[M_VP_UPLOAD_FROM_ID >> 2];
+         const u32 pos = *load * 4 + lane;
+-        if (pos < RSX_DSP_VP_WORDS)
++        if (pos < RSX_DSP_VP_WORDS && rsx->vp[pos] != arg) {
+             rsx->vp[pos] = arg;
++            rsx->vp_blk_gen[pos / (4u * 16u)] = ++s_vp_clock;   /* patch 6076: the word's block */
++        }
+         if (lane == 3)
+             (*load)++;
+         return;
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10254,6 +10254,23 @@
+ }
+ static struct { u64 draws, fp_hit, vp_hit, hash_hit, bytes, mismatch; } g_ld_pm_stats;
+ 
++/* Patch 6076: LD_VP_GEN=1 takes the vertex program's length, FNV hash and TXL mask from rsx_vp_gen.h's memo while
++ * the program's slots carry no newer write stamp; verify = compute them as before on every hit and compare
++ * ([vp-gen-bad]). Default off. */
++#include "rsx_vp_gen.h"
++static rsx_vpg_memo g_ld_vpg;
++static int ld_vp_gen_mode(void)   /* 0 off, 1 on, 2 verify */
++{
++    static int m = -1;
++    if (m < 0) {
++        const char* e = getenv("LD_VP_GEN");
++        m = !e ? 0 : !strcmp(e, "verify") ? 2 : atoi(e) != 0;
++        fprintf(stderr, "[vp-gen] mode=%d (LD_VP_GEN=%s)\n", m, e ? e : "unset");
++    }
++    return m;
++}
++static u64 g_ld_vpg_bad;
++
+ static ID3D12PipelineState* get_pso(
+     const rsx_vertex_layout_plan* masked_layout, int packed_payload)
+ {
+@@ -10262,7 +10279,12 @@
+     const u32 start = rsx_dsp_vp_start(&g.rsx);
+     if (start >= RSX_DSP_VP_INSTR) { LD_PSO_BAIL("no vertex program uploaded (vp start out of range)"); return NULL; }
+     const u8* vp_uc = (const u8*)(g.rsx.vp + start * 4);
+-    const u32 vp_instrs = rsx_vp_program_size_instrs(vp_uc, (RSX_DSP_VP_INSTR - start) * 16);
++    const int vpg_mode = ld_vp_gen_mode();   /* patch 6076 */
++    const rsx_vpg_entry* vpg = vpg_mode ? rsx_vpg_find(&g_ld_vpg, g.rsx.vp_blk_gen,
++                                                      (u32)(sizeof g.rsx.vp_blk_gen / sizeof g.rsx.vp_blk_gen[0]), start)
++                                        : NULL;
++    const u32 vp_instrs = (vpg && vpg_mode == 1) ? vpg->instrs
++                        : rsx_vp_program_size_instrs(vp_uc, (RSX_DSP_VP_INSTR - start) * 16);
+     if (!vp_instrs) { LD_PSO_BAIL("vertex program has zero instructions"); return NULL; }
+ 
+     u32 fp_loc = 0;
+@@ -10417,7 +10439,7 @@
+                        fprintf(stderr, "[srgb-out] %s (LD_SRGB_OUT)\n", srgb_sw ? "on" : "off"); }
+     const u32 srgb_out = srgb_sw && rsx_fp_srgb_output_enabled(rsx_dsp_reg(&g.rsx, 0x1FEC), fp_ctrl,
+                                                                rsx_dsp_reg(&g.rsx, 0x0208) & 0x1Fu);
+-    const u32 txl_mask = vp_txl_unit_mask(vp_uc, vp_instrs);
++    const u32 txl_mask = (vpg && vpg_mode == 1) ? vpg->txl : vp_txl_unit_mask(vp_uc, vp_instrs);   /* patch 6076 */
+     if (txl_mask && !(txl_mask & vtex_mask)) {
+         g_ld_vtex_missing_for_txl++;
+         static u32 warned = 0;
+@@ -10458,7 +10480,10 @@
+     LDW_T0(pk_t1);
+ 
+     u64 vp_h;   /* patch 2029: FNV of the VP, memoized; also g_ld_current_pso.vp_hash */
+-    {
++    if (vpg && vpg_mode == 1) {   /* patch 6076: the program's slots are unchanged since the entry */
++        vp_h = vpg->h;
++        if (rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_PSO_MEMO_N, 1);
++    } else {
+         const u32 vn = vp_instrs * 16;
+         if (pm_multi && vn == g_ld_vpm.n) g_ld_pm_stats.bytes += vn;
+         if (ld_pso_memo() && vn == g_ld_vpm.n && !memcmp(vp_uc, g_ld_vpm.bytes, vn)) {
+@@ -10471,7 +10496,20 @@
+                 g_ld_vpm.n = vn; g_ld_vpm.size = vn; g_ld_vpm.h = vp_h; memcpy(g_ld_vpm.bytes, vp_uc, vn);
+             }
+         }
++        if (vpg_mode) {   /* patch 6076 */
++            if (vpg && (vpg->instrs != vp_instrs || vpg->h != vp_h || vpg->txl != txl_mask)) {
++                if (++g_ld_vpg_bad <= 32u || (g_ld_vpg_bad & 1023u) == 0)
++                    fprintf(stderr, "[vp-gen-bad] n=%llu start=%u instrs %u/%u hash %016llx/%016llx txl %x/%x\n",
++                            (unsigned long long)g_ld_vpg_bad, start, vpg->instrs, vp_instrs,
++                            (unsigned long long)vpg->h, (unsigned long long)vp_h, vpg->txl, txl_mask);
++            }
++            if (!vpg) rsx_vpg_put(&g_ld_vpg, start, vp_instrs, txl_mask, vp_h, rsx_dsp_vp_clock());
++        }
+     }
++    { static u64 n_vpg; if (vpg_mode && (++n_vpg & 0xFFFFu) == 0)
++        fprintf(stderr, "[vp-gen] hits=%llu puts=%llu stale=%llu bad=%llu\n", (unsigned long long)g_ld_vpg.hits,
++                (unsigned long long)g_ld_vpg.puts, (unsigned long long)g_ld_vpg.stale,
++                (unsigned long long)g_ld_vpg_bad); }
+     LDW_ADD(RSX_PERF_W_PK_VP_T, pk_t1);   /* patch 6070: the VP identity */
+     LDW_T0(pk_t2);
+     u64 key = vp_h;
+diff --git a/libs/video/rsx_vp_gen.h b/libs/video/rsx_vp_gen.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_vp_gen.h
+@@ -0,0 +1,69 @@
++/* rsx_vp_gen.h - the vertex program's identity from write generations (KZ2 patch 6076, LD_VP_GEN).
++ *
++ * The transform program store (rsx_dispatch.vp, 544 instructions) is host memory that only rsx_dispatch.c writes:
++ * the upload method window (NV4097_SET_TRANSFORM_PROGRAM), rsx_dispatch_seed_transform_program and
++ * rsx_dispatch_init. Each of them stamps the 16-instruction blocks whose words changed with a new value of one
++ * global, monotonic 64-bit clock (rsx_dsp_vp_clock). A program's length (up to its END instruction), FNV hash and
++ * TXL unit mask depend only on the words from its start slot to its END, so an entry computed when the clock read C
++ * is still exact while no block of [start, start + instrs) carries a stamp above C. Nothing is guessed: a write of
++ * an equal word leaves the stamp alone, any other write moves it past every entry that covers it.
++ * Before patch 6076 the live draw compared the whole program (up to 8.5 KB) byte for byte against a one-entry memo
++ * on every draw and rehashed it whenever the previous draw used another program.
++ *
++ * Pure functions, no D3D12: used by rsx_live_draw.c and by the host test tools/runtime/test_vp_gen.sh.
++ */
++#ifndef RSX_VP_GEN_H
++#define RSX_VP_GEN_H
++
++#include <stdint.h>
++
++#define RSX_VPG_BLOCK 16u      /* instructions per stamped block */
++#define RSX_VPG_SLOTS 16u      /* memo entries (programs by start slot) */
++
++typedef struct {
++    uint32_t start, instrs, txl;   /* instrs 0 = empty entry */
++    uint64_t clock, h;
++} rsx_vpg_entry;
++
++typedef struct {
++    rsx_vpg_entry e[RSX_VPG_SLOTS];
++    uint32_t next;
++    uint64_t hits, puts, stale;
++} rsx_vpg_memo;
++
++/* 1 = no block of [start, start + instrs) was stamped after `clock`. */
++static inline int rsx_vpg_clean(const uint64_t* blk, uint32_t nblk, uint32_t start, uint32_t instrs, uint64_t clock)
++{
++    if (!instrs) return 0;
++    const uint32_t b0 = start / RSX_VPG_BLOCK, b1 = (start + instrs - 1u) / RSX_VPG_BLOCK;
++    if (b1 >= nblk) return 0;
++    for (uint32_t b = b0; b <= b1; b++)
++        if (blk[b] > clock) return 0;
++    return 1;
++}
++
++/* The still-exact entry for the program at `start`, else NULL. */
++static inline const rsx_vpg_entry* rsx_vpg_find(rsx_vpg_memo* m, const uint64_t* blk, uint32_t nblk, uint32_t start)
++{
++    for (uint32_t i = 0; i < RSX_VPG_SLOTS; i++) {
++        const rsx_vpg_entry* e = &m->e[i];
++        if (!e->instrs || e->start != start) continue;
++        if (rsx_vpg_clean(blk, nblk, start, e->instrs, e->clock)) { m->hits++; return e; }
++        m->stale++;
++        return NULL;   /* one entry per start: a stale one is replaced by the next put */
++    }
++    return NULL;
++}
++
++/* Record the program at `start` as computed while the clock read `clock`. */
++static inline void rsx_vpg_put(rsx_vpg_memo* m, uint32_t start, uint32_t instrs, uint32_t txl, uint64_t h, uint64_t clock)
++{
++    rsx_vpg_entry* e = 0;
++    for (uint32_t i = 0; i < RSX_VPG_SLOTS && !e; i++)
++        if (m->e[i].instrs && m->e[i].start == start) e = &m->e[i];
++    if (!e) { e = &m->e[m->next]; m->next = (m->next + 1u) % RSX_VPG_SLOTS; }
++    e->start = start; e->instrs = instrs; e->txl = txl; e->h = h; e->clock = clock;
++    m->puts++;
++}
++
++#endif

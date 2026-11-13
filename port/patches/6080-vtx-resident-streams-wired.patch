@@ -1,0 +1,397 @@
+KZ2 patch 6080: resident raw vertex streams wired into the live draw (LD_VTX_RES; design F step 1,
+sub-step b2). Patch 6079 added the pure part (rsx_vtx_res.h); this patch uses it. Default off.
+
+LD_VTX_RES=1 (or verify) with LD_VTX_GPU=1 (patch 2076) and the write watch (patch 6077, on by default): a draw that
+2076 would fetch on the GPU maps each merged raw span's 4 KB pages into a resident pool instead of copying the spans
+into the upload ring every draw; the ring gets only the table (48-byte rows) and the per-span block lists.
+1. rsx_vp_decompiler.c/.h: rsx_vp_vgpu_resident (set once by the live draw) makes 2076's variant declare t22 (the pool)
+   and read through the block lists (RSX_VR_HLSL_HEAD, RSX_VR_SHARED, RSX_VR_HLSL_TAIL).
+2. rsx_live_draw.c: ld_vr_mode() (decided once, at the first of the buffer setup and the root signature: a third
+   vertex-stage root SRV, t22); the pool is an
+   upload-heap buffer of LD_VTX_RES_MB (default 128) MB, mapped for good; if it fails, GPU fetch goes off (CPU fetch).
+   The PSO key of a resident GPU-fetch pipeline carries a tag, so a stored 2076 pipeline is never taken for it.
+   ld_vr_map_draw() after rsx_vg_plan: vr_map_span per span (frame = fence_value + 1, held while the draw is mapped;
+   completed = the fence's completed value, capped at fence_value); at the t22 bind the draw's blocks are stamped
+   again with fence_value + 1 of that moment, the signal of the list it is recorded in (vr_stamp, an earlier change: the
+   vertex ring, VS-constant ring, descriptor ring and texture uploads can each flush between the map and the record); a
+   failed map keeps the draw on the CPU path (counted as [vtx-gpu] unmapped). The block write becomes vr_write_table.
+   [vtx-res] every 60 flips: draws, failed maps, pages, copies, stands, clean reuses, collects, retires, evictions,
+   alloc failures, bad (verify).
+3. Epochs (rsx_live_draw_vr_epoch, rsx_live_draw.h): each drain pass (a new put), each JUMP and CALL (an SPU-patched
+   hole or a new segment), each NV406E semaphore ACQUIRE (it orders the RSX after a producer's writes but
+   ends no pass when the label is already there, and KZ2 runs with GCM_SEMA_ACQUIRE unset; an earlier change: an acquire whose
+   label does not hold the value yet holds the stands until it does, rsx_live_draw_vr_acquire with vr_acquire and
+   vr_hold_check at each draw, as the producer can still write after it; the [vtx-res] line counts holds, releases,
+   held maps, overflows and pending), rsx_live_draw_before_guest_sync, rsx_live_draw_writeback_range, rsx_live_draw_blit and
+   rsx_live_draw_resolve_blit. ASSUMPTION (6079's guest-sync rule): no guest write lands on a page a later draw of the
+   same epoch reads; LD_VTX_RES=verify checks every reuse against the checksum of its copy, and splits a mismatch by
+   the rule that kept the page (stand / clean) and by whether the draw's own bytes changed (read / unread).
+Own design; not from upstream. Host test of the pure part: tools/runtime/test_vtx_res.sh (6079).
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -3002,6 +3002,7 @@
+      * own command ring, so everything after the jump (including the reference
+      * writes its waits spin on) silently never executed. */
+     u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
++    if (rsx_live_draw_enabled()) rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: a drain pass sees a new put */
+     /* The words behind `put` were stored by another thread (the title, or the
+      * recycle below) before it stored `put`. On x86 the hardware keeps loads
+      * in order; on arm64 it does not, so without an acquire here the ring
+@@ -3266,6 +3267,7 @@
+         /* JUMP: 0x20000000 | offset (old form) or offset | 1 (new form). Patch 6026: the new form was read as a
+          * method header (type 0, count (w >> 18) & 0x7FF) and the walker went on into the words behind it. */
+         if (gcm_word_is_jump(w)) {
++            if (rsx_live_draw_enabled()) rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: a patched hole or a new segment */
+             { static int _rd = -1; if (_rd < 0) _rd = getenv("GCM_RECDBG") ? 1 : 0;
+               if (_rd) fprintf(stderr, "[JMP] %08X -> %08X (put=%08X)%s\n",
+                                s_fifo_getoff, gcm_word_jump_target(w), put, gcm_word_is_new_jump(w) ? " new-form" : ""); }
+@@ -3403,6 +3405,7 @@
+             continue;
+         }
+         if (gcm_word_is_call(w)) {             /* CALL: offset | 2 */
++            if (rsx_live_draw_enabled()) rsx_live_draw_vr_epoch();   /* KZ2 patch 6080 */
+             { u32 tgt = gcm_word_call_target(w);
+               if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
+               s_fifo_calloff = s_fifo_getoff + 4;
+@@ -3457,6 +3460,12 @@
+                     u32 m = (type == 0) ? method + i * 4 : method;
+                     u32 v = vm_read32(dea);
+                     u32 la = GCM_LABEL_GUEST_BASE + (s_sema_offset & 0xFFFFu);
++                    /* KZ2 patch 6080 (91b): an ACQUIRE orders the RSX after a producer's writes (an SPU job's
++                     * vertex output before its release), but the walker does not stop here when the label is already
++                     * there, nor ever with GCM_SEMA_ACQUIRE unset. It ends the resident-stream epoch; when the label does
++                     * not hold the value yet, the producer may still write, so the stands are held until it does
++                     * (rsx_live_draw_vr_acquire, checked at each draw). */
++                    if (m == 0x68u && rsx_live_draw_enabled()) rsx_live_draw_vr_acquire(la, v, vm_read32(la) == v);
+                     { static int sn = 0, recdbg = -1; if (recdbg < 0) recdbg = getenv("GCM_RECDBG") ? 1 : 0;
+                       if (recdbg && PS3_LOG_FIRST(sn, 12))
+                         fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -61,6 +61,8 @@
+ void rsx_live_draw_set_write_source(u32 s) { (void)s; }   /* patch 2081 */
+ void rsx_live_draw_watch_copy(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; }
+ u32  rsx_live_draw_before_guest_sync(void) { return 0; }
++void rsx_live_draw_vr_epoch(void) {}   /* KZ2 patch 6080 */
++void rsx_live_draw_vr_acquire(u32 ea, u32 want, int met) { (void)ea; (void)want; (void)met; }   /* KZ2 patch 6080 */
+ void rsx_live_draw_note_spu_read(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; }   /* patch 2084 */
+ void rsx_live_draw_debug_writeback_stats(double* t, u32* b, u32* s, u32* w)
+ { if (t) *t = 0; if (b) *b = 0; if (s) *s = 0; if (w) *w = 0; }
+@@ -113,6 +115,7 @@
+ #include "rsx_vertex_compact.h"
+ #include "rsx_vtx_gpu.h"   /* KZ3 patch 2076 */
+ static int ld_vtx_gpu_on(void);   /* patch 2076, defined with the draw context */
++static int g_ld_vr_on;            /* KZ2 patch 6080: resident streams on (set once by ld_vr_mode, before any draw) */
+ #include "rsx_vp_decompiler.h"
+ 
+ #include <ctype.h>
+@@ -6771,6 +6774,7 @@
+ int rsx_live_draw_blit(u32 src_loc, u32 src_abs, u32 src_pitch,
+                        u32 dst_loc, u32 dst_abs, u32 dst_pitch, u32 w, u32 h)
+ {
++    rsx_live_draw_vr_epoch();   /* KZ2 patch 6080 */
+     const int r = ld_blit_gpu(src_loc, src_abs, src_pitch, dst_loc, dst_abs, dst_pitch, w, h);
+     if (s_csv_file && s_csv_gate_open) {
+         fprintf(s_csv_file, "#blit,%u,%u:0x%X/%u,%u:0x%X/%u,%ux%u,gpu=%d\n", g_ld_frames,
+@@ -7080,6 +7084,7 @@
+                                u32 dst_loc, u32 dst_abs, u32 dst_pitch,
+                                u32 out_x, u32 out_y, u32 out_w, u32 out_h)
+ {
++    rsx_live_draw_vr_epoch();   /* KZ2 patch 6080 */
+     if (!g.ready || !src_pitch || !dst_pitch || !ds || !dt) return 0;
+     /* Uneven or fractional factors cannot be a copy; they are drawn. */
+     const int scaled = ds != dt || ds < 0x100000u || (ds & 0xFFFFFu) != 0;
+@@ -9231,6 +9236,9 @@
+         if (bbu) key = fnv1a(&xi->vp_branch_bits, sizeof(xi->vp_branch_bits), key); }
+     if (gamma_mask) key = fnv1a(&gamma_mask, sizeof(gamma_mask), key);
+     if (srgb_out) key = fnv1a(&srgb_out, sizeof(srgb_out), key);   /* patch 2055 */
++    /* KZ2 patch 6080: the resident GPU-fetch vertex shader reads another table layout (t20 rows of 48 bytes + block
++     * lists, t22 pool), so its pipelines must never be taken for 2076's (a stored library entry or key). */
++    if (packed_payload == 2 && g_ld_vr_on) { const u32 tag = 0x76520001u; key = fnv1a(&tag, sizeof(tag), key); }
+     { static int s2a = -1;   /* patch 2057: the SRC2 abs switch changes shader text, so it changes the key */
+       if (s2a < 0) { const char* e = getenv("LD_SRC2_ABS"); s2a = (e && e[0] == '1') ? 1 : 0; }
+       if (s2a) { const u32 tag = 0x5A2Au; key = fnv1a(&tag, sizeof(tag), key); } }
+@@ -11115,6 +11123,106 @@
+     memset(g_vg.why, 0, sizeof g_vg.why);
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * KZ2 patch 6080: resident raw vertex streams for 2076's GPU fetch, design F step 1 wired
++ * (rsx_vtx_res.h, patch 6079). LD_VTX_RES=1 (needs LD_VTX_GPU=1 and the write watch, patch 6077) or verify; default
++ * off. A covered draw maps each merged span's pages into the pool (t22, an upload-heap buffer of 4 KB blocks,
++ * LD_VTX_RES_MB, default 128) and writes only the table and the block lists into the ring (t20); the vertex shader
++ * reads through the lists (RSX_VR_SHARED). Frames are fence values: the map stamps a draw's blocks with fence_value + 1
++ * (held while the draw is mapped, as completed <= fence_value), and the record stamps them again with the signal of
++ * the list the draw is recorded in (vr_stamp at the t22 bind, after every flush the draw can cause: vertex ring,
++ * VS-constant ring, descriptor ring, texture uploads; an earlier change); a block is reused only when the GPU has completed
++ * that value. Epochs end wherever the walker can see newer guest bytes: each drain pass, each JUMP and CALL, each NV406E
++ * acquire (cellGcmSys.c), each write of RSX output to guest memory (rsx_live_draw_before_guest_sync, writeback_range,
++ * blit, resolve_blit). An acquire passed before its label holds the value holds the stands (vr_acquire) until the label
++ * is met, checked at each draw. verify: every reuse is compared with the
++ * checksum of its copy (bad = copied again). A failed map keeps the draw on the CPU path ([vtx-gpu] unmapped).
++ * -----------------------------------------------------------------------*/
++#include "rsx_vtx_res.h"   /* KZ2 patch 6079 */
++#define LD_VR_MAX_PAGES 4096u   /* pages of one draw, all spans */
++extern int rsx_vp_vgpu_resident;   /* rsx_vp_decompiler.c */
++static struct {
++    int on;                    /* -1 undecided, 0 off, 1 on, 2 verify */
++    UINT root;                 /* root parameter of t22 */
++    vr_state s;
++    uint32_t* map; vr_block* blocks; uint32_t* spare; u32 n_blocks;
++    ID3D12Resource* pool; u8* pool_mapped;
++    u32 lists[LD_VR_MAX_PAGES]; const u32* listp[RSX_DSP_NUM_VERTEX_ATTR]; u32 npages[RSX_DSP_NUM_VERTEX_ATTR];
++    u32 used;                  /* pages of the last mapped draw (its blocks are g_vr.lists[0, used)) */
++    unsigned long long draws, fail, pages, frames;
++} g_vr = { -1, 0 };
++static uint32_t ld_vr_label(void* user, uint32_t ea)   /* a held acquire's label, as the walker reads it */
++{
++    extern uint32_t vm_read32(uint64_t);
++    (void)user;
++    return vm_read32(ea);
++}
++static void ld_vr_copy(void* user, uint32_t block, const uint8_t* src)
++{
++    (void)user;
++    memcpy(g_vr.pool_mapped + ((size_t)block << VR_PAGE_SHIFT), src, VR_PAGE);
++}
++static const uint8_t* ld_vr_peek(void* user, uint32_t block)   /* verify: the copy (an upload-heap read, slow) */
++{
++    (void)user;
++    return g_vr.pool_mapped + ((size_t)block << VR_PAGE_SHIFT);
++}
++static int ld_vr_mode(void)   /* decided at the root signature, before any draw or translation */
++{
++    if (g_vr.on < 0) {
++        const char* e = getenv("LD_VTX_RES");
++        int m = !e ? 0 : !strcmp(e, "verify") ? 2 : (e[0] == '1' ? 1 : 0);
++        if (m && !ld_vtx_gpu_on()) { fprintf(stderr, "[vtx-res] off: needs LD_VTX_GPU=1\n"); m = 0; }
++        if (m && !ld_ww_mode()) { fprintf(stderr, "[vtx-res] off: guest memory is not write-watched\n"); m = 0; }
++        g_vr.on = m; g_ld_vr_on = m != 0; rsx_vp_vgpu_resident = m != 0;
++        fprintf(stderr, "[vtx-res] mode=%d (LD_VTX_RES=%s)\n", m, e ? e : "unset");
++    }
++    return g_vr.on;
++}
++/* Map every span of the planned draw; 0 = the draw keeps the CPU path. */
++static int ld_vr_map_draw(void)
++{
++    if (!g_vr.n_blocks) { g_vr.fail++; return 0; }   /* no pool: the CPU path */
++    const u64 fv = g.fence_value;
++    u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    if (done > fv) done = fv;   /* all ones = device removed: nothing counts as complete beyond what was signalled */
++    const u32 frame = (u32)(fv + 1u), completed = (u32)done;   /* stamped again at the record (vr_stamp) */
++    u32 used = 0;
++    vr_hold_check(&g_vr.s, ld_vr_label, NULL);   /* a held acquire met now ends the epoch */
++    g_vr.used = 0;
++    for (u32 k = 0; k < dc.vg_d.n_span; k++) {
++        const int n = vr_map_span(&g_vr.s, (uintptr_t)dc.vg_d.span[k].src, dc.vg_d.span[k].bytes, frame, completed,
++                                  g_vr.lists + used, LD_VR_MAX_PAGES - used);
++        if (n < 0) { g_vr.fail++; return 0; }
++        g_vr.listp[k] = g_vr.lists + used; g_vr.npages[k] = (u32)n; used += (u32)n;
++    }
++    dc.vg_d.block_bytes = (VR_TABLE_BYTES + 4u * used + 15u) & ~15u;   /* the table replaces 2076's block */
++    g_vr.used = used;
++    g_vr.draws++; g_vr.pages += used;
++    return 1;
++}
++void rsx_live_draw_vr_epoch(void) { if (g_vr.on > 0) vr_epoch(&g_vr.s); }
++void rsx_live_draw_vr_acquire(u32 ea, u32 want, int met) { if (g_vr.on > 0) vr_acquire(&g_vr.s, ea, want, met); }
++static void ld_vr_frame(void)   /* at each flip */
++{
++    if (g_vr.on <= 0) return;
++    if (++g_vr.frames < 60) return;
++    const double n = (double)g_vr.frames;
++    const vr_state* v = &g_vr.s;
++    fprintf(stderr, "[vtx-res] frame=%u per-frame: draws=%.1f fail=%.1f pages=%.1f copies=%.1f stand=%.1f clean=%.1f "
++                    "collects=%.1f retires=%.1f evicts=%.1f; total alloc-fail=%llu too-big=%llu ww-fail=%llu bad=%llu "
++                    "(stand=%llu clean=%llu; read=%llu unread=%llu) holds=%llu released=%llu held-maps=%llu overflow=%llu pending=%u "
++                    "epoch=%u (%s)\n", g_ld_frames, g_vr.draws / n, g_vr.fail / n, g_vr.pages / n, v->copies / n,
++            v->reuse_stand / n, v->reuse_clean / n, v->collects / n, v->retires / n, v->evicts / n,
++            (unsigned long long)v->alloc_fail, (unsigned long long)v->too_big, (unsigned long long)v->ww_fail,
++            (unsigned long long)v->bad, (unsigned long long)v->bad_stand, (unsigned long long)v->bad_clean,
++            (unsigned long long)v->bad_read, (unsigned long long)v->bad_unread, (unsigned long long)v->holds,
++            (unsigned long long)v->hold_releases, (unsigned long long)v->hold_maps, (unsigned long long)v->hold_overflow,
++            v->hold_n + v->hold_sticky, v->epoch, g_vr.on == 2 ? "verify" : "on");
++    g_vr.draws = g_vr.fail = g_vr.pages = g_vr.frames = 0;
++    g_vr.s.copies = g_vr.s.reuse_stand = g_vr.s.reuse_clean = g_vr.s.collects = g_vr.s.retires = g_vr.s.evicts = 0;
++}
++
+ static void dc_reset(void)
+ {
+     dc.vg = 0;   /* patch 2076 */
+@@ -11442,7 +11550,8 @@
+             g_ld_divider_fetches += dc.n_refs;
+     }
+     if (packed_payload && ld_vtx_gpu_on()) {   /* patch 2076 */
+-        const int why = rsx_vg_plan(&dc.fetch_plan, g_vg.max_block, &dc.vg_d);
++        int why = rsx_vg_plan(&dc.fetch_plan, g_vg.max_block, &dc.vg_d);
++        if (why == RSX_VG_OK && g_vr.on > 0 && !ld_vr_map_draw()) why = RSX_VG_UNMAPPED;   /* KZ2 patch 6080 */
+         if (why == RSX_VG_OK && reserve_compact_vertices((u64)dc.n_refs * 4u)) {
+             u32* out = (u32*)dc.compact_verts;
+             for (u32 i = 0; i < dc.n_refs; i++) out[i] = rsx_vg_element(&dc.refs[i]);
+@@ -12858,6 +12967,7 @@
+     ld_gv_flip();
+     ld_td_flip();   /* patch 2033 */
+     ld_vg_frame();  /* patch 2076 */
++    ld_vr_frame();  /* KZ2 patch 6080 */
+     g_ld_frames++;
+     ld_movie_reset_rings();
+ }
+@@ -14526,7 +14636,10 @@
+     u32 vg_block_off = 0;   /* patch 2076: from g.vb_used */
+     if (dc.vg) {
+         vg_block_off = (u32)((((u64)g.vb_used + draw_payload_bytes + 255u) & ~(u64)255u) - g.vb_used);
+-        rsx_vg_write_block(&dc.vg_d, g.vb_mapped + g.vb_used + vg_block_off);
++        if (g_vr.on > 0)   /* KZ2 patch 6080: the table and the block lists only */
++            vr_write_table(&dc.vg_d, g_vr.listp, g_vr.npages, g.vb_mapped + g.vb_used + vg_block_off);
++        else
++            rsx_vg_write_block(&dc.vg_d, g.vb_mapped + g.vb_used + vg_block_off);
+     }
+     if (vcn_reason && dc.fetch_ok) ld_vcn_note(vcn_reason);   /* KZ2 patch 6078 */
+     LDW_T0(vib_t0);   /* patch 6075: the index half */
+@@ -15392,6 +15505,12 @@
+         g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root, vbv.BufferLocation + vg_block_off);
+         g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vg.root + 1,
+                                                           g_vg.lut->lpVtbl->GetGPUVirtualAddress(g_vg.lut));
++        if (g_vr.on > 0) {   /* KZ2 patch 6080: t22 = the resident pool */
++            g.list->lpVtbl->SetGraphicsRootShaderResourceView(g.list, g_vr.root,
++                                                              g_vr.pool->lpVtbl->GetGPUVirtualAddress(g_vr.pool));
++            /* the list being recorded signals fence_value + 1; flushes since the map raised fence_value */
++            vr_stamp(&g_vr.s, g_vr.lists, g_vr.used, (u32)(g.fence_value + 1u));
++        }
+     }
+     if (g_ld_rm.live && g_ld_rm.topo_ok) g_ld_rm_skips++;   /* patch 6069: always TRIANGLELIST here */
+     else { g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); g_ld_rm.topo_ok = 1; }
+@@ -15803,10 +15922,11 @@
+     /* Patch 2076 (LD_VTX_GPU=1): two root SRVs for the vertex stage after the others, t20 = the draw's block,
+      * t21 = the decode table. Only with the switch on, so the off root signature (and its pipeline library
+      * entries) stays byte for byte the old one. */
+-    D3D12_ROOT_PARAMETER xp9[9];
++    D3D12_ROOT_PARAMETER xp9[10];
+     if (ld_vtx_gpu_on()) {
++        const u32 nx = ld_vr_mode() ? 3u : 2u;   /* KZ2 patch 6080: t22 = the resident pool */
+         memcpy(xp9, rsd.pParameters, rsd.NumParameters * sizeof xp9[0]);
+-        for (u32 k = 0; k < 2; k++) {
++        for (u32 k = 0; k < nx; k++) {
+             D3D12_ROOT_PARAMETER* p = &xp9[rsd.NumParameters + k];
+             memset(p, 0, sizeof *p);
+             p->ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+@@ -15814,7 +15934,8 @@
+             p->ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+         }
+         g_vg.root = rsd.NumParameters;
+-        rsd.NumParameters += 2; rsd.pParameters = xp9;
++        g_vr.root = rsd.NumParameters + 2u;
++        rsd.NumParameters += nx; rsd.pParameters = xp9;
+     }
+     /* Patch 2011: comparison samplers for shadow-compare units at s16 + F,
+      * F = RSX texture zfunc. RPCS3 reverses the function (VKDraw.cpp
+@@ -16882,6 +17003,28 @@
+             g_vg.lut->lpVtbl->Unmap(g_vg.lut, 0, NULL);
+         }
+     }
++    if (g_vg.on > 0 && ld_vr_mode() > 0) {   /* KZ2 patch 6080: the resident pool (upload heap, mapped for good;
++                                             * the buffers are made before the root signature, so decide here) */
++        const char* mb = getenv("LD_VTX_RES_MB");
++        const u32 n = (u32)((mb && atoi(mb) > 0 && atoi(mb) <= 1024 ? atoi(mb) : 128) * 256);
++        bd.Width = (u64)n << VR_PAGE_SHIFT;
++        g_vr.map = (uint32_t*)malloc(sizeof(uint32_t) * LD_WW_PAGES);
++        g_vr.blocks = (vr_block*)malloc(sizeof(vr_block) * n);
++        g_vr.spare = (uint32_t*)malloc(sizeof(uint32_t) * n);
++        if (!g_vr.map || !g_vr.blocks || !g_vr.spare ||
++            FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
++                D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g_vr.pool)) ||
++            FAILED(g_vr.pool->lpVtbl->Map(g_vr.pool, 0, &rr, (void**)&g_vr.pool_mapped))) {
++            /* the root signature and the shaders already expect the pool: GPU fetch off (CPU fetch) */
++            fprintf(stderr, "[vtx-res] pool of %u MB failed; GPU fetch off\n", n / 256u);
++            g_vg.on = 0;
++        } else {
++            vr_init(&g_vr.s, &g_ld_ww, g_vr.map, g_vr.blocks, g_vr.spare, n, ld_vr_copy, NULL, g_vr.on == 2);
++            if (g_vr.on == 2) g_vr.s.peek = ld_vr_peek;
++            g_vr.n_blocks = n;
++            fprintf(stderr, "[vtx-res] pool %u MB (%u blocks)\n", n / 256u, n);
++        }
++    }
+ 
+     bd.Width = INDEX_BUFFER_SIZE;
+     g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
+@@ -18476,6 +18619,7 @@
+     static int en = -1;
+     if (en < 0) { const char* e = getenv("LD_NV0039_WRITEBACK"); en = e ? atoi(e) : 1; }
+     if (!en || !g.ready || !size) return 0;
++    rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: RSX output reaches guest memory */
+     const u64 r0 = offset, r1 = r0 + size;
+     u32 done = 0, idx[64], n = 0;
+     for (u32 i = 0; i < g.n_surfaces; i++) {
+@@ -18639,6 +18783,7 @@
+             { idx[n++] = i; if (g.surfaces[i].location == 0u) nlocal++; }
+     if (!n) return 0;
+     LDW_T0(wb_t0);
++    rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: RSX output reaches guest memory */
+     const u32 done = ld_writeback_batch(idx, n, 0, 0);   /* patch 2018: one GPU wait */
+     if (nlocal) {   /* KZ2 patch 6008 */
+         int faked = 0;
+@@ -19127,6 +19272,7 @@
+     ld_gv_flip();
+     ld_td_flip();   /* patch 2033 */
+     ld_vg_frame();  /* patch 2076 */
++    ld_vr_frame();  /* KZ2 patch 6080 */
+     g_ld_frames++;
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_present(g_ld_frames);
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -111,6 +111,12 @@
+  * guest can observe a sync point (semaphore/label release, flip), so CPU/SPU
+  * readers of RSX output in main memory see it. Returns surfaces written. */
+ u32  rsx_live_draw_before_guest_sync(void);
++/* KZ2 patch 6080: the walker may see newer guest bytes from here on (a drain pass, a JUMP or CALL, RSX output written
++ * to guest memory): resident vertex pages found clean before stop standing (LD_VTX_RES; no-op when off). */
++void rsx_live_draw_vr_epoch(void);
++/* KZ2 patch 6080: an NV406E semaphore acquire at guest label address `ea` for `want`; `met` = the label
++ * held it when the walker passed. Ends the epoch; an unmet one also holds the stands until the label is met. */
++void rsx_live_draw_vr_acquire(u32 ea, u32 want, int met);
+ void rsx_live_draw_note_spu_read(u32 location, u32 offset, u32 size);   /* patch 2084: LD_POST_WB_DIAG */
+ /* Patch 2015: before the guest reads [offset, offset+size) of `location`
+  * (an NV0039 copy out of local memory), write every live colour surface that
+diff --git a/libs/video/rsx_vp_decompiler.c b/libs/video/rsx_vp_decompiler.c
+--- a/libs/video/rsx_vp_decompiler.c
++++ b/libs/video/rsx_vp_decompiler.c
+@@ -30,6 +30,10 @@
+  */
+ #include "rsx_vp_decompiler.h"
+ #include "rsx_vtx_gpu.h"   /* KZ3 patch 2076 */
++#include "rsx_vtx_res.h"   /* KZ2 patch 6080: the resident-stream reader (LD_VTX_RES) */
++/* KZ2 patch 6080: 1 = the GPU-fetch variant reads its spans through the resident pool (t22) and the per-span block
++ * lists of its table (rsx_vtx_res.h); set once by the live draw before any translation. */
++int rsx_vp_vgpu_resident = 0;
+ #include <stdio.h>
+ #include <string.h>
+ 
+@@ -641,7 +645,10 @@
+             "};\n");
+     } else if (compact_inputs == 2) {   /* patch 2076 */
+         emit(&o, "struct VSInput {\n    uint vg_e:VGIDX;\n};\n");
+-        emit(&o, RSX_VG_HLSL);
++        if (rsx_vp_vgpu_resident)   /* KZ2 patch 6080 */
++            emit(&o, RSX_VR_HLSL_HEAD RSX_VR_SHARED(RSX_VG_TEXT) "\n" RSX_VR_HLSL_TAIL);
++        else
++            emit(&o, RSX_VG_HLSL);
+     } else {
+         emit(&o, "struct VSInput {\n");
+         if (!(input_mask & 0xFFFFu))
+diff --git a/libs/video/rsx_vp_decompiler.h b/libs/video/rsx_vp_decompiler.h
+--- a/libs/video/rsx_vp_decompiler.h
++++ b/libs/video/rsx_vp_decompiler.h
+@@ -105,6 +105,8 @@
+  * uint VGIDX (the element index); each register in input_mask is decoded in the shader
+  * from the raw guest bytes (rsx_vtx_gpu.h: t20 block, t21 decode table). */
+ #define RSX_VP_PATCH_2076 1
++/* KZ2 patch 6080: 1 = the variant reads its spans through the resident pool (rsx_vtx_res.h, LD_VTX_RES). */
++extern int rsx_vp_vgpu_resident;
+ int rsx_vp_decompile_vgpu_ex(
+     const u8* ucode, u32 max_bytes, u32 vtex_mask, u32 input_mask,
+     char* out, u32 out_size);

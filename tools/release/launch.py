@@ -69,6 +69,13 @@ a file that cannot be read or written (locked, read-only, a folder in its place)
 and the start goes on with the defaults. Any other unexpected error is logged with its traceback and shown
 (guarded_main): pythonw has no console, so nothing ends without a word.
 
+--online: the Online settings window (online_dialog.py): Off, re-psn (server, online name, Find on LAN) or a
+community server (the player's own presets; none shipped), one method at a time, written to repsn.ini and
+community.ini in the shared folder (online_ini.shared_dir: PS3RECOMP_SHARED_DIR, <install>/shared when portable, else
+%APPDATA%/PS3Recomp). At each start the launcher logs the game's decision for those files ("online: ...") and says so
+when both methods are enabled (the game then refuses online play); the game reads the files itself
+(port/kz2/kz2_online.cpp). The launcher sets no online variable.
+
 --print: show the decision, the command, the working folder and the variables it sets, as JSON; starts nothing.
 """
 import argparse
@@ -87,6 +94,7 @@ sys.path.insert(0, HERE)
 import firstrun as fr  # noqa: E402
 import firstrun_check as fc  # noqa: E402
 import install_ini as ii  # noqa: E402
+import online_ini as oi  # noqa: E402
 
 TITLE = "Project Pyrrhus"
 # The only page an update notice may open (security review F2, 2026-10-20): the check's reply cannot send the player
@@ -1014,6 +1022,8 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                     help="set the button prompts in kz2-install.ini (no value: the next set in the cycle) and exit")
     ap.add_argument("--display", nargs="?", const="ask", metavar="windowed|borderless|fullscreen",
                     help="set the display mode in kz2-install.ini (no value: the next mode in the cycle) and exit")
+    ap.add_argument("--online", action="store_true",
+                    help="open Online settings (Off, re-psn or a community server; online_dialog.py) and exit")
     ap.add_argument("--repair", action="store_true",
                     help='"Verify and rebuild": check the install and the game files again, rebuild what changed')
     a, extra = ap.parse_known_args(argv)
@@ -1031,6 +1041,11 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         return set_prompts(root, a.prompts, ini, ui, shown)
     if a.display:
         return set_display(root, a.display, ini, ui, shown)
+    if a.online:
+        import online_dialog
+        note(root, "online settings opened")
+        return online_dialog.run(oi.shared_dir(root, ini["portable"], environ),
+                                 data_dir(root, ini["portable"], environ), environ)
     if not a.print:
         fr.relocate_saved(root)     # a moved or renamed install folder: saved paths inside it follow (never the old folder)
     action, reason = decide(root)
@@ -1153,6 +1168,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                 f"and in {cwd}: the build, the link to your game files and the caches live there. Install it in a "
                 f"folder your user can write to (the default is fine).{REPORT}")
         return 1
+    online_check(root, ini["portable"], environ, cwd, ui)
     gerr = ensure_gameplay_ini(cwd)
     if gerr:
         note(root, "gameplay.ini: " + gerr)
@@ -1168,6 +1184,21 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         ui.info(f"The game stopped unexpectedly (code 0x{rc & 0xFFFFFFFF:08X}). Its log is the newest file in "
                 f"{logs_dir}.{REPORT}")
     return rc
+
+
+def online_check(root, portable, environ, cwd, ui):
+    """The game's online decision for this start (online_ini.decide, the rules of port/kz2/kz2_online.cpp), logged;
+    both methods enabled is said in a message box (the game refuses and never picks). Never stops the start."""
+    try:
+        d = oi.decide(oi.shared_dir(root, portable, environ), cwd, environ)
+    except Exception as e:      # noqa: BLE001  (a settings problem never stops the game)
+        note(root, f"online: could not read the settings ({e})")
+        return None
+    note(root, f"online: {d['method']}" + (f", {d['rejected']} setting(s) rejected" if d["rejected"] else "") +
+         ("; " + "; ".join(d["errors"]) if d["errors"] else ""))
+    if d["method"] == "refused":
+        ui.info(oi.REFUSED_TEXT)
+    return d
 
 
 def update_problem(paths):

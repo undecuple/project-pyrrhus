@@ -63,7 +63,8 @@ PLAYER_SCRIPTS = ("firstrun.py", "firstrun_check.py", "launch.py")
 # read at the player's end when present, deliberately not shipped (the reason)
 NOT_SHIPPED = {"tools/lift.sh": "a developer tool; kz2-setup/eboot_ver.txt answers tree_eboot_ver in the payload"}
 # root-relative names the player's machine writes, or that other rules and tests own (not payload files to check here)
-PLAYER_SIDE = {"build", "logs", "kz2-install.ini", "toolchain", "vfs", "ps3recomp", "game", "cache"}
+PLAYER_SIDE = {"build", "logs", "kz2-install.ini", "toolchain", "vfs", "ps3recomp", "game", "cache",
+               "shared"}   # online_ini.shared_dir: a portable install's shared settings folder
 GENERATED = {"kz2-setup/eboot_ver.txt", "manifest.json", "VERSION.txt"}   # written by assemble_payload itself
 
 
@@ -114,7 +115,7 @@ def player_reads():
 
 def fake_repo(root):
     for rel in ("tools/release/firstrun.py", "tools/release/firstrun_check.py", "tools/release/version_check.py",
-                "tools/release/launch.py", "tools/release/install_ini.py", "tools/release/lift_fixups.py", "tools/release/lua_unwind.py",
+                "tools/release/launch.py", "tools/release/install_ini.py", "tools/release/online_ini.py", "tools/release/online_dialog.py", "tools/release/lift_fixups.py", "tools/release/lua_unwind.py",
                 "tools/release/eboot_sha256.json", "tools/release/psarc_sha256.json", "tools/release/test_firstrun.py", "tools/release/spu_step.py",
                 "tools/release/iso9660.py",
                 "tools/release/rpcs3_locate.py", "tools/release/rpcs3_import.py",
@@ -232,7 +233,7 @@ def main():
         want = {"kz2-setup/release/firstrun.py", "kz2-setup/release/firstrun_check.py",
                 "kz2-setup/release/version_check.py", "kz2-setup/release/eboot_sha256.json",
                 "kz2-setup/release/psarc_sha256.json", "kz2-setup/release/iso9660.py",
-                "kz2-setup/release/launch.py", "kz2-setup/release/install_ini.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/release/lua_unwind.py", "kz2-setup/eboot_ver.txt",
+                "kz2-setup/release/launch.py", "kz2-setup/release/install_ini.py", "kz2-setup/release/online_ini.py", "kz2-setup/release/online_dialog.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/release/lua_unwind.py", "kz2-setup/eboot_ver.txt",
                 "kz2-setup/release/spu_step.py", "kz2-setup/release/rpcs3_locate.py",
                 "kz2-setup/release/rpcs3_import.py", "kz2-setup/spu/lift_spu.py", "kz2-setup/spu/gen_spu_register.py",
                 "kz2-setup/spu/kz2ver.py", "re/wws_jobs_v129.tsv", "re/wws_jobs_v101.tsv",

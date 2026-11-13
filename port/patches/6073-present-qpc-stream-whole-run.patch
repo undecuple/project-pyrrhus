@@ -1,0 +1,210 @@
+KZ2 patch 6073: the per-present QPC capture covers a whole run, not only its first 2,293 frames.
+Symptom: scratch/present_qpc_<pid>.csv of a gameplay run held presents 1..2293 only (about 25 s:
+boot and menu), so tools/runtime/perf/frame_times.py could not measure any gameplay window. Cause: upstream's
+ld_present_measure_record dumps the ring once at guest frame 2293 (the end of another game's fixed benchmark) and sets
+g_ld_present_dumped, so the later dumps (rsx_live_draw_dump_present_samples, shutdown) are no-ops; and a run ended by
+a kill (every Proton test run) never reaches shutdown. Fix: the fixed endpoint is removed. RSX_PRESENT_QPC_STREAM=1
+opens the CSV at renderer init and appends each batch of 64 samples as it fills (one buffered write and fflush on the
+present thread, after that present's QPC read), and the shutdown dump writes the rest; a kill loses at most the last
+63 presents. The stream file adds a second comment line, '# clock qpc=<ticks> filetime=<100 ns since 1601 UTC>',
+that ties the QPC to the wall clock, so a window can be cut at an outside timestamp (the run driver's settle file).
+Without the variable the ring (16,384 samples) is dumped once at shutdown as before. Same CSV columns. General
+(upstream candidate: the 2293 endpoint is a leftover of the benchmark the measurement was written for).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -905,11 +905,18 @@
+ static LONGLONG g_ld_qpc_frequency = 0;
+ static int g_ld_present_dumped = 0;
+ static int g_ld_schedule_diag = 0;
++/* KZ2 patch 6073: RSX_PRESENT_QPC_STREAM=1 writes every sample to the CSV as the run goes (batches of
++ * LD_PRESENT_STREAM_BATCH, flushed to the file), so a run ended by a kill keeps all but its last batch. */
++#define LD_PRESENT_STREAM_BATCH 64u
++static FILE* g_ld_present_stream = NULL;
++static u64 g_ld_present_written = 0;
++static SRWLOCK g_ld_present_stream_lock = SRWLOCK_INIT;
+ #if defined(YZ_PPU_SAMPLE)
+ static HANDLE g_ld_present_thread_handle = NULL;
+ #endif
+ 
+ static void ld_present_measure_dump(void);
++static void ld_present_stream_open(void);
+ #if defined(YZ_PERF_PROFILE)
+ extern void spu_perf_window_begin(u32 guest_frame);
+ extern void spu_perf_window_dump(u32 guest_frame);
+@@ -932,6 +939,101 @@
+         g_ld_qpc_frequency = frequency.QuadPart;
+     else
+         g_ld_qpc_frequency = 0;
++    {   /* KZ2 patch 6073 */
++        const char* stream = getenv("RSX_PRESENT_QPC_STREAM");
++        if (stream && *stream && strcmp(stream, "0") != 0)
++            ld_present_stream_open();
++    }
++}
++
++/* KZ2 patch 6073: the column line and one CSV row (shared by the shutdown dump and the stream). */
++static void ld_present_write_row(FILE* f, const ld_present_sample* sample)
++{
++    if (g_ld_schedule_diag) {
++        fprintf(f, "%llu,%u,%lld,%llu,%llu,%llu,%llu,%u\n",
++                (unsigned long long)sample->present_id,
++                sample->guest_frame, sample->qpc,
++                (unsigned long long)sample->process_kernel_100ns,
++                (unsigned long long)sample->process_user_100ns,
++                (unsigned long long)sample->present_thread_kernel_100ns,
++                (unsigned long long)sample->present_thread_user_100ns,
++                sample->present_thread_id);
++    } else {
++        fprintf(f, "%llu,%u,%lld\n",
++                (unsigned long long)sample->present_id,
++                sample->guest_frame, sample->qpc);
++    }
++}
++
++static void ld_present_write_columns(FILE* f)
++{
++    if (g_ld_schedule_diag) {
++        fprintf(f, "present_id,guest_frame,qpc,process_kernel_100ns,"
++                   "process_user_100ns,present_thread_kernel_100ns,"
++                   "present_thread_user_100ns,present_thread_id\n");
++    } else {
++        fprintf(f, "present_id,guest_frame,qpc\n");
++    }
++}
++
++/* KZ2 patch 6073: open the stream file at renderer init. A second comment line ties the QPC clock to the
++ * wall clock: '# clock qpc=<ticks> filetime=<100 ns since 1601 UTC>' (the QPC is the midpoint of two reads
++ * around GetSystemTimePreciseAsFileTime), so a window can be chosen by an outside timestamp (the run
++ * driver's settle file) rather than by a fixed guest frame. */
++static void ld_present_stream_open(void)
++{
++    if (g_ld_present_stream || g_ld_qpc_frequency <= 0)
++        return;
++    char path[256];
++    snprintf(path, sizeof(path), "scratch\\present_qpc_%lu.csv",
++             (unsigned long)GetCurrentProcessId());
++    FILE* f = fopen(path, "wb");
++    if (!f) {
++        fprintf(stderr, "[present-qpc] stream: cannot open %s\n", path);
++        return;
++    }
++    LARGE_INTEGER a, b;
++    FILETIME ft;
++    QueryPerformanceCounter(&a);
++    GetSystemTimePreciseAsFileTime(&ft);
++    QueryPerformanceCounter(&b);
++    ULARGE_INTEGER wall;
++    wall.LowPart = ft.dwLowDateTime;
++    wall.HighPart = ft.dwHighDateTime;
++    fprintf(f, "# qpc_frequency=%lld\n", g_ld_qpc_frequency);
++    fprintf(f, "# clock qpc=%lld filetime=%llu\n",
++            a.QuadPart + (b.QuadPart - a.QuadPart) / 2,
++            (unsigned long long)wall.QuadPart);
++    ld_present_write_columns(f);
++    fflush(f);
++    g_ld_present_written = 0;
++    g_ld_present_stream = f;
++    fprintf(stderr, "[present-qpc] streaming every %u presents to %s\n",
++            LD_PRESENT_STREAM_BATCH, path);
++}
++
++/* KZ2 patch 6073: write the samples recorded since the last flush. Called on the present thread after a
++ * sample's QPC was read (so its cost lands in the next interval: one buffered write and one fflush per
++ * batch) and at shutdown. A sample the ring already overwrote is never fabricated: the gap stays visible. */
++static void ld_present_stream_flush(void)
++{
++    AcquireSRWLockExclusive(&g_ld_present_stream_lock);
++    FILE* f = g_ld_present_stream;
++    if (f) {
++        const u64 total = g_ld_present_total;
++        u64 id = g_ld_present_written + 1u;
++        if (total > LD_PRESENT_RING_CAP && id < total - LD_PRESENT_RING_CAP + 1u)
++            id = total - LD_PRESENT_RING_CAP + 1u;
++        for (; id <= total; ++id) {
++            const ld_present_sample* sample =
++                &g_ld_present_ring[(id - 1u) & (LD_PRESENT_RING_CAP - 1u)];
++            if (sample->present_id == id)
++                ld_present_write_row(f, sample);
++        }
++        g_ld_present_written = total;
++        fflush(f);
++    }
++    ReleaseSRWLockExclusive(&g_ld_present_stream_lock);
+ }
+ 
+ static void ld_present_measure_record(u32 guest_frame)
+@@ -1043,17 +1145,26 @@
+         spu_perf_window_dump(guest_frame);
+ #endif
+     /*
+-     * The controlled A010 benchmark ends at guest frame 2293.  Flush the
+-     * already-recorded fixed ring exactly at that endpoint so an unrelated
+-     * host-window teardown cannot truncate the authoritative raw samples.
+-     * This is outside the measured timestamp operation and runs once.
++     * KZ2 patch 6073: upstream flushed the ring once, at guest frame 2293 (the end of another game's
++     * fixed benchmark), and never again (g_ld_present_dumped), so a KZ2 run kept only its first ~25 s
++     * (boot and menu) and no gameplay window. The fixed endpoint is gone: the stream writes each batch
++     * as it fills, and without it the ring is dumped once at shutdown.
+      */
+-    if (guest_frame == 2293u)
+-        ld_present_measure_dump();
++    if (g_ld_present_stream &&
++        present_id - g_ld_present_written >= LD_PRESENT_STREAM_BATCH)
++        ld_present_stream_flush();
+ }
+ 
+ static void ld_present_measure_dump(void)
+ {
++    if (g_ld_present_stream) {   /* KZ2 patch 6073 */
++        ld_present_stream_flush();
++        if (!g_ld_present_dumped)
++            fprintf(stderr, "[present-qpc] streamed %llu successful presents at %lld Hz\n",
++                    (unsigned long long)g_ld_present_written, g_ld_qpc_frequency);
++        g_ld_present_dumped = 1;
++        return;
++    }
+     if (g_ld_present_dumped || g_ld_present_total == 0 ||
+         g_ld_qpc_frequency <= 0)
+         return;
+@@ -1067,13 +1178,7 @@
+         return;
+ 
+     fprintf(f, "# qpc_frequency=%lld\n", g_ld_qpc_frequency);
+-    if (g_ld_schedule_diag) {
+-        fprintf(f, "present_id,guest_frame,qpc,process_kernel_100ns,"
+-                   "process_user_100ns,present_thread_kernel_100ns,"
+-                   "present_thread_user_100ns,present_thread_id\n");
+-    } else {
+-        fprintf(f, "present_id,guest_frame,qpc\n");
+-    }
++    ld_present_write_columns(f);
+     const u64 first =
+         g_ld_present_total > LD_PRESENT_RING_CAP
+             ? g_ld_present_total - LD_PRESENT_RING_CAP + 1u : 1u;
+@@ -1082,22 +1187,8 @@
+         const ld_present_sample* sample =
+             &g_ld_present_ring[(present_id - 1u) &
+                                (LD_PRESENT_RING_CAP - 1u)];
+-        if (sample->present_id == present_id) {
+-            if (g_ld_schedule_diag) {
+-                fprintf(f, "%llu,%u,%lld,%llu,%llu,%llu,%llu,%u\n",
+-                        (unsigned long long)sample->present_id,
+-                        sample->guest_frame, sample->qpc,
+-                        (unsigned long long)sample->process_kernel_100ns,
+-                        (unsigned long long)sample->process_user_100ns,
+-                        (unsigned long long)sample->present_thread_kernel_100ns,
+-                        (unsigned long long)sample->present_thread_user_100ns,
+-                        sample->present_thread_id);
+-            } else {
+-                fprintf(f, "%llu,%u,%lld\n",
+-                        (unsigned long long)sample->present_id,
+-                        sample->guest_frame, sample->qpc);
+-            }
+-        }
++        if (sample->present_id == present_id)
++            ld_present_write_row(f, sample);
+     }
+     fclose(f);
+     fprintf(stderr,

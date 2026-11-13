@@ -1,0 +1,167 @@
+KZ2 patch 6074: LD_VC_WAYS, set-associative slots for patch 2047's draw payload cache. Default 1
+(off: patch 2047's direct-mapped placement, unchanged).
+
+Root cause (an earlier change's split run kz2-r85-s3, [vtx-cache] deltas per 256 frames): in b-walk's heavy views the cache
+misses 35-42 % of draws (light stretches 15-20 %), and 74 % of those misses are first sights ("seen" 95,512 of 128,573
+misses at t=163 s; seen == evict exactly in every interval: every slot is occupied and every new key evicts one).
+Patch 2047 maps a key to one of 16,384 slots and fills an entry only at the second sight of its key, so two keys that
+share a slot and both come every frame evict each other every frame and are never filled, and a key that comes once
+(per-frame geometry at a new ring offset) evicts a filled entry that then needs two more sights. Every such miss pays
+the index read, remap, fetch and topology again (refs + remap + fetch ~104 ms/s in the heavy view).
+
+Change: LD_VC_WAYS=N (1, 2, 4, 8, 16) groups the slots into sets of N ways. A key may sit in any way of its set; a new
+key takes an empty way, else the least recently used one (a 64-bit access tick per entry). N = 1 is patch 2047's slot
+exactly (set base = (h ^ h >> 32) & 16383). Only placement changes: a hit still needs the full key compare and every
+source check of 2047 (tracked writes, page stamps, the full byte compare of LD_VTX_CACHE_FULL), so the payload a hit
+replays is the same bytes as before; LD_VTX_CACHE=verify checks that live. New counter in the [vtx-cache] line (also
+with N = 1): `evict-hot` = evictions of a filled entry used in this frame or the last one (the conflict misses that
+ways remove), and `ways=N`. The set choice is in rsx_vc_ways.h (pure functions), tested by tools/runtime/test_vc_ways.sh
+(with a negative control: the thrash and one-shot checks fail with one way).
+
+Written for Project Pyrrhus (KZ2 runtime); no outside code.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -11371,13 +11371,18 @@
+     ld_vc_span cmp[LD_VC_SPANS];
+     u8* src;           /* a copy of the source bytes of every cmp span, compared in full on a hit */
+     u32 src_bytes;
++    u32 used_frame;    /* patch 6074: g_ld_frames at the last lookup that found or placed the key */
++    u64 tick;          /* patch 6074: g_vc_tick at that lookup (LRU among the ways of a set) */
+ } ld_vc_entry;
+ static ld_vc_entry* g_vc;
++static u64 g_vc_tick;   /* patch 6074 */
++#include "rsx_vc_ways.h"   /* patch 6074 */
+ static u32 g_vc_key[LD_VC_KEY_MAX];
+ static u64 g_vc_bytes;
+ static struct { u64 draws, hits, hit_verts, miss_verts, seen, filled, inval_tracked, inval_sample, inel_main,
+                 inel_main_verts, inel_inline, inel_other, inel_other_verts, nostore, full, dyn_skip,
+-                verify_ok, verify_bad, evict, cmp_bytes; } g_vc_st;
++                verify_ok, verify_bad, evict, cmp_bytes,
++                evict_hot; } g_vc_st;   /* patch 6074: evictions of a filled entry used this frame or the last */
+ 
+ static void write_topology_indices(u32 prim, u32* indices);
+ static int ld_vc_full(void);
+@@ -11397,6 +11402,18 @@
+     return mode;
+ }
+ 
++/* Patch 6074: LD_VC_WAYS=N (1, 2, 4, 8, 16; default 1 = patch 2047's direct-mapped slots) ways per set. */
++static u32 ld_vc_ways(void)
++{
++    static u32 w = 0;
++    if (!w) {
++        const char* e = getenv("LD_VC_WAYS");
++        w = rsx_vcw_clamp(e ? atol(e) : 1L);
++        fprintf(stderr, "[vtx-cache] ways=%u (LD_VC_WAYS=%s)\n", w, e ? e : "unset");
++    }
++    return w;
++}
++
+ static u64 ld_vc_budget(void)
+ {
+     static u64 b = 0;
+@@ -11508,10 +11525,25 @@
+     if (!n) return NULL;
+     if (!g_vc) { g_vc = (ld_vc_entry*)calloc(LD_VC_SLOTS, sizeof(ld_vc_entry)); if (!g_vc) return NULL; }
+     const u64 h = fnv1a(g_vc_key, n * 4u, 1469598103934665603ull);
+-    ld_vc_entry* e = &g_vc[(h ^ (h >> 32)) & (LD_VC_SLOTS - 1u)];
+-    if (e->state && (e->h != h || e->key_n != n || memcmp(e->key, g_vc_key, n * 4u))) {
+-        ld_vc_drop(e); free(e->key); memset(e, 0, sizeof(*e)); g_vc_st.evict++;
++    /* Patch 6074: the key's set (LD_VC_WAYS ways; 1 = patch 2047's slot), the way holding the key, else the way
++     * it replaces (empty, else least recently used). */
++    const u32 ways = ld_vc_ways();
++    ld_vc_entry* set = &g_vc[rsx_vcw_set_base(h, LD_VC_SLOTS, ways)];
++    ld_vc_entry* e = NULL;
++    for (u32 w = 0; w < ways; w++)
++        if (set[w].state && set[w].h == h && set[w].key_n == n && !memcmp(set[w].key, g_vc_key, n * 4u)) {
++            e = &set[w]; break;
++        }
++    if (!e) {
++        rsx_vcw_way wv[RSX_VCW_MAX];
++        for (u32 w = 0; w < ways; w++) { wv[w].state = set[w].state; wv[w].tick = set[w].tick; }
++        e = &set[rsx_vcw_victim(wv, ways)];
++        if (e->state) {
++            if (e->state == 2 && g_ld_frames - e->used_frame <= 1u) g_vc_st.evict_hot++;
++            ld_vc_drop(e); free(e->key); memset(e, 0, sizeof(*e)); g_vc_st.evict++;
++        }
+     }
++    e->tick = ++g_vc_tick; e->used_frame = g_ld_frames;
+     if (!e->state) {
+         e->key = (u32*)malloc(n * 4u);
+         if (!e->key) return NULL;
+@@ -11656,7 +11688,8 @@
+     if (!ld_vc_mode() && !g_vc_st.draws) return;
+     fprintf(stderr, "[vtx-cache] frame=%u mode=%d draws=%llu hits=%llu hit-verts=%llu miss-verts=%llu seen=%llu "
+                     "filled=%llu inval-tracked=%llu inval-sample=%llu main=%llu/%llu inline=%llu other=%llu nostore=%llu/%llu "
+-                    "full=%llu dyn-skip=%llu evict=%llu verify=%llu/%llu bytes=%.1fMB full-cmp=%d cmp=%.1fMB\n",
++                    "full=%llu dyn-skip=%llu evict=%llu verify=%llu/%llu bytes=%.1fMB full-cmp=%d cmp=%.1fMB"
++                    " ways=%u evict-hot=%llu\n",
+             g_ld_frames, ld_vc_mode(), (unsigned long long)g_vc_st.draws, (unsigned long long)g_vc_st.hits,
+             (unsigned long long)g_vc_st.hit_verts, (unsigned long long)g_vc_st.miss_verts,
+             (unsigned long long)g_vc_st.seen, (unsigned long long)g_vc_st.filled,
+@@ -11666,7 +11699,8 @@
+             (unsigned long long)g_vc_st.nostore, (unsigned long long)g_vc_st.inel_other_verts,
+             (unsigned long long)g_vc_st.full, (unsigned long long)g_vc_st.dyn_skip, (unsigned long long)g_vc_st.evict,
+             (unsigned long long)g_vc_st.verify_ok, (unsigned long long)g_vc_st.verify_bad,
+-            (double)g_vc_bytes / 1048576.0, ld_vc_full(), (double)g_vc_st.cmp_bytes / 1048576.0);
++            (double)g_vc_bytes / 1048576.0, ld_vc_full(), (double)g_vc_st.cmp_bytes / 1048576.0,
++            ld_vc_ways(), (unsigned long long)g_vc_st.evict_hot);   /* patch 6074 */
+ }
+ 
+ static const float* dc_vertex_attr(
+diff --git a/libs/video/rsx_vc_ways.h b/libs/video/rsx_vc_ways.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_vc_ways.h
+@@ -0,0 +1,49 @@
++/* rsx_vc_ways.h - set-associative slot choice for the live draw's draw payload cache (KZ2 patch 6074, LD_VC_WAYS).
++ *
++ * Patch 2047's cache (rsx_live_draw.c, ld_vc_*) is direct-mapped: 16384 slots, one key per slot, and a new key
++ * evicts whatever its slot holds. An entry is filled only at the second sight of its key, so two keys that share a
++ * slot and both come every frame evict each other every frame and are never filled, and a key that comes once (a
++ * ring offset of per-frame geometry) evicts a filled entry that then needs two more sights. With LD_VC_WAYS=N
++ * (power of two, 1..RSX_VCW_MAX) the slots form sets of N ways; a key may sit in any way of its set, and a new key
++ * takes an empty way, else the least recently used one. N = 1 is the old placement exactly (set base = the old
++ * slot index). Only placement changes: a hit still needs the full key compare and every source check of 2047.
++ *
++ * Pure functions, no D3D12: used by rsx_live_draw.c and by the host test tools/runtime/test_vc_ways.sh.
++ */
++#ifndef RSX_VC_WAYS_H
++#define RSX_VC_WAYS_H
++
++#include <stdint.h>
++
++#define RSX_VCW_MAX 16u
++
++typedef struct { uint8_t state; uint64_t tick; } rsx_vcw_way;   /* state 0 = empty; tick = last access */
++
++/* LD_VC_WAYS value -> ways: the largest power of two <= v, within 1..RSX_VCW_MAX. */
++static inline uint32_t rsx_vcw_clamp(long v)
++{
++    uint32_t w = 1;
++    if (v > (long)RSX_VCW_MAX) v = (long)RSX_VCW_MAX;
++    while ((long)(w * 2u) <= v) w *= 2u;
++    return w;
++}
++
++/* First slot of the key's set. slots and ways are powers of two, ways <= slots. ways = 1: (h ^ h >> 32) & (slots-1),
++ * patch 2047's slot. */
++static inline uint32_t rsx_vcw_set_base(uint64_t h, uint32_t slots, uint32_t ways)
++{
++    return (uint32_t)((h ^ (h >> 32)) & (uint64_t)(slots - 1u)) & ~(ways - 1u);
++}
++
++/* The way a new key replaces: the first empty way, else the one with the oldest tick (the first of equals). */
++static inline uint32_t rsx_vcw_victim(const rsx_vcw_way* w, uint32_t ways)
++{
++    uint32_t v = 0;
++    for (uint32_t i = 0; i < ways; i++) {
++        if (!w[i].state) return i;
++        if (w[i].tick < w[v].tick) v = i;
++    }
++    return v;
++}
++
++#endif

@@ -70,37 +70,62 @@ static inline u128 sp(uint32_t v)
 #define NSIMD_SLOW(k) ((void)0)
 #endif
 
-static inline __m128 F(u128 x) { __m128 r; memcpy(&r, &x, 16); return r; }
-static inline u128 U(__m128 x) { u128 r; memcpy(&r, &x, 16); return r; }
-static inline __m128 fbits(uint32_t v) { return _mm_castsi128_ps(_mm_set1_epi32((int)v)); }
+/* the wrappers' fast paths are forced inline (NSI) and each helper call sits in its own cold out-of-line
+ * function (NSC). Before, GCC outlined every wrapper whole (the inlined helper made it too big), one copy per TU: under
+ * the Windows x64 ABI each call passed its vectors through memory, saved xmm6/xmm7 and cleared the scratch registers,
+ * around one mulps (spu 33 prof: fm_/fma_/fcgt_/fa_/rsq_ ~16 % of VertexJob's samples). Same instructions, same bits. */
+#define NSI static inline __attribute__((always_inline))
+#define NSC static __attribute__((noinline, cold, unused))
 
-static inline int e255(__m128 r)   /* a lane with biased exponent 255 */
+NSI __m128 F(u128 x) { __m128 r; memcpy(&r, &x, 16); return r; }
+NSI u128 U(__m128 x) { u128 r; memcpy(&r, &x, 16); return r; }
+NSI __m128 fbits(uint32_t v) { return _mm_castsi128_ps(_mm_set1_epi32((int)v)); }
+
+NSI int e255(__m128 r)   /* a lane with biased exponent 255 */
 {
     const __m128i e = _mm_set1_epi32(0x7F800000);
     return _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(_mm_and_si128(_mm_castps_si128(r), e), e)));
 }
-static inline __m128 fm_(__m128 a, __m128 b)   /* spu_fm: mulps, exponent-255 result lanes recomputed */
+NSC __m128 fm_slow(__m128 a, __m128 b) { NSIMD_SLOW(0); return F(spu_fm(U(a), U(b))); }
+NSC __m128 fa_slow(__m128 a, __m128 b) { NSIMD_SLOW(1); return F(spu_fa(U(a), U(b))); }
+NSC __m128 fs_slow(__m128 a, __m128 b) { NSIMD_SLOW(2); return F(spu_fs(U(a), U(b))); }
+NSC __m128 fma_slow(__m128 a, __m128 b, __m128 c) { NSIMD_SLOW(3); return F(spu_fma(U(a), U(b), U(c))); }
+NSC __m128 fnms_slow(__m128 a, __m128 b, __m128 c) { NSIMD_SLOW(4); return F(spu_fnms(U(a), U(b), U(c))); }
+NSC __m128 fms_slow(__m128 a, __m128 b, __m128 c) { NSIMD_SLOW(5); return F(spu_fms(U(a), U(b), U(c))); }
+NSC __m128 fcgt_slow(__m128 a, __m128 b) { NSIMD_SLOW(6); return F(spu_fcgt(U(a), U(b))); }
+NSC __m128i cfltu_slow(__m128 x, int i8)
+{
+    NSIMD_SLOW(7);
+    const u128 r = spu_cfltu(U(x), i8);
+    __m128i v;
+    memcpy(&v, &r, 16);
+    return v;
+}
+NSC __m128 rsq_slow(__m128 l) { const u128 u = U(l); NSIMD_SLOW(8); return F(spu_fi(u, spu_frsqest(u))); }
+NSC u128 cflts142_slow(__m128 x) { NSIMD_SLOW(9); return spu_cflts(U(x), 142); }
+
+NSI __m128 fm_(__m128 a, __m128 b)   /* spu_fm: mulps, exponent-255 result lanes recomputed */
 {
     const __m128 r = _mm_mul_ps(a, b);
-    return __builtin_expect(e255(r), 0) ? (NSIMD_SLOW(0), F(spu_fm(U(a), U(b)))) : r;
+    return __builtin_expect(e255(r), 0) ? fm_slow(a, b) : r;
 }
-static inline __m128 fa_(__m128 a, __m128 b)
+NSI __m128 fa_(__m128 a, __m128 b)
 {
     const __m128 r = _mm_add_ps(a, b);
-    return __builtin_expect(e255(r), 0) ? (NSIMD_SLOW(1), F(spu_fa(U(a), U(b)))) : r;
+    return __builtin_expect(e255(r), 0) ? fa_slow(a, b) : r;
 }
-static inline __m128 fs_(__m128 a, __m128 b)
+NSI __m128 fs_(__m128 a, __m128 b)
 {
     const __m128 r = _mm_sub_ps(a, b);
-    return __builtin_expect(e255(r), 0) ? (NSIMD_SLOW(2), F(spu_fs(U(a), U(b)))) : r;
+    return __builtin_expect(e255(r), 0) ? fs_slow(a, b) : r;
 }
-static inline int fma_ok(__m128 r)   /* spu__fma4's test (KZ3 1106): every lane normal or zero */
+NSI int fma_ok(__m128 r)   /* spu__fma4's test (KZ3 1106): every lane normal or zero */
 {
     const __m128i ab = _mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF));
     const __m128i nn = _mm_cmpgt_epi32(_mm_add_epi32(ab, _mm_set1_epi32(0x7F000000)), _mm_set1_epi32(-0x01800001));
     return _mm_testz_si128(nn, ab);
 }
-static inline __m128 fma_(__m128 a, __m128 b, __m128 c)   /* spu_fma = a b + c */
+NSI __m128 fma_(__m128 a, __m128 b, __m128 c)   /* spu_fma = a b + c */
 {
 #if defined(__FMA__)
     if (__builtin_expect(g_kz3_spu_slowcg == 0, 1)) {
@@ -108,10 +133,9 @@ static inline __m128 fma_(__m128 a, __m128 b, __m128 c)   /* spu_fma = a b + c *
         if (__builtin_expect(fma_ok(r), 1)) return r;
     }
 #endif
-    NSIMD_SLOW(3);
-    return F(spu_fma(U(a), U(b), U(c)));
+    return fma_slow(a, b, c);
 }
-static inline __m128 fnms_(__m128 a, __m128 b, __m128 c)   /* spu_fnms = c - a b (b negated, as spu__fma4 does) */
+NSI __m128 fnms_(__m128 a, __m128 b, __m128 c)   /* spu_fnms = c - a b (b negated, as spu__fma4 does) */
 {
 #if defined(__FMA__)
     if (__builtin_expect(g_kz3_spu_slowcg == 0, 1)) {
@@ -119,10 +143,9 @@ static inline __m128 fnms_(__m128 a, __m128 b, __m128 c)   /* spu_fnms = c - a b
         if (__builtin_expect(fma_ok(r), 1)) return r;
     }
 #endif
-    NSIMD_SLOW(4);
-    return F(spu_fnms(U(a), U(b), U(c)));
+    return fnms_slow(a, b, c);
 }
-static inline __m128 fms_(__m128 a, __m128 b, __m128 c)   /* spu_fms = a b - c (c negated, as spu__fma4 does) */
+NSI __m128 fms_(__m128 a, __m128 b, __m128 c)   /* spu_fms = a b - c (c negated, as spu__fma4 does) */
 {
 #if defined(__FMA__)
     if (__builtin_expect(g_kz3_spu_slowcg == 0, 1)) {
@@ -130,16 +153,15 @@ static inline __m128 fms_(__m128 a, __m128 b, __m128 c)   /* spu_fms = a b - c (
         if (__builtin_expect(fma_ok(r), 1)) return r;
     }
 #endif
-    NSIMD_SLOW(5);
-    return F(spu_fms(U(a), U(b), U(c)));
+    return fms_slow(a, b, c);
 }
-static inline __m128 fcgt_(__m128 a, __m128 b)   /* spu_fcgt: cmpgtps unless an operand lane has exponent 255 */
+NSI __m128 fcgt_(__m128 a, __m128 b)   /* spu_fcgt: cmpgtps unless an operand lane has exponent 255 */
 {
-    if (__builtin_expect(e255(a) | e255(b), 0)) return NSIMD_SLOW(6), F(spu_fcgt(U(a), U(b)));
+    if (__builtin_expect(e255(a) | e255(b), 0)) return fcgt_slow(a, b);
     return _mm_cmpgt_ps(a, b);
 }
 /* x > hi ? hi : x, then x > 0 ? x : 0 (fcgt + selb twice, the SPU code's clamp) */
-static inline __m128 clamp_(__m128 x, __m128 hi)
+NSI __m128 clamp_(__m128 x, __m128 hi)
 {
     x = _mm_blendv_ps(x, hi, fcgt_(x, hi));
     const __m128 z = _mm_setzero_ps();
@@ -147,16 +169,11 @@ static inline __m128 clamp_(__m128 x, __m128 hi)
 }
 /* spu_cfltu(x, i8), i8 <= 173: exact when every lane is below 2^31 after the scale and has no exponent 255 (the helper
  * floors max(0, x 2^s) in double; the float product is exact, negative lanes give 0). */
-static inline __m128i cfltu_(__m128 x, int i8)
+NSI __m128i cfltu_(__m128 x, int i8)
 {
     const __m128 p = _mm_mul_ps(x, _mm_set1_ps((float)(1u << (173 - i8))));
-    if (__builtin_expect(e255(x) | _mm_movemask_ps(_mm_cmpge_ps(p, _mm_set1_ps(2147483648.0f))), 0)) {
-        NSIMD_SLOW(7);
-        const u128 r = spu_cfltu(U(x), i8);
-        __m128i v;
-        memcpy(&v, &r, 16);
-        return v;
-    }
+    if (__builtin_expect(e255(x) | _mm_movemask_ps(_mm_cmpge_ps(p, _mm_set1_ps(2147483648.0f))), 0))
+        return cfltu_slow(x, i8);
     return _mm_cvttps_epi32(_mm_max_ps(p, _mm_setzero_ps()));
 }
 
@@ -166,17 +183,14 @@ static inline __m128i cfltu_(__m128 x, int i8)
  * normal power of two times a 10-bit integer; the helper's double gives the same value), y = (l & 0x7FFFF) 2^-19
  * (exact), r = base - step y (mulps, subps: the helper's float steps; the base is positive, no sign flip). A vector
  * with any other exponent (zero, denormal, infinity, NaN) goes to the helpers. */
-static inline __m128 rsq_(__m128 l)
+NSI __m128 rsq_(__m128 l)
 {
     const __m128i L = _mm_castps_si128(l);
     const __m128i e = _mm_and_si128(_mm_srli_epi32(L, 23), _mm_set1_epi32(0xFF));
     if (__builtin_expect(_mm_movemask_epi8(_mm_cmpgt_epi32(_mm_sub_epi32(e, _mm_set1_epi32(128)),
                                                             _mm_set1_epi32(126))) |
-                             _mm_movemask_epi8(_mm_cmpeq_epi32(e, _mm_setzero_si128())), 0)) {
-        const u128 u = U(l);
-        NSIMD_SLOW(8);
-        return F(spu_fi(u, spu_frsqest(u)));
-    }
+                             _mm_movemask_epi8(_mm_cmpeq_epi32(e, _mm_setzero_si128())), 0))
+        return rsq_slow(l);
     const __m128i fr = _mm_setr_epi32((int)spu_frsqest_fraction_lut[((uint32_t)_mm_cvtsi128_si32(L) >> 18) & 0x3F],
                                       (int)spu_frsqest_fraction_lut[((uint32_t)_mm_extract_epi32(L, 1) >> 18) & 0x3F],
                                       (int)spu_frsqest_fraction_lut[((uint32_t)_mm_extract_epi32(L, 2) >> 18) & 0x3F],
@@ -192,9 +206,9 @@ static inline __m128 rsq_(__m128 l)
  * saturates as the helper's double does), cvttps truncates as cvttpd does, a lane at or above 2^31 is 0x7FFFFFFF and
  * one at or below -2^31 cvttps's 0x80000000, the helper's clamp; lanes with exponent 255 go to the helper (round
  * 26b; was the helper's double path for every vector). */
-static inline u128 cflts142_(__m128 x)
+NSI u128 cflts142_(__m128 x)
 {
-    if (__builtin_expect(e255(x), 0)) return NSIMD_SLOW(9), spu_cflts(U(x), 142);
+    if (__builtin_expect(e255(x), 0)) return cflts142_slow(x);
     const __m128 p = _mm_mul_ps(x, _mm_set1_ps(2147483648.0f));
     const __m128i r = _mm_blendv_epi8(_mm_cvttps_epi32(p), _mm_set1_epi32(0x7FFFFFFF),
                                       _mm_castps_si128(_mm_cmpge_ps(p, _mm_set1_ps(2147483648.0f))));

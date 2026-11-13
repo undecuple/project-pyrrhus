@@ -1,0 +1,326 @@
+KZ2 patch 6077: LD_TEX_WW, the texture write watch. Default on (2026-11-10); LD_TEX_WW=0 off, =verify
+decides as on but still hashes every texture the watch calls clean and counts a changed hash as [tex-ww-bad].
+
+Root cause (rounds 85-86, [tex-hash] in b-walk's heavy view: 11-22 MB hashed per frame, tex-hash 1.6-1.8 ms/f): the
+walker hashes cached textures because recompiled PPU stores into guest memory have no write signal. Patch 2033's
+page bitmap covers the tracked writers (NV0039/NV3089/NV308A, surface write-backs, SPU DMA puts, the gv ring, file
+reads), so the hash, the quiet span (LD_TEX_HASH_SPAN) and the clean rule's periodic net (LD_TEX_CLEAN, up to 30
+frames late for an untracked writer) stand in for the missing one.
+
+The OS write watch is the signal for every writer at once. port/kz2/main.cpp reserves guest memory with
+MEM_WRITE_WATCH unless LD_TEX_WW=0 (one reservation, vm_base + guest address; no guest page is mapped twice), and
+GetWriteWatch reports each 4 KB page written since its last reset, whoever wrote it: stores of any thread, interlocked
+stores, ReadFile buffered and unbuffered (tools/runtime/ww_probe.sh checks each under Proton; costs there: 0.6 us per
+query of a clean 40-page span, 0.4 us per first store after a reset). The GPU never writes guest memory (no heap is
+opened on it). rsx_tex_ww.h keeps the bookkeeping: a collect queries a span with reset (at most 4,096 pages per call:
+a full address array stops the reset where it filled) and stamps the written pages with a clock; an entry is armed
+after a collect and before its bytes are read; it is clean while no page of its span carries a newer stamp. The
+stamps keep a write that another entry's collect reset (shared pages). A clean entry keeps its cached decode, exactly
+as if its hash had come back unchanged; any other decision hashes, arming first when the last hash found the texture
+unchanged (quiet >= LD_TEX_WW_QUIET, default 1), so a texture rewritten every frame does not re-protect its pages
+each frame. A clean decision stands for the rest of the frame, as a hash does through last_hash_frame (the old
+rules' once-per-frame validation; a query at every bind cost ~1 s per 256 frames in the first s1 run). Without a host pointer, or if a query fails, the old rules decide. A missing write watch (LD_TEX_WW set
+too late, or another host) prints "[tex-ww] off" and changes nothing. The collect time counts as tex-hash in
+[perf-walk2]; [tex-ww] per 256 frames with RSX_PERF (decisions, clean, written, armed, unarmed, fail, bad, queries,
+pages, ms).
+
+Own design. Upstream ps3recomp #727 (tekulvw, page write watch through page protection and a vectored handler) was
+read for the idea in an earlier change; nothing of it is used (MIT either way). Tests: tools/runtime/test_tex_ww.sh (directed
+cases, a 400,000-step stress over overlapping spans with 0 false cleans; negative control TEST_NEG=1: per-entry
+queries without stamps give false cleans).
+
+diff --git a/libs/video/rsx_tex_ww.h b/libs/video/rsx_tex_ww.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_tex_ww.h
+@@ -0,0 +1,95 @@
++/* KZ2 patch 6077: the texture write watch (LD_TEX_WW), the pure part.
++ *
++ * A cached texture is valid while no byte of its guest span was written since the bytes it was decoded from were
++ * read. The OS's write watch (VirtualAlloc MEM_WRITE_WATCH + GetWriteWatch) reports every page written since that
++ * page's last reset, whoever wrote it: recompiled PPU stores, HLE code, SPU DMA puts, surface write-backs, and the
++ * kernel itself (ReadFile into guest memory; checked under Proton by tools/runtime/ww_probe.sh). This header keeps the
++ * bookkeeping that turns per-range queries into a per-entry answer when several entries share pages:
++ *
++ *   - ld_ww_collect(range): GetWriteWatch(WRITE_WATCH_FLAG_RESET) over the range, at most LD_WW_BATCH pages per call
++ *     (a full address array would stop the reset where it filled); every reported page gets stamp = a new value of a
++ *     clock that advances only when a collect reports pages;
++ *   - ld_ww_arm(entry): right after a collect over the entry's range and BEFORE its bytes are read: entry.seq = clock;
++ *   - ld_ww_clean(entry): after a collect over the entry's range: no page of the range has a stamp newer than
++ *     entry.seq, so no write reached it since it was armed.
++ * A collect for one entry resets pages another entry shares; the stamps keep that write for the other entry, which is
++ * why a per-entry "query since my own reset" alone is wrong (the negative control in tools/runtime/test_tex_ww.c).
++ * Walker-only (one thread): the clock and the stamps need no atomics; the OS query is thread-safe against writers.
++ * Host test: tools/runtime/test_tex_ww.sh. */
++#pragma once
++#include <stdint.h>
++#include <stddef.h>
++
++#define LD_WW_PAGE_SHIFT 12u
++#define LD_WW_PAGE ((uintptr_t)1 << LD_WW_PAGE_SHIFT)
++#define LD_WW_PAGES (1u << 20)   /* 4 GB of guest address space in 4 KB pages */
++#ifndef LD_WW_BATCH
++#define LD_WW_BATCH 4096u        /* pages per query = the address array's length (tests make it small) */
++#endif
++
++/* GetWriteWatch(WRITE_WATCH_FLAG_RESET, base, size, addrs, count, ...): 0 on success, *count in/out. */
++typedef int (*ld_ww_query_fn)(void* base, size_t size, void** addrs, uintptr_t* count);
++
++typedef struct { uint64_t seq; uintptr_t lo; } ld_ww_arm_t;   /* seq 0 = not armed; lo = host address armed */
++
++typedef struct {
++    uint64_t* stamp;    /* LD_WW_PAGES entries, by (host - base) >> 12 */
++    uint64_t clock;     /* starts at 1 (0 means "never armed") */
++    uintptr_t base;     /* host address of guest address 0 */
++    ld_ww_query_fn query;
++    void* addrs[LD_WW_BATCH];
++    uint64_t calls, pages, fails;
++} ld_ww_state;
++
++static inline void ld_ww_init(ld_ww_state* st, uint64_t* stamp, uintptr_t base, ld_ww_query_fn q)
++{
++    st->stamp = stamp; st->clock = 1; st->base = base; st->query = q;
++    st->calls = st->pages = st->fails = 0;
++}
++
++/* Is [lo, lo+size) inside the watched guest space? */
++static inline int ld_ww_in_range(const ld_ww_state* st, uintptr_t lo, uint32_t size)
++{
++    return size && lo >= st->base && lo - st->base + size <= ((uint64_t)LD_WW_PAGES << LD_WW_PAGE_SHIFT);
++}
++
++/* Collect the writes to [lo, lo+size) into the stamps and reset the pages. 0 = the query failed (the caller hashes). */
++static inline int ld_ww_collect(ld_ww_state* st, uintptr_t lo, uint32_t size)
++{
++    if (!ld_ww_in_range(st, lo, size)) return 0;
++    uintptr_t a = lo & ~(LD_WW_PAGE - 1u);
++    const uintptr_t end = (lo + size + LD_WW_PAGE - 1u) & ~(LD_WW_PAGE - 1u);
++    int bumped = 0;
++    while (a < end) {
++        const uintptr_t n = end - a < ((uintptr_t)LD_WW_BATCH << LD_WW_PAGE_SHIFT)
++                                ? end - a : ((uintptr_t)LD_WW_BATCH << LD_WW_PAGE_SHIFT);
++        uintptr_t cnt = LD_WW_BATCH;
++        st->calls++;
++        if (st->query((void*)a, (size_t)n, st->addrs, &cnt) != 0 || cnt > LD_WW_BATCH) { st->fails++; return 0; }
++        if (cnt && !bumped) { st->clock++; bumped = 1; }
++        for (uintptr_t i = 0; i < cnt; i++) {
++            const uintptr_t p = (uintptr_t)st->addrs[i];
++            if (p < a || p >= a + n) { st->fails++; return 0; }   /* not ours: never trust the answer */
++            st->stamp[(p - st->base) >> LD_WW_PAGE_SHIFT] = st->clock;
++        }
++        st->pages += cnt;
++        a += n;
++    }
++    return 1;
++}
++
++/* After a collect over [lo, lo+size): arm the entry (its bytes are read after this). */
++static inline void ld_ww_arm(const ld_ww_state* st, ld_ww_arm_t* e, uintptr_t lo)
++{
++    e->seq = st->clock; e->lo = lo;
++}
++
++/* After a collect over [lo, lo+size): was the entry armed for this range, and has no write reached it since? */
++static inline int ld_ww_clean(const ld_ww_state* st, const ld_ww_arm_t* e, uintptr_t lo, uint32_t size)
++{
++    if (!e->seq || e->lo != lo || !ld_ww_in_range(st, lo, size)) return 0;
++    const uintptr_t p0 = (lo - st->base) >> LD_WW_PAGE_SHIFT, p1 = (lo - st->base + size - 1u) >> LD_WW_PAGE_SHIFT;
++    for (uintptr_t p = p0; p <= p1; p++)
++        if (st->stamp[p] > e->seq) return 0;
++    return 1;
++}
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "rsx_live_draw.h"
++#include "rsx_tex_ww.h"   /* KZ2 patch 6077: texture write watch (LD_TEX_WW) */
+ #include "rsx_cb_reuse.h"
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+@@ -425,6 +426,7 @@
+     u32 raw_argb;     /* patch 2046: the resource holds the guest's A,R,G,B bytes as R8G8B8A8 (LD_ARGB_DIRECT) */
+     int kc_kind;      /* patch 2091 (KZ3 2039): KC_HUD / KC_MENU when this is a prompt atlas */
+     u32 kc_sig;       /* patch 2091 (KZ3 2039): rsx_keycaps_sig() its upload was made for */
++    ld_ww_arm_t ww;   /* KZ2 patch 6077: write-watch arm (LD_TEX_WW; zero = not armed) */
+ } texcache_t;
+ typedef struct {
+     u32 location, offset, format, width, height, pitch;
+@@ -435,6 +437,7 @@
+     u32 span;   /* patch 2015: guest bytes the decode reads (0 = unknown) */
+     u32 quiet, written, skip_frame;   /* patch 2033, as texcache_t */
+     u32 dyn;   /* patch 2046, as texcache_t (content change seen) */
++    ld_ww_arm_t ww;   /* KZ2 patch 6077, as texcache_t */
+ } vtexcache_t;
+ typedef struct { u64 key; ID3D12PipelineState* pso; u8 preloaded; u8 pending; } psocache_t;   /* patch 2031: preloaded until first use; patch 2048: pending = an asynchronous build in flight */
+ typedef struct {
+@@ -4029,13 +4032,125 @@
+ static int ld_tex_hash_due_body(u32 location, u32 offset, u32 span, u32 last_hash_frame, u32 quiet, u32* written,
+                                 u32* skip_frame, u32* dyn);
+ extern int cellGcm_ppu_note_io_span(u32 io, u32 size) __attribute__((weak));   /* patch 2083, cellGcmSys.c */
++/* KZ2 patch 6077: LD_TEX_WW, the texture write watch. Default on (2026-11-10); LD_TEX_WW=0 off,
++ * LD_TEX_WW=verify decides as on but hashes every texture the watch calls clean and counts a changed hash as bad.
++ * Root cause: the walker hashes cached textures (an earlier change/86 b-walk heavy view: 11-22 MB per frame, tex-hash 1.6-1.8
++ * ms/f) because recompiled PPU stores into guest memory have no write signal; the tracked writers (patch 2033's page
++ * bitmap) miss them, so the hash, or the quiet span (LD_TEX_HASH_SPAN) and the clean rule's periodic net (LD_TEX_CLEAN,
++ * up to 30 frames late), stand in. The OS write watch is that signal for every writer at once: port/kz2/main.cpp
++ * reserves guest memory with MEM_WRITE_WATCH unless LD_TEX_WW=0, and GetWriteWatch reports each 4 KB page written
++ * since its last reset, whoever wrote it (user-mode stores of any thread, interlocked stores, ReadFile buffered or
++ * unbuffered: tools/runtime/ww_probe.sh, under Proton). Decision for a location 0/1 texture with a span:
++ *   - collect its span (rsx_tex_ww.h: query with reset, written pages stamped with a clock); armed and no page newer
++ *     than its arm: clean, the cached decode stays (exact: nothing wrote those bytes since they were read);
++ *   - otherwise hash, and arm first (the hash reads after the collect) if its last hash found it unchanged
++ *     (quiet >= LD_TEX_WW_QUIET, default 1), so a texture rewritten every frame does not re-protect its pages each
++ *     frame; such a one hashes every frame, as before.
++ * A clean decision stands for the rest of the frame (later binds of the entry in the same frame do not query again),
++ * as a hash's does through last_hash_frame: the once-per-frame validation of the old rules, at a query's cost (an earlier change
++ * s1 queried at every bind: 544 k queries per 256 frames, ~1 s). The old rules (span, clean, net) are not consulted for these textures; without a host pointer or when a query fails
++ * the old rule decides. The collect time is part of tex-hash in [perf-walk2]; [tex-ww] per 256 frames (RSX_PERF). */
++static ld_ww_state g_ld_ww;
++static int g_ld_ww_mode = -1;   /* 0 off, 1 on, 2 verify */
++static u32 g_ld_ww_pending;     /* verify: the decision in flight was called clean by the watch */
++static struct { u64 decisions, clean, written, armed, unarmed, fail, bad, qpc, repeat; } g_ld_wws;
++static int ld_ww_query_os(void* base, size_t size, void** addrs, uintptr_t* count)
++{
++    ULONG_PTR c = (ULONG_PTR)*count; ULONG gran = 0;
++    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, base, (SIZE_T)size, addrs, &c, &gran) != 0) return 1;
++    *count = (uintptr_t)c;
++    return 0;
++}
++static u32 ld_ww_quiet(void)
++{
++    static long q = -1;
++    if (q < 0) { const char* e = getenv("LD_TEX_WW_QUIET"); q = e ? atol(e) : 1; if (q < 0) q = 0; }
++    return (u32)q;
++}
++static int ld_ww_mode(void)
++{
++    if (g_ld_ww_mode < 0) {
++        const char* e = getenv("LD_TEX_WW");
++        int m = (e && e[0] == '0') ? 0 : (e && strcmp(e, "verify") == 0) ? 2 : 1;
++        if (m) {
++            extern uint8_t* vm_base;
++            void* a[1]; ULONG_PTR c = 1; ULONG gran = 0;
++            uint64_t* st = vm_base ? (uint64_t*)calloc(LD_WW_PAGES, sizeof(uint64_t)) : NULL;
++            /* the guest reservation must carry MEM_WRITE_WATCH (port/kz2/main.cpp: unless LD_TEX_WW=0) */
++            if (!st || GetWriteWatch(0, vm_base, 0x10000, a, &c, &gran) != 0) {
++                fprintf(stderr, "[tex-ww] off: guest memory is not write-watched (err=%lu); the hash rules decide\n",
++                        (unsigned long)GetLastError());
++                free(st);
++                m = 0;
++            } else {
++                ld_ww_init(&g_ld_ww, st, (uintptr_t)vm_base, ld_ww_query_os);
++                fprintf(stderr, "[tex-ww] %s, arm at quiet >= %u\n", m == 2 ? "verify" : "on", ld_ww_quiet());
++            }
++        }
++        g_ld_ww_mode = m;
++    }
++    return g_ld_ww_mode;
++}
++/* 0 = keep the cached decode, 1 = hash, -1 = no answer (the old rules decide). */
++static int ld_ww_due(u32 location, u32 offset, u32 span, u32 quiet, u32* written, u32* skip_frame, ld_ww_arm_t* ww)
++{
++    const u8* hp = guest_ptr(location, offset, span);
++    if (!hp) { ww->seq = 0; return -1; }
++    const uintptr_t lo = (uintptr_t)hp;
++    /* Checked clean earlier this frame: the decision stands for the frame, as a hash's does (last_hash_frame). */
++    if (ww->seq && ww->lo == lo && *skip_frame == g_ld_frames) { g_ld_wws.repeat++; return 0; }
++    const long long t0 = rsx_perf_enabled() ? rsx_perf_now() : 0;
++    const int ok = ld_ww_collect(&g_ld_ww, lo, span);
++    if (t0) {
++        const long long dt = rsx_perf_now() - t0;
++        g_ld_wws.qpc += (u64)dt;
++        if (rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_TEX_HASH_T, dt);
++    }
++    g_ld_wws.decisions++;
++    if (!ok) { g_ld_wws.fail++; ww->seq = 0; return -1; }
++    if (ld_ww_clean(&g_ld_ww, ww, lo, span)) {
++        g_ld_wws.clean++;
++        *written = 0;   /* a tracked flag (64 KB pages) under a clean span: a neighbour's write, or one before the arm */
++        if (g_ld_ww_mode == 2) { g_ld_ww_pending = 1; return 1; }
++        if (*skip_frame != g_ld_frames) { *skip_frame = g_ld_frames; g_ld_th.skipped++; }
++        return 0;
++    }
++    if (ww->seq) { g_ld_wws.written++; *written = 1; }   /* a write the watch saw: a tracked change */
++    if (quiet >= ld_ww_quiet()) { ld_ww_arm(&g_ld_ww, ww, lo); g_ld_wws.armed++; }
++    else { ww->seq = 0; g_ld_wws.unarmed++; }
++    return 1;
++}
++static void ld_ww_stat_print(void)
++{
++    if (!g_ld_ww_mode || g_ld_ww_mode < 0) return;
++    fprintf(stderr, "[tex-ww] frame=%u mode=%d decisions=%llu clean=%llu written=%llu armed=%llu unarmed=%llu fail=%llu"
++                    " bad=%llu queries=%llu pages=%llu ms=%.2f repeat=%llu\n", g_ld_frames, g_ld_ww_mode,
++            (unsigned long long)g_ld_wws.decisions, (unsigned long long)g_ld_wws.clean,
++            (unsigned long long)g_ld_wws.written, (unsigned long long)g_ld_wws.armed,
++            (unsigned long long)g_ld_wws.unarmed, (unsigned long long)g_ld_wws.fail, (unsigned long long)g_ld_wws.bad,
++            (unsigned long long)g_ld_ww.calls, (unsigned long long)g_ld_ww.pages, ld_tile_qpc_ms((long long)g_ld_wws.qpc),
++            (unsigned long long)g_ld_wws.repeat);
++    memset(&g_ld_wws, 0, sizeof g_ld_wws);
++    g_ld_ww.calls = g_ld_ww.pages = g_ld_ww.fails = 0;
++}
++
+ /* Walker, at a hash decision: hash now, or keep the cached decode for this frame? Patch 2083: *hash_seq is the
+- * entry's mark sequence before its last hash; it becomes the sequence read now when the caller is told to hash. */
++ * entry's mark sequence before its last hash; it becomes the sequence read now when the caller is told to hash.
++ * KZ2 patch 6077: *ww is the entry's write-watch arm (LD_TEX_WW). */
+ static int ld_tex_hash_due(u32 location, u32 offset, u32 span, u32 last_hash_frame, u32 quiet, u32* written,
+-                           u32* skip_frame, u32* dyn, u32* hash_seq)
++                           u32* skip_frame, u32* dyn, u32* hash_seq, ld_ww_arm_t* ww)
+ {
+     const u32 now = (u32)g_ld_ws_seq;
+     g_ld_tc_last_seq = *hash_seq;
++    g_ld_ww_pending = 0;
++    if (location < 2u && span && ld_ww_mode()) {   /* KZ2 patch 6077 */
++        g_ld_tc_pending = 0;
++        const int r = ld_ww_due(location, offset, span, quiet, written, skip_frame, ww);
++        if (r >= 0) {
++            if (r) *hash_seq = now;
++            return r;
++        }
++    }
+     const int due = ld_tex_hash_due_body(location, offset, span, last_hash_frame, quiet, written, skip_frame, dyn);
+     if (due) *hash_seq = now;
+     return due;
+@@ -4148,6 +4263,13 @@
+                              u32 offset, u32 w, u32 h, u32 fmt, u32 span)
+ {
+     g_ld_th.hashes++;
++    if (g_ld_ww_pending && readable && changed) {   /* KZ2 patch 6077 verify: the watch called a changed texture clean */
++        g_ld_wws.bad++;
++        if (g_ld_wws.bad <= 32)
++            fprintf(stderr, "[tex-ww-bad] frame=%u src=%u:0x%08X %ux%u fmt=0x%02X span=%u\n", g_ld_frames, location,
++                    offset, w, h, fmt, span);
++    }
++    g_ld_ww_pending = 0;
+     if (readable && changed) {
+         g_ld_th.changes++;
+         if (ld_tex_hash_big()) *dyn |= 1u;   /* patch 2046: a change means a writer: every frame from now on */
+@@ -4203,6 +4325,7 @@
+         }
+     }
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) ld_vc_stat_print();   /* patch 2047 */
++    if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) ld_ww_stat_print();   /* KZ2 patch 6077 */
+     if ((g_ld_frames % 256u) == 255u) ld_apso_stat_print();   /* patch 2048 (prints only once builds ran) */
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) {
+         fprintf(stderr, "[tex-hash] span=%d big=%u frame=%u hashes=%llu skipped=%llu bytes=%.1fMB changes=%llu tracked=%llu"
+@@ -5832,7 +5955,7 @@
+             entry->last_hash_frame != g_ld_frames &&
+             ld_tex_hash_due(entry->location, entry->offset, entry->span, entry->last_hash_frame,
+                             entry->quiet, &entry->written, &entry->skip_frame, &entry->dyn,
+-                            &entry->hash_seq)) {   /* patch 2033; hash_seq 2083 */
++                            &entry->hash_seq, &entry->ww)) {   /* patch 2033; hash_seq 2083; ww KZ2 6077 */
+             int readable = 0;
+             LDW_T0(th_t0);
+             const u64 hash = texture_content_hash(t, &readable);
+@@ -6206,7 +6329,7 @@
+             continue;
+         if (e->tex && e->last_hash_frame != g_ld_frames &&
+             ld_tex_hash_due(e->location, e->offset, e->span, e->last_hash_frame, e->quiet, &e->written, &e->skip_frame,
+-                            &e->dyn, &e->hash_seq)) {
++                            &e->dyn, &e->hash_seq, &e->ww)) {   /* ww: KZ2 patch 6077 */
+             const u64 hash = vertex_texture_hash(vt, NULL, NULL);
+             ld_tex_hash_note(hash != 0, hash && hash != e->content_hash, &e->quiet, &e->written, &e->dyn, e->location,
+                              e->offset, e->width, e->height, e->format, e->span);

@@ -1,0 +1,192 @@
+KZ2 patch 6078 (diagnostic): LD_VC_NEW=1, which draws the payload cache misses and why.
+
+An earlier change measured ~350 new fetch keys per frame in b-walk's heavy views (refs+remap+fetch ~3 ms/f there) and
+guessed dynamic geometry at new ring offsets. Before converting anything once per buffer write instead of once per
+draw, this counts, per missed draw after its fetch: the reason (first sight of the key, second sight = fill,
+invalidated, dynamic, main memory without LD_VTX_CACHE_MAIN, ineligible key); its source spans as patch 2047 takes
+them (index range, each used attribute's element range), whether any is in main memory, whether one had a tracked
+write this frame (fresh), in the last two frames (fresh2) or neither (stale); whether the draw's whole source
+signature, and each attribute span (location, offset, length, type, size, stride), was already converted this frame
+by another draw (repeat: the work a per-buffer conversion would save, weighted by vertices) or last frame (prev:
+stable data under a key that changed for another reason); and the six 1 MB regions with the most missed vertices.
+[vc-new] per 256 frames with RSX_PERF. Observes only; off by default.
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3886,6 +3886,7 @@
+ static u32 g_ld_td_prev[2][LD_TD_WORDS];        /* pages written during the previous frame (walker) */
+ static u32 g_ld_pg_stamp[2][LD_TD_WORDS * 32u];  /* patch 2047: per 64 KB page, 1 + the last frame a tracked write hit it */
+ static void ld_vc_stat_print(void);              /* patch 2047 */
++static void ld_vcn_print(void);                  /* KZ2 patch 6078 */
+ static void ld_apso_stat_print(void);            /* patch 2048 */
+ static int g_ld_tex_hash_span = -1;
+ static struct { u64 hashes, skipped, changes, tracked, untracked, hashed_bytes, flip_flags, dyn_forced, wr_unchanged; } g_ld_th;
+@@ -4326,6 +4327,7 @@
+     }
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) ld_vc_stat_print();   /* patch 2047 */
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) ld_ww_stat_print();   /* KZ2 patch 6077 */
++    if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) ld_vcn_print();   /* KZ2 patch 6078 */
+     if ((g_ld_frames % 256u) == 255u) ld_apso_stat_print();   /* patch 2048 (prints only once builds ran) */
+     if (rsx_perf_enabled() && (g_ld_frames % 256u) == 255u) {
+         fprintf(stderr, "[tex-hash] span=%d big=%u frame=%u hashes=%llu skipped=%llu bytes=%.1fMB changes=%llu tracked=%llu"
+@@ -11880,6 +11882,134 @@
+             ld_vc_ways(), (unsigned long long)g_vc_st.evict_hot);   /* patch 6074 */
+ }
+ 
++/* KZ2 patch 6078 (diagnostic): LD_VC_NEW=1 classifies the draws the payload cache misses
++ * (~350 new fetch keys per heavy frame in b-walk, refs+remap+fetch ~3 ms/f) by where their sources are and
++ * who wrote them, and measures how much of the fetch work several draws of the same frame repeat on the same source
++ * (the gain a per-buffer conversion could take). Per missed draw, after its fetch: its source spans (index range and
++ * each used attribute's element range, as patch 2047 takes them); per span the location, a tracked write this frame
++ * (g_ld_td) or in the last two frames (g_ld_pg_stamp); the draw's source signature (every span + attribute format)
++ * and each attribute span's signature (location, offset, length, type, size, stride) looked up in per-frame sets: a
++ * repeat = the same source already converted this frame by another draw; prev = seen in the previous frame (stable
++ * data, a key that changed for another reason). fresh = a span had a tracked write this frame, fresh2 = in the last two
++ * frames, stale = neither. [vc-new] per 256 frames (RSX_PERF): reasons (first sight, second
++ * sight fill, invalidated, dynamic, main memory, ineligible), loc1 / fresh / stale draws, signature repeats, attribute
++ * spans and repeats weighted by vertices, the top 6 attribute-span regions (1 MB, location) by missed vertices.
++ * Changes nothing it observes. */
++#define LD_VCN_SET 8192u
++static int g_ld_vcn_on = -1;
++static struct { u64 sig; u32 frame; } g_ld_vcn_dsig[LD_VCN_SET], g_ld_vcn_asig[LD_VCN_SET];
++static struct { u64 miss, first, second, inval, dyn, mainm, inel, loc1, fresh, fresh2, stale, sig_rep, sig_prev,
++                spans, span_rep, span_prev, verts, verts_rep, verts_prev; } g_ld_vcn;
++static struct { u32 key; u64 verts; } g_ld_vcn_reg[64];
++static int ld_vcn_on(void)
++{
++    if (g_ld_vcn_on < 0) { const char* e = getenv("LD_VC_NEW"); g_ld_vcn_on = (e && e[0] && e[0] != '0') ? 1 : 0; }
++    return g_ld_vcn_on;
++}
++/* 0 = new this frame, 1 = repeat this frame, 2 = seen last frame (first time this frame) */
++static int ld_vcn_seen(void* setp, u64 sig)
++{
++    struct { u64 sig; u32 frame; }* set = setp;
++    u32 i = (u32)(sig ^ (sig >> 29)) & (LD_VCN_SET - 1u);
++    for (u32 probe = 0; probe < 16u; probe++, i = (i + 1u) & (LD_VCN_SET - 1u)) {
++        if (set[i].sig == sig) {
++            const u32 f = set[i].frame;
++            set[i].frame = g_ld_frames;
++            return f == g_ld_frames ? 1 : f + 1u == g_ld_frames ? 2 : 0;
++        }
++        if (!set[i].sig || g_ld_frames - set[i].frame > 2u) { set[i].sig = sig; set[i].frame = g_ld_frames; return 0; }
++    }
++    return 0;   /* set crowded: counted as new */
++}
++static int ld_vcn_written(u32 loc, u32 off, u32 len, int* recent)
++{
++    if (ld_td_test((const u32*)g_ld_td[loc], off, len)) return 1;
++    const u64 end = (u64)off + len - 1u;
++    const u32 p1 = (u32)(end > 0xFFFFFFFFull ? 0xFFFFFFFFull : end) >> 16;
++    for (u32 pg = off >> 16; pg <= p1; pg++)
++        if (g_ld_pg_stamp[loc][pg] + 2u >= g_ld_frames + 1u && g_ld_pg_stamp[loc][pg]) { *recent = 1; break; }
++    return 0;
++}
++/* reason: 1 first sight, 2 second sight (fill), 3 invalidated, 4 dynamic, 5 main memory, 6 ineligible key */
++static void ld_vcn_note(int reason)
++{
++    g_ld_vcn.miss++;
++    switch (reason) { case 1: g_ld_vcn.first++; break; case 2: g_ld_vcn.second++; break; case 3: g_ld_vcn.inval++; break;
++                      case 4: g_ld_vcn.dyn++; break; case 5: g_ld_vcn.mainm++; break; default: g_ld_vcn.inel++; }
++    const u64 nv = dc.n_verts;
++    g_ld_vcn.verts += nv;
++    u64 dsig = 1469598103934665603ull;
++    int any1 = 0, fresh = 0, recent = 0;
++    if (dc.n_idx) {
++        rsx_dsp_index_array ia; rsx_dsp_get_index_array(&g.rsx, &ia);
++        const u32 esz = ia.is_u32 ? 4u : 2u;
++        u64 lo = ~0ull, hi = 0;
++        for (u32 i = 0; i < dc.n_idx; i++) {
++            if (!dc.idx[i].count) continue;
++            const u64 a = (u64)ia.offset + (u64)dc.idx[i].first * esz, b = a + (u64)dc.idx[i].count * esz;
++            if (a < lo) lo = a;
++            if (b > hi) hi = b;
++        }
++        if (hi > lo && hi <= 0x100000000ull && ia.location <= 1u) {
++            u32 w[3] = { ia.location, (u32)lo, (u32)(hi - lo) };
++            dsig = fnv1a(w, sizeof w, dsig);
++            if (ia.location == 1u) any1 = 1;
++            if (ld_vcn_written(ia.location, (u32)lo, (u32)(hi - lo), &recent)) fresh = 1;
++        }
++    }
++    for (u32 slot = 0; slot < dc.layout.count; slot++) {
++        const rsx_vertex_fetch_attr* f = &dc.fetch_plan.attr[dc.layout.attrs[slot]];
++        if (!f->desc.type || !f->desc.size || f->desc.location > 1u) continue;
++        const u64 a = (u64)dc.fetch_plan.base_offset + f->desc.offset + (u64)f->stable_first * f->stride;
++        const u64 b = (u64)dc.fetch_plan.base_offset + f->desc.offset + (u64)f->stable_last * f->stride + f->elem_size;
++        if (!f->stable_base || b > 0x100000000ull || b <= a) continue;
++        u32 w[6] = { f->desc.location, (u32)a, (u32)(b - a), f->desc.type, f->desc.size, f->stride };
++        const u64 asig = fnv1a(w, sizeof w, 1469598103934665603ull);
++        dsig = fnv1a(w, sizeof w, dsig);
++        if (f->desc.location == 1u) any1 = 1;
++        if (ld_vcn_written(f->desc.location, (u32)a, (u32)(b - a), &recent)) fresh = 1;
++        g_ld_vcn.spans++;
++        const int r = ld_vcn_seen(g_ld_vcn_asig, asig);
++        if (r == 1) { g_ld_vcn.span_rep++; g_ld_vcn.verts_rep += nv; }
++        else if (r == 2) { g_ld_vcn.span_prev++; g_ld_vcn.verts_prev += nv; }
++        const u32 rk = (f->desc.location << 31) | ((u32)a >> 20);   /* 1 MB region */
++        u32 j = 0;
++        while (j < 64u && g_ld_vcn_reg[j].verts && g_ld_vcn_reg[j].key != rk) j++;
++        if (j < 64u) { g_ld_vcn_reg[j].key = rk; g_ld_vcn_reg[j].verts += nv; }
++    }
++    if (any1) g_ld_vcn.loc1++;
++    if (fresh) g_ld_vcn.fresh++; else if (recent) g_ld_vcn.fresh2++; else g_ld_vcn.stale++;
++    const int r = ld_vcn_seen(g_ld_vcn_dsig, dsig);
++    if (r == 1) g_ld_vcn.sig_rep++; else if (r == 2) g_ld_vcn.sig_prev++;
++}
++static void ld_vcn_print(void)
++{
++    if (ld_vcn_on() != 1) return;
++    char top[256]; int k = 0;
++    for (int t = 0; t < 6; t++) {
++        int best = -1;
++        for (int j = 0; j < 64; j++)
++            if (g_ld_vcn_reg[j].verts && (best < 0 || g_ld_vcn_reg[j].verts > g_ld_vcn_reg[best].verts)) best = j;
++        if (best < 0) break;
++        k += snprintf(top + k, sizeof top - (size_t)k, " %u:0x%03XMB=%llu", g_ld_vcn_reg[best].key >> 31,
++                      g_ld_vcn_reg[best].key & 0xFFFu, (unsigned long long)g_ld_vcn_reg[best].verts);
++        g_ld_vcn_reg[best].verts = 0;
++    }
++    fprintf(stderr, "[vc-new] frame=%u miss=%llu first=%llu second=%llu inval=%llu dyn=%llu main=%llu inel=%llu loc1=%llu"
++                    " fresh=%llu fresh2=%llu stale=%llu sig-rep=%llu sig-prev=%llu spans=%llu span-rep=%llu span-prev=%llu"
++                    " verts=%llu verts-rep=%llu verts-prev=%llu |%s\n", g_ld_frames,
++            (unsigned long long)g_ld_vcn.miss, (unsigned long long)g_ld_vcn.first, (unsigned long long)g_ld_vcn.second,
++            (unsigned long long)g_ld_vcn.inval, (unsigned long long)g_ld_vcn.dyn, (unsigned long long)g_ld_vcn.mainm,
++            (unsigned long long)g_ld_vcn.inel, (unsigned long long)g_ld_vcn.loc1, (unsigned long long)g_ld_vcn.fresh,
++            (unsigned long long)g_ld_vcn.fresh2, (unsigned long long)g_ld_vcn.stale,
++            (unsigned long long)g_ld_vcn.sig_rep, (unsigned long long)g_ld_vcn.sig_prev,
++            (unsigned long long)g_ld_vcn.spans, (unsigned long long)g_ld_vcn.span_rep,
++            (unsigned long long)g_ld_vcn.span_prev, (unsigned long long)g_ld_vcn.verts,
++            (unsigned long long)g_ld_vcn.verts_rep, (unsigned long long)g_ld_vcn.verts_prev, top);
++    memset(&g_ld_vcn, 0, sizeof g_ld_vcn);
++    memset(g_ld_vcn_reg, 0, sizeof g_ld_vcn_reg);
++}
++
+ static const float* dc_vertex_attr(
+     u32 vertex, u32 attr, float fallback[4])
+ {
+@@ -14297,9 +14427,16 @@
+     LDW_ADD(RSX_PERF_W_D_PRE_T, pre_t0);
+     LDW_T0(vtx_t0);
+     ld_vc_entry* vc_hit = NULL; ld_vc_entry* vc_fill = NULL; int vc_verify = 0;   /* patch 2047 */
++    int vcn_reason = 0;   /* KZ2 patch 6078 (LD_VC_NEW diagnostic) */
+     if (ld_vertex_compact_payload() && ld_vc_mode() && !ld_vtx_gpu_on()) {   /* 2076: no payload to cache */
+         LDW_T0(vc_t0);   /* patch 6075 */
++        const u64 vcn0[5] = { g_vc_st.seen, g_vc_st.inval_tracked + g_vc_st.inval_sample, g_vc_st.dyn_skip,
++                              g_vc_st.inel_main, g_vc_st.inel_inline + g_vc_st.inel_other };
+         vc_hit = ld_vc_lookup(prim, &used_layout, &vc_fill);
++        if (ld_vcn_on() && !vc_hit)
++            vcn_reason = g_vc_st.seen != vcn0[0] ? 1 : g_vc_st.inval_tracked + g_vc_st.inval_sample != vcn0[1] ? 3
++                       : g_vc_st.dyn_skip != vcn0[2] ? 4 : g_vc_st.inel_main != vcn0[3] ? 5
++                       : g_vc_st.inel_inline + g_vc_st.inel_other != vcn0[4] ? 6 : 2;
+         LDW_ADD(RSX_PERF_W_VTX_VC_T, vc_t0);
+         if (vc_hit && ld_vc_mode() == 2) { vc_fill = vc_hit; vc_hit = NULL; vc_verify = 1; }
+     }
+@@ -14387,6 +14524,7 @@
+         vg_block_off = (u32)((((u64)g.vb_used + draw_payload_bytes + 255u) & ~(u64)255u) - g.vb_used);
+         rsx_vg_write_block(&dc.vg_d, g.vb_mapped + g.vb_used + vg_block_off);
+     }
++    if (vcn_reason && dc.fetch_ok) ld_vcn_note(vcn_reason);   /* KZ2 patch 6078 */
+     LDW_T0(vib_t0);   /* patch 6075: the index half */
+     if (vc_hit && rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_VTX_HIT_BYTES, (long long)draw_payload_bytes);
+     if (vc_hit) {   /* patch 2047 */

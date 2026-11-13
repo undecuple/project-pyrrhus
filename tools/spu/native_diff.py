@@ -51,6 +51,11 @@ def image_bin(name, build):
 def build(name, bdir):
     os.makedirs(bdir, exist_ok=True)
     exe = os.path.join(bdir, "harness_" + name)
+    if os.path.realpath(NSRC) != os.path.realpath(os.path.join(ROOT, "port/kz2/spu")):
+        # a KZ2_NATIVE_SRC build (a mutation check) gets its own binary; it used to overwrite the shared one,
+        # and being newer than the real sources it was reused by the next normal run
+        import hashlib
+        exe += "_" + hashlib.sha1(os.path.realpath(NSRC).encode()).hexdigest()[:8]
     lift = os.path.join(SPU, "lift", name)
     srcs = [os.path.join(ROOT, "tools/spu/native_diff_harness.c"), os.path.join(lift, "spu_recomp.c"),
             os.path.join(PT, "runtime/spu/spu_drain.c"), os.path.join(PT, "runtime/spu/spu_interp.c"),

@@ -258,6 +258,21 @@ def debase_includes(sub):
                 open(p, "w").write(n)
 
 
+def gate_cont_seeds(name):
+    """An earlier change: the "continue at" addresses of this image's rows in re/spu/native_gates.tsv (column 7) as function
+    seeds, so a native block may end where the lifted code has no branch target (VertexJob 0x6918 -> 0x6C1C): the
+    lifter splits a function there and the gate line can hop to it."""
+    tsv = os.path.join(ROOT, "re", "spu", "native_gates.tsv")
+    out = []
+    if os.path.exists(tsv):
+        for line in open(tsv):
+            f = line.rstrip("\n").split("\t")
+            if line.startswith("#") or len(f) < 7 or f[0] != name or f[6].strip() in ("", "pc"):
+                continue
+            out.append(int(f[6].strip(), 16))
+    return out
+
+
 def native_gates(sub, name):
     """Insert the native gates of re/spu/native_gates.tsv into this image's lifted functions. The gate
     is the first statement of the function: `if (g_kz2_native_gate[slot] && g_kz2_native_gate[slot](ctx))
@@ -445,6 +460,7 @@ def main():
         jend = jce or base + len(raw)
         seeds += table_targets([(raw, base)], (raw, base), jend) + ila_targets((raw, base), jend)
         seeds += keep_seeds(name, cov.get(name, []), base, base + len(raw), jce, dropped)
+        seeds += gate_cont_seeds(name)
         seeds = sorted({s for s in seeds if base <= s < base + len(raw)})
         meta = dict(meta, size=len(raw), base=base)
         extra = ["--extra-funcs", ",".join(hex(s) for s in seeds)]

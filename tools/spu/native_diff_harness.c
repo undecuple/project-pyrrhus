@@ -51,7 +51,9 @@ static void arm(int on)
 
 /* ---- the native side's globals (kz2_native_jobs.c / the generated spu_workloads.c in the game) ---- */
 int (*g_kz2_native_gate[KZ2_NATIVE_SLOTS])(spu_context*);
-volatile long g_kz2_native_calls[KZ2_NATIVE_SLOTS], g_kz2_native_fallback[KZ2_NATIVE_SLOTS];
+kz2_native_ctr g_kz2_native_ctr[KZ2_NATIVE_SLOTS][KZ2_NATIVE_SHARDS];
+long kz2_native_calls_sum(int slot) { (void)slot; return 0; }
+long kz2_native_fallback_sum(int slot) { (void)slot; return 0; }
 void kz2_native_count_print(int slot, long calls) { (void)slot; (void)calls; }
 
 /* ---- the contract the lifted code and spu_drain.c expect from the runtime (Project Helghast job_diff_harness.c) ---- */
@@ -642,6 +644,51 @@ static void synth_bss(spu_context* c, uint64_t seed)
  * above the job's code and shift table (>= 0x8800); every alignment pair of source and destination, lengths 0-4 KB
  * (a quarter under 48 bytes: the single-quadword merges), sources anywhere in the image or data; 1 in 16 overlapping
  * ranges and 1 in 32 near the end of the local store (both declined: a fallback), 1 in 4 with unsplatted lanes. */
+/* Particles.VertexJob 0x6918 (slot 85, an earlier change): the main loop's corner block. r89 a position, r42 and r39-r41 the
+ * corners near it (sometimes equal to it: a zero-length direction, the exponent-255 path of frsqest/fi), r90 the
+ * texture coordinates, r82 the centre, r93 the emitter state (word 2 of [r93 + 0x9E0] the blend factor), r1 the frame;
+ * at times r1 not 16-aligned (cwd's insert position moves) or the state quadword inside the frame's normal stores (the
+ * native code keeps the load/store order). A quarter of the trials have odd words (rfloat's dirty mode). */
+static uint32_t vjn_sf(float lo, float hi)
+{
+    if (g_dirty && rnd() % 8 == 0) return rfloat();
+    const float f = lo + (hi - lo) * (float)(rnd() % 1000001) / 1000000.0f;
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+static void synth_vjnorm(spu_context* c, uint64_t seed)
+{
+    base_state(c, seed);
+    g_dirty = rnd() % 4 == 0 && !(getenv("HARNESS_DIRTY") && *getenv("HARNESS_DIRTY") == '0');
+    const uint32_t sp = 0x3F000u + (rnd() % 8 == 0 ? 4 * (rnd() % 4) : 0);
+    setreg(c, 1, sp);
+    if (rnd() % 8 == 0) c->gpr[1]._u32[1] = rnd();
+    for (int k = 0; k < 4; k++) {
+        c->gpr[89]._u32[k] = vjn_sf(-500.0f, 500.0f);
+        c->gpr[82]._u32[k] = vjn_sf(-500.0f, 500.0f);
+        c->gpr[90]._u32[k] = vjn_sf(0.0f, 1.0f);
+    }
+    const int corners[4] = {42, 39, 40, 41};
+    for (int i = 0; i < 4; i++) {
+        const int same = rnd() % 6 == 0;
+        for (int k = 0; k < 4; k++) {
+            float p, d;
+            memcpy(&p, &c->gpr[89]._u32[k], 4);
+            d = (float)((int)(rnd() % 20001) - 10000) / 1000.0f;
+            const float q = p + d;
+            uint32_t u;
+            memcpy(&u, &q, 4);
+            c->gpr[corners[i]]._u32[k] = same ? c->gpr[89]._u32[k] : (g_dirty && rnd() % 8 == 0 ? rfloat() : u);
+        }
+    }
+    uint32_t st = 0x10000u + 16 * (rnd() % 0x2000);
+    if (rnd() % 8 == 0) st = (sp & ~15u) + 0x80u + 16 * (rnd() % 8);   /* inside the frame's 0x80..0xF0 */
+    setreg(c, 93, st - 0x9E0u);
+    be32w(c->ls + ((st + 8) & SPU_LS_MASK), vjn_sf(0.0f, 1.0f));
+    be32w(c->ls + 0x1B980 + 4 * (rnd() % 4), rnd() % 2 ? 0 : rnd());
+}
+
 static void synth_vjcopy(spu_context* c, uint64_t seed)
 {
     base_state(c, seed);
@@ -1219,6 +1266,7 @@ static const struct {
     {"bss_clear", synth_bss},         {"vj_memcpy", synth_vjcopy},
     {"vj_vertex", synth_vjvert},     {"sk_skin", synth_skin},
     {"vj_light", synth_vjvert},   /* slot 81, the emitter with the SSE relight */
+    {"vj_norm", synth_vjnorm},    /* slot 85, the main loop's corner block (a "continue at" gate) */
     {"mopp_vm", synth_mopp},      /* slot 82, the MOPP ray machine's loop head (a computed continuation) */
     {"sk_skin2", synth_skin2},    /* slot 83 */
     {"sk_unpack", synth_skinunpack},   /* slot 84 */

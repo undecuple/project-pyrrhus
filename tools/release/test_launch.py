@@ -808,6 +808,32 @@ def main():
         check(rc == 0 and len(ran) == 1 and "version.ini: could not write" in ll,
               f"9a an unwritable version.ini: logged, the game starts ({rc}, {len(ran)})")
         os.rmdir(os.path.join(root, la.VERSION_INI))
+        # 9c. online settings (D56; test_online_ini.py has the cases): the game's decision is logged
+        # at each start; both methods enabled is said once and the game still starts (offline); no online variable set
+        write(os.path.join(root, "shared", "repsn.ini"), "[repsn]\nenabled = 1\nserver = 127.0.0.1\n")
+        write(os.path.join(root, "shared", "community.ini"), "[community]\nenabled = 1\n")
+        ran, ui = [], FakeUI([True])
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: ran.append(k.get("env", {})) or 0, today=day, environ=env)
+        with open(os.path.join(root, "logs", "launcher.log"), encoding="utf-8") as f:
+            ll = f.read()
+        check(rc == 0 and len(ran) == 1 and "online: refused" in ll and any("both re-psn and a community" in t for t in ui.infos),
+              f"9c both methods enabled: said, logged, the game starts ({rc}, {ui.infos[-1:]})")
+        check(not any(k in ran[0] for k in ("PSNR_SERVER", "KZ3_ONLINE", "PS3_NET_ONLINE", "PS3_NP_ONLINE_ID")),
+              "9c the launcher sets no online variable")
+        write(os.path.join(root, "shared", "community.ini"), "[community]\nenabled = 0\n")
+        with open(os.path.join(root, "logs", "launcher.log"), encoding="utf-8") as f:
+            seen = len(f.read())
+        ui, ran = FakeUI([True]), []
+        rc = la.main(["--root", root], ui=ui, run=lambda a, **k: ran.append(a) or 0, today=day, environ=env)
+        with open(os.path.join(root, "logs", "launcher.log"), encoding="utf-8") as f:
+            new = f.read()[seen:]
+        online = [x for x in new.splitlines() if "online: " in x]
+        check(rc == 0 and len(ran) == 1 and len(online) == 1 and online[0].rstrip().endswith("online: repsn")
+              and la.oi.REFUSED_TEXT not in ui.infos,
+              f"9c one method: this start logs exactly 'online: repsn', shows no refusal ({online}, {ui.infos[-1:]})")
+        for n in ("repsn.ini", "community.ini"):
+            os.remove(os.path.join(root, "shared", n))
+        os.rmdir(os.path.join(root, "shared"))
 
         # 9b. "Update this installation": setup + .sha256 from the project's release downloads only, hash checked,
         # setup started with /DIR=<root> and no game; a bad hash or a foreign URL changes nothing and the game starts

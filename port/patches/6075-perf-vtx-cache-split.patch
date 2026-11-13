@@ -1,0 +1,73 @@
+KZ2 patch 6075 (diagnostic): the rest of the vertex split in [perf-vtx] (RSX_PERF=1 with
+RSX_PERF_PROF=A,B only; no cost otherwise beyond patch 2029's one flag load per timer).
+
+An earlier change's heavy view: vtx 208 ms/s = refs 30.8 + remap 14.1 + fetch 59.3 + copy 64.5 + ~39 no timer covered. The
+[perf-vtx] line now ends `| vc X ib Y hit-payload Z MB`: vc = patch 2047's cache lookup (key build, slot or set search,
+the source checks and the full byte compare), inside vtx; ib = the index half of the copy timer (a hit's cached
+indices / a miss's topology rebuild and cache fill), inside copy, so copy - ib = the payload memcpy into the upload
+ring; hit-payload = payload bytes copied by cache hits (what a GPU-resident cache would no longer copy).
+
+Written for Project Pyrrhus (KZ2 runtime); no outside code.
+
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -273,6 +273,9 @@
+      * guest bytes written */
+     RSX_PERF_W_NV3089_N, RSX_PERF_W_NV3089_T, RSX_PERF_W_NV3089_GPU_T, RSX_PERF_W_NV3089_COPY_T,
+     RSX_PERF_W_NV3089_ROWS_N, RSX_PERF_W_NV3089_BYTES,
++    /* patch 6075: the rest of the vertex split: payload-cache lookup (key, set search, source checks), the index
++     * half of the copy (a hit's cached indices / a miss's topology and cache fill), payload bytes copied by hits */
++    RSX_PERF_W_VTX_VC_T, RSX_PERF_W_VTX_IB_T, RSX_PERF_W_VTX_HIT_BYTES,
+     RSX_PERF_COUNT
+ };
+ extern volatile int g_rsx_perf_walk_on;    /* patch 6068: the flag itself, set by cellGcmSys.c's [perf] ticker */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -14121,7 +14121,9 @@
+     LDW_T0(vtx_t0);
+     ld_vc_entry* vc_hit = NULL; ld_vc_entry* vc_fill = NULL; int vc_verify = 0;   /* patch 2047 */
+     if (ld_vertex_compact_payload() && ld_vc_mode() && !ld_vtx_gpu_on()) {   /* 2076: no payload to cache */
++        LDW_T0(vc_t0);   /* patch 6075 */
+         vc_hit = ld_vc_lookup(prim, &used_layout, &vc_fill);
++        LDW_ADD(RSX_PERF_W_VTX_VC_T, vc_t0);
+         if (vc_hit && ld_vc_mode() == 2) { vc_fill = vc_hit; vc_hit = NULL; vc_verify = 1; }
+     }
+     if (vc_hit) {   /* patch 2047: replay the bytes uploaded when the entry was filled */
+@@ -14208,6 +14210,8 @@
+         vg_block_off = (u32)((((u64)g.vb_used + draw_payload_bytes + 255u) & ~(u64)255u) - g.vb_used);
+         rsx_vg_write_block(&dc.vg_d, g.vb_mapped + g.vb_used + vg_block_off);
+     }
++    LDW_T0(vib_t0);   /* patch 6075: the index half */
++    if (vc_hit && rsx_perf_walk_on()) rsx_perf_add(RSX_PERF_W_VTX_HIT_BYTES, (long long)draw_payload_bytes);
+     if (vc_hit) {   /* patch 2047 */
+         if (indexed && draw_ib_bytes)
+             memcpy((u8*)g.ib_mapped + g.ib_used, vc_hit->data + vc_hit->vb_bytes, (size_t)draw_ib_bytes);
+@@ -14217,6 +14221,7 @@
+     else if (indexed)
+         write_topology_indices(
+             prim, (u32*)((u8*)g.ib_mapped + g.ib_used));
++    LDW_ADD(RSX_PERF_W_VTX_IB_T, vib_t0);   /* patch 6075 */
+     LDW_ADD(RSX_PERF_W_VTX_T, vcopy_t0);
+     LDW_ADD(RSX_PERF_W_VTX_COPY_T, vcopy_t0);   /* patch 2033 */
+ 
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2521,10 +2521,13 @@
+             }
+             if (d[RSX_PERF_W_ON])   /* patch 2033: the vertex-fetch split, ms in the last period */
+                 fprintf(stderr,
+-                    "[perf-vtx] t=%.0fs refs %.1fms remap %.1f fetch %.1f copy %.1f | refs %lld verts %lld payload %.1fMB\n",
++                    "[perf-vtx] t=%.0fs refs %.1fms remap %.1f fetch %.1f copy %.1f | refs %lld verts %lld payload %.1fMB"
++                    " | vc %.1f ib %.1f hit-payload %.1fMB\n",   /* patch 6075 */
+                     tnow, d[RSX_PERF_W_VTX_REFS_T] * tk, d[RSX_PERF_W_VTX_REMAP_T] * tk,
+                     d[RSX_PERF_W_VTX_FETCH_T] * tk, d[RSX_PERF_W_VTX_COPY_T] * tk,
+-                    d[RSX_PERF_W_VTX_REF_N], d[RSX_PERF_W_VTX_N], (double)d[RSX_PERF_W_VTX_BYTES] / 1048576.0);
++                    d[RSX_PERF_W_VTX_REF_N], d[RSX_PERF_W_VTX_N], (double)d[RSX_PERF_W_VTX_BYTES] / 1048576.0,
++                    d[RSX_PERF_W_VTX_VC_T] * tk, d[RSX_PERF_W_VTX_IB_T] * tk,
++                    (double)d[RSX_PERF_W_VTX_HIT_BYTES] / 1048576.0);
+             { const int was = s_perf_walk_on;
+               s_perf_walk_on = s_perf_prof_a >= 0 && tnow >= s_perf_prof_a && tnow < s_perf_prof_b;
+               if (was && !s_perf_walk_on) rsx_live_draw_perf_dump(); }   /* patch 2045 */

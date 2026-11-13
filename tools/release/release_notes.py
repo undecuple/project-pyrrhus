@@ -20,6 +20,7 @@ Standard library only; reads CHANGELOG.md in either layout (public/CHANGELOG.md 
 repository).
 """
 import argparse
+import datetime
 import pathlib
 import re
 import sys
@@ -89,7 +90,13 @@ def carried(version, es):
     return out
 
 
-def notes(version, entry, first=False):
+def next_thursday(date):
+    """D55: the first Thursday strictly after date (YYYY-MM-DD; a Thursday release names the one a week later)."""
+    d = datetime.date.fromisoformat(date)
+    return d + datetime.timedelta(days=(3 - d.weekday()) % 7 or 7)
+
+
+def notes(version, entry, first=False, today=None):
     blob = f"{REPO}/blob/v{version}"
     new = [sentence(t, blob) for s, t in entry["items"] if s in NEW_SECTIONS or not s]
     fixed = [sentence(t, blob) for s, t in entry["items"] if s == "Fixed"]
@@ -116,6 +123,8 @@ def notes(version, entry, first=False):
         f"or downloaded. What each must contain: [docs/GETTING-FILES.md]({blob}/docs/GETTING-FILES.md). SHA-256 sums: "
         "SHA256SUMS (and the .sha256 files). What goes online: "
         f"[docs/PRIVACY.md]({blob}/docs/PRIVACY.md).",
+        # D55: one planned release a week, on Thursday; a dateless entry (--preview of [Unreleased]) counts from today
+        f"Next planned release: Thursday {next_thursday(entry.get('date') or today or datetime.date.today().isoformat())}.",
     ]) + "\n"
 
 

@@ -1,0 +1,129 @@
+KZ2 patch 2126: the pipeline template finder scans adjacent regions as one run, so a program
+that crosses a region edge is found.
+
+Patch 2071's scout (ld_pt_scan_pass) called rsx_pt_scan once per VirtualQuery region, so ld_pt_hit was told only the
+bytes up to the end of that region (`remaining`): a program whose first 16 bytes lie in one region and whose rest
+lies in the next adjacent committed region failed the hit's size check (VP: remaining < size; FP: the size scan stops
+at the region end) and was never found. jsp found the same class of loss at the end of their finder's chunks (their
+`off + 16 <= scan_len` skipped programs starting in a chunk's last 12 bytes; KZ2's step is 16 over page-aligned
+regions, so its probes reach the last 16-byte slot, and an earlier change measured every found program at 0 mod 16).
+1. rsx_pso_template.h: rsx_pt_run / rsx_pt_run_add: extend the pending run with a region that starts where it ends,
+   else scan the pending run (remaining = bytes to the end of the run) and start a new one; len 0 (a gap) flushes.
+   rsx_pt_scan_regions: the scout's pass loop, moved here from ld_pt_scan_pass so the host test runs it: readable
+   regions go through rsx_pt_run_add, any other region ends the run, the pass ends with a flush (not after a stop).
+   Bytes counted as before. RSX_PT_RUN_SPLIT (test only) restores the per-region scan for the negative control.
+2. rsx_live_draw.c: ld_pt_query (VirtualQuery: committed, readable, not a guard page) and ld_pt_scan_pass calling
+   rsx_pt_scan_regions over the guest reservation [base + 64 KB, base + 3.5 GB).
+Not measured in the game yet (needs a cold run; how many programs cross a region edge in KZ2 is unknown, maybe 0:
+the guest reservation is one allocation, so adjacent committed pages with the same protection already form one region).
+Host test: tools/runtime/test_pt_runs.sh (programs at region ends, across an edge, across a gap, at the end of
+memory, through rsx_pt_scan_regions; negative control -DRSX_PT_RUN_SPLIT, the per-region scan, misses the crossing
+one and only it, rc and output text checked).
+
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -8689,6 +8689,19 @@
+     }
+ }
+ 
++/* KZ2 patch 2126: the region holding p, for rsx_pt_scan_regions (readable = committed, readable, not a guard page). */
++static int ld_pt_query(void* quser, const uint8_t* p, rsx_pt_region* r)
++{
++    MEMORY_BASIC_INFORMATION mi;
++    (void)quser;
++    if (!VirtualQuery(p, &mi, sizeof mi)) return 0;
++    r->base = (const uint8_t*)mi.BaseAddress;
++    r->size = mi.RegionSize;
++    r->readable = mi.State == MEM_COMMIT &&
++                  (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY)) &&
++                  !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS));
++    return 1;
++}
+ /* One pass over the committed pages of the guest's address space (host base = the VirtualAlloc'd reservation,
+  * found through any guest pointer). Returns the bytes scanned. */
+ static size_t ld_pt_scan_pass(const rsx_pt_qtab* qt)
+@@ -8699,24 +8712,8 @@
+     MEMORY_BASIC_INFORMATION mi;
+     if (!VirtualQuery(any, &mi, sizeof mi) || !mi.AllocationBase) return 0;
+     const u8* base = (const u8*)mi.AllocationBase;
+-    size_t total = 0;
+-    const u8* p = base + 0x10000u;
+-    const u8* end = base + 0xE0000000ull;
+-    while (p < end && !g_pt.stop) {
+-        if (!VirtualQuery(p, &mi, sizeof mi)) break;
+-        const u8* rb = (const u8*)mi.BaseAddress;
+-        size_t rs = mi.RegionSize;
+-        if (rb + rs > end) rs = (size_t)(end - rb);
+-        if (mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+-                                                      PAGE_WRITECOPY)) && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+-            const u8* s = rb < p ? p : rb;
+-            const size_t len = (size_t)((rb + rs) - s) & ~(size_t)15;
+-            total += len;
+-            rsx_pt_scan(s, len, qt, ld_pt_hit, NULL);
+-        }
+-        p = rb + rs;
+-    }
+-    return total;
++    /* KZ2 patch 2126: adjacent regions are scanned as one run (rsx_pt_scan_regions, host-tested) */
++    return rsx_pt_scan_regions(base + 0x10000u, base + 0xE0000000ull, ld_pt_query, NULL, &g_pt.stop, qt, ld_pt_hit, NULL);
+ }
+ 
+ static DWORD WINAPI ld_pt_scout(LPVOID arg)
+diff --git a/libs/video/rsx_pso_template.h b/libs/video/rsx_pso_template.h
+--- a/libs/video/rsx_pso_template.h
++++ b/libs/video/rsx_pso_template.h
+@@ -187,4 +187,53 @@
+     return blocks;
+ }
+ 
++/* KZ2 patch 2126: the scout scanned each VirtualQuery region on its own, so the hit got only the
++ * bytes to the end of that region: a program whose first 16 bytes are in one region and whose rest is in the next
++ * (adjacent committed memory) failed the hit's size check and was never found. Regions are now joined into runs:
++ * rsx_pt_run_add(run, b, len, ...) extends the pending run when [b, b+len) starts where it ends, else scans the
++ * pending run (to its end) and starts a new one; len 0 (a gap: an uncommitted or unreadable region, or the end of the
++ * pass) scans the pending run. Returns the blocks scanned. Host test: tools/runtime/test_pt_runs.sh. */
++typedef struct { const uint8_t* base; size_t len; } rsx_pt_run;
++static inline size_t rsx_pt_run_add(rsx_pt_run* run, const uint8_t* b, size_t len, const rsx_pt_qtab* t,
++                                    rsx_pt_hit_fn hit, void* user)
++{
++#ifndef RSX_PT_RUN_SPLIT   /* test-only negative control: every region alone, as before 2126 */
++    if (run->len && len && run->base + run->len == b) { run->len += len; return 0; }
++#endif
++    size_t blocks = 0;
++    if (run->len) blocks = rsx_pt_scan(run->base, run->len & ~(size_t)15, t, hit, user);
++    run->base = len ? b : NULL; run->len = len;
++    return blocks;
++}
++
++/* One scout pass over [p, end): query(quser, p, &r) describes the region holding p (r.base <= p, r.size > 0,
++ * r.readable = committed and readable) or returns 0 to end the pass. Readable regions go through rsx_pt_run_add, any
++ * other one ends the run; the pass ends with a flush unless *stop was set. Returns the bytes scanned (each readable
++ * piece rounded down to 16). ld_pt_scan_pass calls it with VirtualQuery; the host test with a region table. */
++typedef struct { const uint8_t* base; size_t size; int readable; } rsx_pt_region;
++typedef int (*rsx_pt_query_fn)(void* quser, const uint8_t* p, rsx_pt_region* r);
++static inline size_t rsx_pt_scan_regions(const uint8_t* p, const uint8_t* end, rsx_pt_query_fn query, void* quser,
++                                         const volatile int* stop, const rsx_pt_qtab* t, rsx_pt_hit_fn hit, void* user)
++{
++    size_t total = 0;
++    rsx_pt_run run = { NULL, 0 };
++    while (p < end && !*stop) {
++        rsx_pt_region r;
++        if (!query(quser, p, &r) || !r.size) break;
++        size_t rs = r.size;
++        if (r.base + rs > end) rs = (size_t)(end - r.base);
++        if (r.readable) {
++            const uint8_t* s = r.base < p ? p : r.base;
++            const size_t len = (size_t)((r.base + rs) - s);
++            total += len & ~(size_t)15;
++            rsx_pt_run_add(&run, s, len, t, hit, user);
++        } else {
++            rsx_pt_run_add(&run, NULL, 0, t, hit, user);   /* a gap ends the run */
++        }
++        p = r.base + rs;
++    }
++    if (!*stop) rsx_pt_run_add(&run, NULL, 0, t, hit, user);   /* the last run */
++    return total;
++}
++
+ #endif /* RSX_PSO_TEMPLATE_H */

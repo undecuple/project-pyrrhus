@@ -696,6 +696,239 @@ static int vj_vertex_50F8(spu_context* ctx) { return vj_vertex_impl(ctx, 0); }  
 /* slot 81: the same emitter with the relight in SSE */
 static int vj_vertex_light(spu_context* ctx) { return vj_vertex_impl(ctx, 1); }   // @0x000050F8 (job_00cd7180)
 
+/* the main loop's block @0x6918-0x6C1C (slot 85, KZ2_NATIVE_JOB_VJNORM, a "continue at" gate to 0x6C1C;
+ * off by default). Entered from 0x6614 (brhnz r3) once per particle quad: r89 is the particle's position, r42 and
+ * r39-r41 four corner positions, r90 the quad's four texture coordinates, r82 the centre, r93 the emitter state
+ * (word 2 of [r93 + 0x9E0] a blend factor), r1 the stack frame. It
+ *   - writes the four corner (u, v, 0, 0) quadwords at r1 + 0xC0..0xF0: (t0, t1), (t2, t1), (t2, t3), (t0, t3), each
+ *     word put in with cwd + shufb into the old quadword and words 2, 3 cleared the same way;
+ *   - normalises the four corner directions (corner - position: squared length summed in word 0 by the rotations at LS
+ *     0x8400/0x8410, frsqest + fi + one Newton step with 0.5 and 1.0), masks word 3 (fsmbi 0xFFF0), subtracts the
+ *     centre, blends with the factor back towards it (fma (d - c) f + c), normalises again and stores the four normals
+ *     at r1 + 0x80..0xB0;
+ *   - and r23 = cgti([LS 0x1B980], 0), which the code after the block tests.
+ * The native code runs the block's 190 instructions in program order on host registers (native_simd.h's wrappers for
+ * the float operations, the runtime's own helpers for frsqest, fi, the shuffles, cwd, fsmbi), keeps the loads and
+ * stores in their order (r1 + 0x80..0xF0 and r93 + 0x9E0 are not assumed apart) and writes back the final value of
+ * every one of the 84 registers the block writes, so the state at 0x6C1C is the lifted one with no liveness proof.
+ * The lifted function was 6 800 x86 instructions (every operand through ctx->gpr); spu 33's profile put it at 7.8 % of
+ * VertexJob's samples. */
+#define V(n) ctx->gpr[n]
+#define FM(a, b) U(fm_(F(a), F(b)))
+#define FA(a, b) U(fa_(F(a), F(b)))
+#define FS(a, b) U(fs_(F(a), F(b)))
+#define FMA(a, b, c) U(fma_(F(a), F(b), F(c)))
+#define FNMS(a, b, c) U(fnms_(F(a), F(b), F(c)))
+static int vj_norm_6918(spu_context* ctx)   // @0x00006918 (job_00cd7180), continues at 0x6C1C
+{
+    uint8_t* const ls = ctx->ls;
+    const u128 r1 = V(1), r39 = V(39), r40 = V(40), r41 = V(41), r42 = V(42), r82 = V(82), r89 = V(89), r93 = V(93);
+    const uint32_t sp = r1._u32[0], st = r93._u32[0] + 0x9E0u;
+    u128 r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25,
+        r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52,
+        r53, r54, r55, r56, r57, r58, r59, r60, r61, r62, r63, r64, r65, r66, r67, r68, r69, r70, r71, r72, r73, r74, r75,
+        r76, r77, r78, r79, r80, r81, r83, r84, r85, r86, r87, r88, r90 = V(90), r92;
+    r14 = FS(r42, r89);                         // @0x6918
+    r26 = ldq(ls, 0x8400);
+    r19 = spu_ila(0x10203);
+    r24 = ldq(ls, 0x8410);
+    r21 = spu_ilhu(0x3F80);
+    r47 = spu_rotqbyi(r90, 8);
+    r22 = spu_ilhu(0x3F00);
+    r73 = ldq(ls, sp + 0xC0);
+    r50 = spu_ori(r90, 0);
+    r23 = ldq(ls, sp + 0xD0);
+    r70 = ldq(ls, sp + 0xE0);
+    r5 = FM(r14, r14);
+    r20 = ldq(ls, sp + 0xF0);
+    r4 = spu_cwd(r1, 0);
+    r87 = spu_shufb(r90, r90, r19);
+    r86 = spu_shufb(r47, r47, r19);
+    r48 = spu_rotqbyi(r90, 12);
+    r46 = spu_rotqbyi(r90, 4);
+    r79 = spu_shufb(r5, r5, r26);
+    r18 = spu_shufb(r5, r5, r24);
+    r74 = spu_cwd(r1, 4);
+    r75 = spu_shufb(r87, r20, r4);              // @0x6974
+    r69 = FA(r5, r79);
+    r78 = spu_shufb(r87, r73, r4);
+    r20 = spu_il(0);
+    r7 = spu_shufb(r86, r70, r4);
+    r87 = FS(r39, r89);
+    r77 = spu_shufb(r86, r23, r4);
+    r73 = FS(r40, r89);
+    r76 = spu_shufb(r46, r46, r19);
+    r70 = FS(r41, r89);
+    r72 = spu_shufb(r48, r48, r19);
+    r67 = spu_cwd(r1, 8);
+    r68 = FA(r69, r18);
+    r61 = spu_cwd(r1, 12);
+    r71 = spu_shufb(r76, r77, r74);             // @0x69B4
+    r57 = FM(r87, r87);
+    r3 = spu_shufb(r76, r78, r74);
+    r51 = FM(r73, r73);
+    r90 = spu_shufb(r72, r75, r74);
+    r37 = FM(r70, r70);
+    r66 = spu_shufb(r72, r7, r74);
+    r63 = spu_shufb(r20, r71, r67);
+    r43 = spu_shufb(r68, r68, r19);
+    r64 = spu_shufb(r20, r3, r67);
+    r65 = spu_shufb(r20, r90, r67);
+    r8 = spu_shufb(r20, r66, r67);
+    r15 = spu_frsqest(r43);                     // @0x69E4
+    r56 = spu_shufb(r20, r64, r61);
+    r60 = spu_shufb(r20, r65, r61);
+    r59 = spu_shufb(r20, r63, r61);
+    r34 = spu_fi(r43, r15);
+    r58 = spu_shufb(r20, r8, r61);
+    stq(ls, sp + 0xC0, r56);                    // @0x6A00
+    stq(ls, sp + 0xF0, r60);
+    stq(ls, sp + 0xD0, r59);
+    stq(ls, sp + 0xE0, r58);
+    r45 = ldq(ls, st);                          // @0x6A10
+    r18 = spu_fsmbi(0xFFF0);
+    r44 = FM(r34, r34);
+    r62 = spu_shufb(r57, r57, r26);
+    r35 = FM(r34, r22);
+    r55 = spu_shufb(r57, r57, r24);
+    r52 = spu_shufb(r51, r51, r26);
+    r25 = spu_shufb(r51, r51, r24);
+    r54 = FA(r57, r62);
+    r2 = spu_rotqbyi(r45, 8);
+    r38 = spu_shufb(r37, r37, r26);
+    r33 = FNMS(r43, r44, r21);
+    r10 = spu_shufb(r37, r37, r24);
+    r36 = FA(r51, r52);
+    r49 = ldq(ls, 0x1B980);                     // @0x6A4C
+    r6 = spu_shufb(r2, r2, r19);
+    r9 = FA(r37, r38);
+    r53 = FA(r54, r55);
+    r30 = FMA(r33, r35, r34);
+    r11 = FA(r36, r25);
+    r23 = spu_cgti(r49, 0);
+    r31 = FA(r9, r10);
+    r27 = spu_shufb(r53, r53, r19);
+    r29 = FM(r14, r30);
+    r84 = spu_shufb(r11, r11, r19);
+    r32 = spu_frsqest(r27);
+    r88 = spu_shufb(r31, r31, r19);
+    r17 = spu_frsqest(r84);
+    r13 = spu_and(r29, r18);                    // @0x6A84
+    r85 = spu_fi(r27, r32);
+    r28 = spu_frsqest(r88);
+    r83 = FS(r13, r82);
+    r77 = spu_fi(r84, r17);
+    r76 = spu_fi(r88, r28);
+    r16 = FM(r85, r85);
+    r59 = FMA(r83, r6, r82);
+    r81 = FM(r85, r22);
+    r12 = FM(r77, r77);
+    r86 = FM(r77, r22);
+    r92 = FM(r76, r76);
+    r80 = FNMS(r27, r16, r21);
+    r71 = FM(r59, r59);
+    r78 = FM(r76, r22);
+    r79 = FNMS(r84, r12, r21);
+    r75 = FNMS(r88, r92, r21);
+    r4 = FMA(r80, r81, r85);                    // @0x6AC8
+    r5 = spu_shufb(r71, r71, r26);
+    r68 = spu_shufb(r71, r71, r24);
+    r7 = FMA(r79, r86, r77);
+    r90 = FA(r71, r5);
+    r74 = FM(r87, r4);
+    r3 = FMA(r75, r78, r76);
+    r69 = FM(r73, r7);
+    r67 = FA(r90, r68);
+    r72 = spu_and(r74, r18);
+    r65 = FM(r70, r3);
+    r52 = FS(r72, r82);
+    r66 = spu_and(r69, r18);
+    r14 = FS(r66, r82);                         // @0x6B00
+    r62 = spu_shufb(r67, r67, r19);
+    r15 = spu_and(r65, r18);
+    r79 = FS(r15, r82);
+    r64 = spu_frsqest(r62);
+    r8 = spu_fi(r62, r64);
+    r63 = FM(r8, r8);
+    r61 = FM(r8, r22);
+    r60 = FNMS(r62, r63, r21);
+    r56 = FMA(r60, r61, r8);
+    r58 = FM(r59, r56);
+    r57 = spu_and(r58, r18);
+    stq(ls, sp + 0x80, r57);                    // @0x6B34
+    r55 = ldq(ls, st);
+    r54 = spu_rotqbyi(r55, 8);
+    r53 = spu_shufb(r54, r54, r19);
+    r33 = FMA(r52, r53, r82);
+    r45 = FM(r33, r33);
+    r51 = spu_shufb(r45, r45, r26);
+    r44 = spu_shufb(r45, r45, r24);
+    r43 = FA(r45, r51);
+    r38 = FA(r43, r44);
+    r25 = spu_shufb(r38, r38, r19);
+    r2 = spu_frsqest(r25);
+    r35 = spu_fi(r25, r2);
+    r37 = FM(r35, r35);
+    r36 = FM(r35, r22);
+    r34 = FNMS(r25, r37, r21);
+    r11 = FMA(r34, r36, r35);
+    r32 = FM(r33, r11);
+    r10 = spu_and(r32, r18);
+    stq(ls, sp + 0x90, r10);                    // @0x6B80
+    r9 = ldq(ls, st);
+    r31 = spu_rotqbyi(r9, 8);
+    r30 = spu_shufb(r31, r31, r19);
+    r88 = FMA(r14, r30, r82);
+    r29 = FM(r88, r88);
+    r17 = spu_shufb(r29, r29, r26);
+    r28 = spu_shufb(r29, r29, r24);
+    r27 = FA(r29, r17);
+    r13 = FA(r27, r28);
+    r81 = spu_shufb(r13, r13, r19);
+    r16 = spu_frsqest(r81);
+    r80 = spu_fi(r81, r16);
+    r83 = FM(r80, r80);
+    r85 = FM(r80, r22);
+    r84 = FNMS(r81, r83, r21);
+    r92 = FMA(r84, r85, r80);
+    r87 = FM(r88, r92);
+    r86 = spu_and(r87, r18);
+    stq(ls, sp + 0xA0, r86);                    // @0x6BCC
+    r12 = ldq(ls, st);
+    r6 = spu_rotqbyi(r12, 8);
+    r77 = spu_shufb(r6, r6, r19);
+    r69 = FMA(r79, r77, r82);
+    r76 = FM(r69, r69);
+    r78 = spu_shufb(r76, r76, r26);
+    r75 = spu_shufb(r76, r76, r24);
+    r74 = FA(r76, r78);
+    r73 = FA(r74, r75);
+    r72 = spu_shufb(r73, r73, r19);
+    r4 = spu_frsqest(r72);
+    r71 = spu_fi(r72, r4);
+    r7 = FM(r71, r71);
+    r5 = FM(r71, r22);
+    r3 = FNMS(r72, r7, r21);
+    r70 = FMA(r3, r5, r71);
+    r68 = FM(r69, r70);
+    r90 = spu_and(r68, r18);
+    stq(ls, sp + 0xB0, r90);                    // @0x6C18
+#define W(n) V(n) = r##n;
+    W(2) W(3) W(4) W(5) W(6) W(7) W(8) W(9) W(10) W(11) W(12) W(13) W(14) W(15) W(16) W(17) W(18) W(19) W(20) W(21)
+    W(22) W(23) W(24) W(25) W(26) W(27) W(28) W(29) W(30) W(31) W(32) W(33) W(34) W(35) W(36) W(37) W(38) W(43) W(44)
+    W(45) W(46) W(47) W(48) W(49) W(50) W(51) W(52) W(53) W(54) W(55) W(56) W(57) W(58) W(59) W(60) W(61) W(62) W(63)
+    W(64) W(65) W(66) W(67) W(68) W(69) W(70) W(71) W(72) W(73) W(74) W(75) W(76) W(77) W(78) W(79) W(80) W(81) W(83)
+    W(84) W(85) W(86) W(87) W(88) W(90) W(92)
+#undef W
+    return 1;
+}
+#undef V
+#undef FM
+#undef FA
+#undef FS
+#undef FMA
+#undef FNMS
+
 const kz2_native_entry kz2_native_particles[] = {
     { 77, "KZ2_NATIVE_JOB_VJCLEAR", "Particles.VertexJob", "job_00cd7180", 0x411Cu, vj_bss_411C, "bss_clear", 0, 0, 0,
       0x407Cu },
@@ -705,5 +938,7 @@ const kz2_native_entry kz2_native_particles[] = {
       0x8430u, 0x061a2e8839fdd9d5ull, 0 },
     { 81, "KZ2_NATIVE_JOB_VJLIGHT|KZ2_NATIVE_JOB_VJVERT", "Particles.VertexJob", "job_00cd7180", 0x50F8u,
       vj_vertex_light, "vj_light", 0x8400u, 0x8430u, 0x061a2e8839fdd9d5ull, 0 },
+    { 85, "KZ2_NATIVE_JOB_VJNORM", "Particles.VertexJob", "job_00cd7180", 0x6918u, vj_norm_6918, "vj_norm", 0, 0, 0,
+      0x6C1Cu },
 };
 const unsigned kz2_native_particles_n = sizeof kz2_native_particles / sizeof kz2_native_particles[0];

@@ -17,6 +17,8 @@
 #   nix develop --command tools/release/wizard_test.sh uninstall SHOTDIR              (unins000.exe of the
 #       install in KZ2_WT_STATE, walked with shots; before/after facts of the dump (KZ2_WT_DUMPDIR, a Linux path), the
 #       install folder and the saves in SHOTDIR/facts-*.txt)
+#   KZ2_WT_NOGPU=1 KZ2_WT_STATE=DIR nix develop --command tools/release/wizard_test.sh online PYDIR SHOTDIR
+#       (the launcher's Online settings window driven through its steps by wizard_test/online_drive.py; an earlier change)
 #   KZ2_WT_NOGPU=1 KZ2_WT_STATE=DIR nix develop --command tools/release/wizard_test.sh vmtest KIT PYDIR STEP...
 #       (the Windows VM kit's vm_test.py steps under Proton in a fresh prefix; KZ2_WT_VMARGS adds arguments)
 #   nix develop --command tools/release/wizard_test.sh zip ZIP SHOTDIR                (the portable zip
@@ -408,6 +410,37 @@ launcher)
   kill -0 "$LP" 2>/dev/null && echo "launcher still running after Alt+F4" || { wait "$LP"; echo "launcher exited rc=$?"; }
   cp "$G"/PP/logs/*.log "$G"/PP/build/logs/*.log "$SHOTS/" 2>/dev/null; cp "$C/pyshim.log" "$SHOTS/" 2>/dev/null; ls "$G/PP" | tr '\n' ' '; echo
   echo "launcher walk $((SECONDS - T0)) s"
+  ;;
+online)
+  # The launcher's Online settings window (fixed in 104): PYDIR = a folder holding a Windows
+  # python.exe (the payload's embeddable Python), SHOTDIR = where the shots go. online_ini.py and online_dialog.py run
+  # from C:\kz2o over a shared folder that starts with both methods enabled by hand; wizard_test/online_drive.py runs
+  # the window and, on a second thread of the same process, clicks and types through it and checks the files after
+  # each save. An earlier change used two `proton run` processes and never got past the start (online_drive.py's text); the
+  # shell now gives up after KZ2_WT_ONLINE_MAX s (default 240) instead of waiting for ever. KZ2_WT_NOGPU=1: draws
+  # nothing that needs a GPU.
+  PYDIR="$1" SHOTS="$2"; mkdir -p "$SHOTS"
+  B="$C/kz2o"; rm -rf "$B"; mkdir -p "$B/out" "$B/shared"
+  cp "$ROOT/tools/release/online_ini.py" "$ROOT/tools/release/online_dialog.py" \
+     "$ROOT/tools/release/wizard_test/online_drive.py" "$B/"
+  printf '[repsn]\nenabled = 1\nserver = 127.0.0.1\n' > "$B/shared/repsn.ini"
+  printf '[community]\nenabled = 1\n' > "$B/shared/community.ini"
+  proton run 'C:\windows\system32\cmd.exe' /c ver >/dev/null 2>&1     # first run creates the prefix
+  PY="$(winpath "$PYDIR")\\python.exe"
+  proton run "$PY" 'C:\kz2o\online_drive.py' 'C:\kz2o' >"$SHOTS/window.txt" 2>&1 &
+  DPID=$!
+  END=$((SECONDS + ${KZ2_WT_ONLINE_MAX:-240}))
+  for n in 1 2 3 4 5 6 7; do
+    while (( SECONDS < END )) && [[ ! -f "$B/out/step-$n.txt" ]] && kill -0 "$DPID" 2>/dev/null; do sleep 0.2; done
+    [[ -f "$B/out/step-$n.txt" ]] || { echo "no step $n ($((END - SECONDS)) s left)"; break; }
+    sleep 0.5; shot "online-$n" "Online settings"; touch "$B/out/shot-$n.txt"
+  done
+  while (( SECONDS < END )) && kill -0 "$DPID" 2>/dev/null; do sleep 0.5; done
+  kill -0 "$DPID" 2>/dev/null && { echo "still running at the limit: stopped"; wskill; }
+  cp "$B/out/drive.txt" "$B/out/hang.txt" "$SHOTS/" 2>/dev/null; cp -r "$B/shared" "$SHOTS/shared-after" 2>/dev/null
+  grep -a 'started\|CHECK\|RESULT' "$SHOTS/drive.txt" 2>/dev/null || { echo "no drive.txt"; tail -5 "$SHOTS/window.txt"; }
+  if [[ -s "$SHOTS/hang.txt" ]]; then echo "hang.txt:"; head -30 "$SHOTS/hang.txt"; fi
+  grep -aq 'RESULT ok=1' "$SHOTS/drive.txt" 2>/dev/null   # the mode's exit status (was the hang test's)
   ;;
 vmtest)
   # The Windows VM kit's steps (tools/release/vm_test.py) under Proton, in the prefix of KZ2_WT_STATE (use a fresh

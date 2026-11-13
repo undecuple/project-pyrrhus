@@ -16,7 +16,7 @@
 <header id="top" class="box">
 <div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
 <ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.12<!-- /version --></b>pre-release download</a></nav>
+<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.13<!-- /version --></b>pre-release download</a></nav>
 <div class="intro">
 <h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
@@ -141,12 +141,22 @@
 </article>
 <div id="news">
 <article class="news rel">
+<h2>v0.1.13</h2>
+<p class="meta">13 Nov 2026 · pre-release</p>
+<ul class="rlist">
+<li><span class="sec">Added</span><strong>Online:</strong> an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a community server you add yourself, one at a time. Killzone 2 does not play online yet; the choice is kept for later updates.</li>
+<li><span class="sec">Changed</span><strong>Performance:</strong> in busy scenes the renderer spends less time checking textures: it now asks Windows which memory pages were written instead of re-reading every texture each frame. In the busiest views of our scripted Corinth Sands runs under Proton the slowest frames got about 2.8 ms faster; average fps did not change measurably. <code>LD_TEX_WW=0</code> turns it off.</li>
+<li><span class="sec">Fixed</span><strong>Use my RPCS3 install:</strong> when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.</li>
+</ul>
+<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">Release page<span aria-hidden="true"> &gt;</span></a></p>
+</article>
+<article class="news rel">
 <h2>v0.1.12</h2>
 <p class="meta">10 Nov 2026 · pre-release</p>
 <ul class="rlist">
 <li><span class="sec">Changed</span>Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that pads the file differently is still accepted. The messages name only what is wrong and the EBOOT the port needs (title id, version, region). A 1.29-sized EBOOT whose contents differ (patched or damaged) gets a warning saying so. Checked with the real EBOOTs and in the setup wizard under Proton.</li>
 <li><span class="sec">Fixed</span>The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted EBOOT was only caught at the first build step. It is packed again, and the page now gives the same verdict as the first-run check; in the wizard under Proton it answers in under a second.</li>
-<li><span class="sec">Fixed</span>When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This is what made the game quit in #49: the reported log matches the forced error line for line. Which script raises the error there is not known yet; the game&#x27;s log now records a script&#x27;s own error message, so a log from the moment it happens can name it.</li>
+<li><span class="sec">Fixed</span>When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This may be the cause of the quit in #49: the reported log matches the forced error line for line, but the error there has not been reproduced yet and which script raises it is not known; the game&#x27;s log now records a script&#x27;s own error message, so a log from the moment it happens can name it.</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
@@ -166,17 +176,6 @@
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.10</h2>
-<p class="meta">4 Nov 2026 · pre-release</p>
-<ul class="rlist">
-<li><span class="sec">Added</span>Optional DSU (cemuhook) motion: with <code>dsu_port = on</code> (or the server&#x27;s port) in <code>gameplay.ini</code>, a pad whose gyro reaches Windows through DS4Windows, DualSenseX, BetterJoy, a Steam Deck or a phone DSU app turns the valves and arms the demolition charges by tilting, as a SIXAXIS does. Off by default; talks only to 127.0.0.1. Not yet tried with a real DSU server.</li>
-<li><span class="sec">Changed</span>The European and Asian discs, planned for this version, move to 0.1.11, still as untested support (#48); this version supports only the US disc (BCUS98116) with the 1.29 update.</li>
-<li><span class="sec">Changed</span>The 8x8 light-probe tiles have their own texture pool by default (it was off in 0.1.9 until checked on a real display; LD_TILE_POOL=0 turns it off): far fewer texture uploads in busy scenes, same picture.</li>
-<li><span class="sec">Fixed</span>Demolition charges now arm from the right stick (or Z/X) on a controller without a motion sensor: the arm windows are 42.5–47.5°, not the 33.4–37.3° assumed before, so the stick now tilts to 46° from a bit past half way (found and measured by Feralnet, #47). Checked by a test of the tilt maths only; not yet tried in the game.</li>
-</ul>
-<p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.10">Release page<span aria-hidden="true"> &gt;</span></a></p>
-</article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
 </div>
 <article id="about" class="news">
@@ -190,14 +189,14 @@
 <section id="changelog" class="promo term">
 <h2>Changelog</h2>
 <ul class="clog">
+<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Online:** an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a...</span></li>
+<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Performance:** in busy scenes the renderer spends less time checking textures: it now asks Windows which memory...</span></li>
+<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Use my RPCS3 install:** when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> aim_assist_strength in gameplay.ini (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and...</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names...</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -230,9 +229,9 @@
 <section id="install" class="promo">
 <h2>Install</h2>
 <div class="dl">
-<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">v0.1.12</a><!-- /version --> <span>pre-release</span></p>
-<p class="small">10 Nov 2026 · partly playable · Windows x64</p>
-<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">Download v0.1.12</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
+<p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">v0.1.13</a><!-- /version --> <span>pre-release</span></p>
+<p class="small">13 Nov 2026 · partly playable · Windows x64</p>
+<p class="btns"><!-- version --><a class="btn" href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">Download v0.1.13</a><!-- /version --><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus/releases">All releases</a></p>
 <p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, and SHA256SUMS: check your download against them.</p>
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; a dump folder is read where it is, and the files of a decrypted .iso are copied once into the install folder. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>
