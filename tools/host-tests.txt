@@ -94,6 +94,7 @@ nix develop --command tools/sandbox.sh -- tools/runtime/test_upscale_live.sh
 nix develop --command tools/sandbox.sh -- tools/runtime/test_cache_root.sh
 nix develop --command tools/sandbox.sh -- python3 -I tools/runtime/test_cache_root_update.py
 nix develop --command tools/sandbox.sh -- tools/runtime/test_pre_hud.sh
+nix develop --command tools/sandbox.sh -- tools/runtime/test_internal_scale_map.sh
 nix develop --command tools/sandbox.sh -- tools/runtime/test_walltime.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_harness_mfc.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjvert.sh
