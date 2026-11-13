@@ -1,6 +1,7 @@
 /* Host test for the internal resolution scale mapping (patch 2300, libs/video/rsx_internal_scale.h): checked
  * conversion between guest pixel, guest sample and physical extents, and the equivalence of the live-draw call sites
- * routed through it (draw and clear scissor, viewport, WPOS divisor, DDX/DDY scale) with the code they replaced. */
+ * routed through it (draw and clear scissor, viewport, WPOS divisor, DDX/DDY scale) with the code they replaced; and
+ * the RSX_INTERNAL_SCALE text (patch 2301, rsx_iscale_parse_switch). */
 #include <stdio.h>
 #include <string.h>
 #include "rsx_internal_scale.h"
@@ -256,6 +257,35 @@ static void shader_side(void)
         }
 }
 
+/* Patch 2301: the RSX_INTERNAL_SCALE text. Unset or empty = 1x; 1 and 2, with an optional x; anything else is refused
+ * and leaves 1x, so a caller that only logs the refusal renders at the native size. */
+static void switch_text(void)
+{
+    static const struct { const char* t; uint32_t f; } ok[] = {
+        { NULL, 1 }, { "", 1 }, { "  ", 1 }, { "1", 1 }, { "2", 2 }, { "1x", 1 }, { "2x", 2 }, { "2X", 2 },
+        { " 2 ", 2 }, { "\t2x\t", 2 }, { "02", 2 },
+    };
+    static const char* const bad[] = {
+        "0", "3", "4", "16", "-1", "+2", "1.5", "2.0", "x", "2xx", "2 x", "two", "2a", "x2", "99999999999999999999",
+        "4294967298", "1 2",
+    };
+    for (unsigned i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        rsx_iscale_grid g = { 7u, 7u };
+        CHECK(rsx_iscale_parse_switch(ok[i].t, &g) == RSX_ISCALE_OK && g.x == ok[i].f && g.y == ok[i].f);
+    }
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        rsx_iscale_grid g = { 7u, 7u };
+        if (!(rsx_iscale_parse_switch(bad[i], &g) == RSX_ISCALE_E_FACTOR && rsx_iscale_grid_is_native(g)))
+            printf("FAIL switch text \"%s\" not refused to 1x\n", bad[i]), fails++;
+    }
+    /* every accepted scale composes with every RSX AA grid */
+    for (uint32_t f = 1; f <= RSX_ISCALE_SWITCH_MAX; f++)
+        for (int a = 0; a < 3; a++) {
+            rsx_iscale_grid c;
+            CHECK(rsx_iscale_compose(G(AA[a][0], AA[a][1]), G(f, f), &c) == RSX_ISCALE_OK);
+        }
+}
+
 int main(void)
 {
     identity();
@@ -264,6 +294,7 @@ int main(void)
     zero_and_max();
     overflow_and_invalid();
     shader_side();
+    switch_text();
     if (fails) { printf("test_internal_scale_map: %d failure(s)\n", fails); return 1; }
     printf("test_internal_scale_map: ok\n");
     return 0;
