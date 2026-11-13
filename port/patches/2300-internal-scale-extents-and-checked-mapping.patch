@@ -1,0 +1,464 @@
+gcm/live-draw: guest pixel, guest sample and physical extents, with checked mapping between them (groundwork for an
+internal resolution scale; no change in what is drawn).
+
+Purpose (issue #55, step 1 of the internal resolution scale): live-draw holds every render target at its guest sample
+size, the guest's pixels times the antialiasing grid (patch 2088), and the same w x h serve as the surface-cache
+identity, the size texture aliases expose, the host allocation and the host raster space. Rendering above the native
+resolution needs the host's size held apart from the guest's, and every conversion between them in one place, in one
+order, with no silent overflow.
+
+Change:
+- libs/video/rsx_internal_scale.h (new, pure C99, no platform, graphics API or game code, so it can be shared with
+  other ports): the three extents of a target (guest pixel, guest sample, physical), checked multiplication, endpoint
+  addition, point, extent and rectangle mapping, exact sample-to-pixel division, and AA x scale composition. The order
+  is fixed: pixels -> samples (AA grid) -> physical (internal scale). Scale 1 is an exact identity. Rectangles map by
+  their endpoints, so a non-zero origin or a partial rectangle cannot drift. Results fit in int32; every failure
+  (factor 0 or above 16, overflow, right < left, an extent that is not whole pixels) returns a status and leaves the
+  output untouched.
+- rsx_live_draw.c: ld_iscale(), the internal scale, native (1x1) in this patch. Colour surfaces (surface_t), zeta
+  surfaces (zdepth_t) and the shared depth record a physical extent beside w x h, equal to it at 1x; the resources
+  are still allocated at w x h. The extent is checked before a resource is made (for zeta before an outgrown one is
+  retired); a refusal takes the path of a failed create. Nothing reads the physical extent yet: lookup, aliases
+  (2087, 2097), feedback copies, the zeta windows and snapshots (2021, 2022, 2063) keep using w x h.
+- The draw path's viewport and scissor, and the clear rectangle (2006, 2089), go through the header. Draw: the viewport
+  and the surface rect go to physical by ld_iscale(), the guest's scissor by the AA grid composed with it, and they
+  are intersected there (scaling by a positive integer keeps the order, so this is the rectangle of intersecting in
+  samples and scaling after). Clear: the scissor to samples by the AA grid, intersected with the clip in samples as
+  before, then to physical. A refused scissor clips everything (draw) or clears nothing (clear); a refused viewport
+  keeps the sample extent. One log line per refusal, 16 in all, under [iscale]. The lines patches 6052, 6064 and 6069
+  hook are kept as they were, so the rest of the series applies unchanged.
+- WPOS (2088) and DDX/DDY (2096) take their divisor from the AA grid composed with the native scale. The HLSL text is
+  the same as before, so shader hashes, pipeline keys (ld_pso_key_tail) and PSO template records (2071, ld_pt_note)
+  do not change. Like any change under libs/video, the patch changes the translator id of patch 6047, so the first
+  start of a build with it discards the PSO key file and pipeline library once, as after any update. A packed grid
+  above 16 per axis now fails the translation instead of being emitted (the RSX's grids are 1 or 2 per axis).
+- Present-time scaling (2062, 2095), FSR 1 (6051) and the pre-HUD target (6052) are untouched.
+
+Verification: tools/runtime/test_internal_scale_map.sh. The mapping at scale 1 is checked to give the same endpoints
+as the replaced scissor code for every 16-bit origin against a spread of sizes on the 1x1, 2x1 and 2x2 grids, and the
+same WPOS text and derivative scale for every packed grid. It also covers non-zero origins, partial clears, alias
+subrectangles, zero and largest extents, overflow, invalid factors and malformed rectangles. Wiring checks: physical
+extents are only written, and the pipeline key and template record do not see the scale. rsx_live_draw.c compiled
+with MinGW-w64 gcc 16.2 at -O2 -Wall -Wextra with the same diagnostics as before the patch. No game run.
+
+Written for this port; not taken from RPCS3 or any other emulator.
+
+diff -ruN a/libs/video/rsx_internal_scale.h b/libs/video/rsx_internal_scale.h
+--- a/libs/video/rsx_internal_scale.h	1969-12-31 16:00:00.000000000 -0800
++++ b/libs/video/rsx_internal_scale.h	2026-11-13 13:21:12.236729800 -0800
+@@ -0,0 +1,185 @@
++/* Internal resolution scaling: checked mapping between the three coordinate spaces of a render target.
++ *
++ *  1. guest pixel extent    what the guest program addresses: viewport, scissor, WPOS, e.g. 1280x720;
++ *  2. guest sample extent   the target as the guest stores it, pixels times the antialiasing sample grid, e.g.
++ *                           2560x720 for a 2x1 grid. Surface-cache identity, texture aliases and every guest-visible
++ *                           size stay in this space (or in 1.);
++ *  3. physical extent       the size of the host resource: samples times the internal scale, e.g. 5120x1440 at 2x.
++ *                           Used only to allocate host resources and for host raster state (viewport, scissor,
++ *                           clear rectangles).
++ *
++ * The order is fixed: pixel -> sample (times the AA grid) -> physical (times the internal scale). Both steps multiply
++ * by positive integers, so the composed factor is aa * scale per axis, and a conversion back to pixels (a WPOS read, a
++ * derivative) divides by that same product: floor(p / (aa * s)) == floor(floor(p / s) / aa) for p >= 0.
++ *
++ * Scale 1 is an exact identity in every function: the same numbers come back, so a renderer that routes its existing
++ * conversions through this header at scale 1 produces the same commands as before.
++ *
++ * Rectangles are half-open, [left, right) x [top, bottom), and map by their endpoints, so a rectangle with a non-zero
++ * origin cannot drift: map(right) - map(left) == map(right - left) exactly. A zero width or height is a valid, empty
++ * rectangle (it clips everything); right < left or bottom < top is malformed and is refused.
++ *
++ * Every result fits in a signed 32-bit integer (the rectangle offsets of graphics APIs are signed). Every function
++ * returns a status; on failure *out is left untouched, so a caller decides explicitly what an invalid mapping means.
++ *
++ * Pure C99, no platform or graphics headers and no knowledge of any one game: it can be copied between ports as is.
++ * Host test: tools/runtime/test_internal_scale_map.sh. */
++#ifndef RSX_INTERNAL_SCALE_H
++#define RSX_INTERNAL_SCALE_H
++#include <stdint.h>
++
++#define RSX_ISCALE_COORD_MAX  0x7FFFFFFFu   /* largest coordinate or extent a mapping may produce */
++#define RSX_ISCALE_FACTOR_MAX 16u           /* largest factor per axis, also for a composed AA x scale grid */
++
++typedef enum {
++    RSX_ISCALE_OK = 0,
++    RSX_ISCALE_E_FACTOR = 1,     /* a factor is 0 or above RSX_ISCALE_FACTOR_MAX (or a composed grid is) */
++    RSX_ISCALE_E_OVERFLOW = 2,   /* a product or an endpoint would exceed RSX_ISCALE_COORD_MAX */
++    RSX_ISCALE_E_RECT = 3,       /* right < left, bottom < top, or an input above RSX_ISCALE_COORD_MAX */
++    RSX_ISCALE_E_EXTENT = 4      /* an extent is not a whole number of grid cells (sample -> pixel) */
++} rsx_iscale_status;
++
++typedef struct { uint32_t x, y; } rsx_iscale_grid;     /* a factor per axis: AA sample grid or internal scale */
++typedef struct { uint32_t x, y; } rsx_iscale_point;
++typedef struct { uint32_t w, h; } rsx_iscale_extent;
++typedef struct { uint32_t left, top, right, bottom; } rsx_iscale_rect;
++
++/* The three extents of one target, with the grids that relate them. */
++typedef struct {
++    rsx_iscale_extent pixel;      /* 1. guest pixels */
++    rsx_iscale_extent sample;     /* 2. guest samples = pixel * aa */
++    rsx_iscale_extent physical;   /* 3. host resource = sample * scale */
++    rsx_iscale_grid aa, scale;
++} rsx_iscale_target;
++
++static inline rsx_iscale_grid rsx_iscale_grid_make(uint32_t x, uint32_t y)
++{
++    rsx_iscale_grid g = { x, y };
++    return g;
++}
++
++/* The native scale: 1x1. */
++static inline rsx_iscale_grid rsx_iscale_native(void) { return rsx_iscale_grid_make(1u, 1u); }
++
++static inline int rsx_iscale_factor_ok(uint32_t f) { return f >= 1u && f <= RSX_ISCALE_FACTOR_MAX; }
++static inline int rsx_iscale_grid_ok(rsx_iscale_grid g) { return rsx_iscale_factor_ok(g.x) && rsx_iscale_factor_ok(g.y); }
++static inline int rsx_iscale_grid_is_native(rsx_iscale_grid g) { return g.x == 1u && g.y == 1u; }
++
++/* v * f, checked. */
++static inline rsx_iscale_status rsx_iscale_mul(uint32_t v, uint32_t f, uint32_t* out)
++{
++    if (!rsx_iscale_factor_ok(f)) return RSX_ISCALE_E_FACTOR;
++    const uint64_t p = (uint64_t)v * (uint64_t)f;
++    if (p > RSX_ISCALE_COORD_MAX) return RSX_ISCALE_E_OVERFLOW;
++    *out = (uint32_t)p;
++    return RSX_ISCALE_OK;
++}
++
++/* a + b, checked (an endpoint from an origin and a size). */
++static inline rsx_iscale_status rsx_iscale_add(uint32_t a, uint32_t b, uint32_t* out)
++{
++    const uint64_t s = (uint64_t)a + (uint64_t)b;
++    if (s > RSX_ISCALE_COORD_MAX) return RSX_ISCALE_E_OVERFLOW;
++    *out = (uint32_t)s;
++    return RSX_ISCALE_OK;
++}
++
++/* The composed grid inner * outer (AA grid, then internal scale). The product must itself be a valid factor. */
++static inline rsx_iscale_status rsx_iscale_compose(rsx_iscale_grid inner, rsx_iscale_grid outer, rsx_iscale_grid* out)
++{
++    if (!rsx_iscale_grid_ok(inner) || !rsx_iscale_grid_ok(outer)) return RSX_ISCALE_E_FACTOR;
++    const rsx_iscale_grid c = { inner.x * outer.x, inner.y * outer.y };   /* <= 16 * 16: no wrap */
++    if (!rsx_iscale_grid_ok(c)) return RSX_ISCALE_E_FACTOR;
++    *out = c;
++    return RSX_ISCALE_OK;
++}
++
++static inline rsx_iscale_status rsx_iscale_map_point(rsx_iscale_point p, rsx_iscale_grid g, rsx_iscale_point* out)
++{
++    rsx_iscale_point r;
++    rsx_iscale_status st;
++    if ((st = rsx_iscale_mul(p.x, g.x, &r.x)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_mul(p.y, g.y, &r.y)) != RSX_ISCALE_OK) return st;
++    *out = r;
++    return RSX_ISCALE_OK;
++}
++
++static inline rsx_iscale_status rsx_iscale_map_extent(rsx_iscale_extent e, rsx_iscale_grid g, rsx_iscale_extent* out)
++{
++    rsx_iscale_extent r;
++    rsx_iscale_status st;
++    if ((st = rsx_iscale_mul(e.w, g.x, &r.w)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_mul(e.h, g.y, &r.h)) != RSX_ISCALE_OK) return st;
++    *out = r;
++    return RSX_ISCALE_OK;
++}
++
++/* e / g, exact: an extent that is not a whole number of cells is refused rather than rounded. */
++static inline rsx_iscale_status rsx_iscale_unmap_extent(rsx_iscale_extent e, rsx_iscale_grid g, rsx_iscale_extent* out)
++{
++    if (!rsx_iscale_grid_ok(g)) return RSX_ISCALE_E_FACTOR;
++    if (e.w % g.x || e.h % g.y) return RSX_ISCALE_E_EXTENT;
++    const rsx_iscale_extent r = { e.w / g.x, e.h / g.y };
++    *out = r;
++    return RSX_ISCALE_OK;
++}
++
++static inline int rsx_iscale_rect_ok(rsx_iscale_rect r)
++{
++    return r.left <= r.right && r.top <= r.bottom && r.right <= RSX_ISCALE_COORD_MAX && r.bottom <= RSX_ISCALE_COORD_MAX;
++}
++
++/* [x, x + w) x [y, y + h), with checked endpoints. */
++static inline rsx_iscale_status rsx_iscale_rect_from_origin_size(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
++                                                                rsx_iscale_rect* out)
++{
++    rsx_iscale_rect r;
++    rsx_iscale_status st;
++    r.left = x; r.top = y;
++    if ((st = rsx_iscale_add(x, w, &r.right)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_add(y, h, &r.bottom)) != RSX_ISCALE_OK) return st;
++    *out = r;
++    return RSX_ISCALE_OK;
++}
++
++/* Maps both endpoints of each axis. */
++static inline rsx_iscale_status rsx_iscale_map_rect(rsx_iscale_rect r, rsx_iscale_grid g, rsx_iscale_rect* out)
++{
++    if (!rsx_iscale_grid_ok(g)) return RSX_ISCALE_E_FACTOR;
++    if (!rsx_iscale_rect_ok(r)) return RSX_ISCALE_E_RECT;
++    rsx_iscale_rect m;
++    rsx_iscale_status st;
++    if ((st = rsx_iscale_mul(r.left, g.x, &m.left)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_mul(r.top, g.y, &m.top)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_mul(r.right, g.x, &m.right)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_mul(r.bottom, g.y, &m.bottom)) != RSX_ISCALE_OK) return st;
++    *out = m;
++    return RSX_ISCALE_OK;
++}
++
++/* The three extents of a target held at sample size `sample` (a surface clip, a resource size). */
++static inline rsx_iscale_status rsx_iscale_target_from_sample(rsx_iscale_extent sample, rsx_iscale_grid aa,
++                                                              rsx_iscale_grid scale, rsx_iscale_target* out)
++{
++    rsx_iscale_target t;
++    rsx_iscale_status st;
++    if (!rsx_iscale_grid_ok(aa) || !rsx_iscale_grid_ok(scale)) return RSX_ISCALE_E_FACTOR;
++    if ((st = rsx_iscale_unmap_extent(sample, aa, &t.pixel)) != RSX_ISCALE_OK) return st;
++    if ((st = rsx_iscale_map_extent(sample, scale, &t.physical)) != RSX_ISCALE_OK) return st;
++    t.sample = sample; t.aa = aa; t.scale = scale;
++    *out = t;
++    return RSX_ISCALE_OK;
++}
++
++/* The three extents of a target of `pixel` guest pixels. */
++static inline rsx_iscale_status rsx_iscale_target_from_pixel(rsx_iscale_extent pixel, rsx_iscale_grid aa,
++                                                             rsx_iscale_grid scale, rsx_iscale_target* out)
++{
++    rsx_iscale_extent sample;
++    rsx_iscale_status st;
++    if (!rsx_iscale_grid_ok(aa) || !rsx_iscale_grid_ok(scale)) return RSX_ISCALE_E_FACTOR;
++    if ((st = rsx_iscale_map_extent(pixel, aa, &sample)) != RSX_ISCALE_OK) return st;
++    return rsx_iscale_target_from_sample(sample, aa, scale, out);
++}
++
++#endif /* RSX_INTERNAL_SCALE_H */
+diff -ruN a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c	2026-11-13 13:17:49.941414500 -0800
++++ b/libs/video/rsx_live_draw.c	2026-11-13 13:19:54.637759300 -0800
+@@ -255,10 +255,24 @@
+ #define TEX_FMT_BASE_MASK  0x9F
+ #define LD_SURFACE_FMT_F_X32 0xD   /* patch 2014: CELL_GCM_SURFACE_F_X32 */
+ 
++#include "rsx_internal_scale.h"   /* KZ2 patch 2300: guest pixel / guest sample / physical extents */
++/* KZ2 patch 2300: the internal resolution scale of live-draw's host resources (rsx_internal_scale.h: guest pixels ->
++ * guest samples by the AA grid -> physical extent by this scale). Native (1x1) in this patch, so every physical extent
++ * equals its guest sample extent and every mapping through it is the identity. */
++static rsx_iscale_grid ld_iscale(void) { return rsx_iscale_native(); }
++/* A refused mapping is logged (16 lines in all) and handled by the caller as described there. The inputs are 16-bit
++ * registers and surface sizes, so at the native scale a refusal means a bug or a corrupt register. */
++static void ld_iscale_refused(const char* where, int st, unsigned a, unsigned b)
++{
++    static unsigned logs;
++    if (logs < 16) { logs++; fprintf(stderr, "[iscale] %s: mapping refused (status %d, %u, %u)\n", where, st, a, b); }
++}
++
+ typedef struct {
+     u32 location, offset;
+     ID3D12Resource* tex;
+-    u32 w, h;
++    u32 w, h;                 /* guest sample extent: lookup, aliases and every guest-visible size use it */
++    u32 phys_w, phys_h;       /* KZ2 patch 2300: physical extent of tex (w, h at the native internal scale) */
+     DXGI_FORMAT fmt;
+     ID3D12Resource* fb_tex;   /* feedback copy, see surface_feedback_srv */
+     u32 pitch;                /* guest row pitch of colour target 0 (bytes), 0 = unknown */
+@@ -302,7 +316,8 @@
+     u32 location, offset;
+     ID3D12Resource* tex;
+     ID3D12Resource* snapshot;
+-    u32 w, h;
++    u32 w, h;                 /* guest sample extent, as surface_t */
++    u32 phys_w, phys_h;       /* KZ2 patch 2300: physical extent of tex, as surface_t */
+     u32 snapshot_w, snapshot_h;
+     D3D12_RESOURCE_STATES snapshot_state;
+     int cleared;
+@@ -413,6 +428,7 @@
+     ID3D12DescriptorHeap*      dsv_heap;
+     u32                        dsv_step;
+     ID3D12Resource*            depth;
++    u32                        depth_phys_w, depth_phys_h;   /* KZ2 patch 2300: physical extent of depth */
+     int                        depth_cleared;
+     zdepth_t                   zdepths[MAX_SURFACES];
+     u32                        n_zdepths;
+@@ -5705,6 +5721,14 @@
+     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+     D3D12_CLEAR_VALUE cv = {0}; cv.Format = rd.Format;
+     surface_t* s = &g.surfaces[slot];
++    /* KZ2 patch 2300: the physical extent of the new resource. The allocation itself stays want_w x want_h here. */
++    rsx_iscale_extent phys;
++    { const rsx_iscale_extent want = { want_w, want_h };
++      const rsx_iscale_status st = rsx_iscale_map_extent(want, ld_iscale(), &phys);
++      if (st != RSX_ISCALE_OK) {
++          ld_iscale_refused("colour surface", (int)st, want_w, want_h);
++          return slot < g.n_surfaces && s->tex ? slot : LD_INVALID_SURFACE;   /* as a failed create below */
++      } }
+     ID3D12Resource* replacement = NULL;
+     const HRESULT create_hr = g.dev->lpVtbl->CreateCommittedResource(
+         g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+@@ -5737,6 +5761,7 @@
+         if (s->swin[j].tex) { retire_texture(s->swin[j].tex); s->swin[j].tex = NULL; }
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
++    s->phys_w = phys.w; s->phys_h = phys.h;   /* KZ2 patch 2300 */
+     s->fmt = want_fmt;
+     s->colour_gen = 0;   /* patch 2044: a new resource holds no colour yet */
+ #if !defined(YZ_PERF_CLEAN)
+@@ -6544,6 +6569,16 @@
+             break;
+         }
+     }
++    /* KZ2 patch 2300: the physical extent of the resource made below, checked before an outgrown one is retired (the
++     * size is the one the outgrown branch settles on). The allocation itself stays at the guest sample size here. */
++    rsx_iscale_extent zphys;
++    { rsx_iscale_extent want = { want_w, want_h };
++      if (slot != MAX_SURFACES) {
++          if (want.w < g.zdepths[slot].w) want.w = g.zdepths[slot].w;
++          if (want.h < g.zdepths[slot].h) want.h = g.zdepths[slot].h;
++      }
++      const rsx_iscale_status st = rsx_iscale_map_extent(want, ld_iscale(), &zphys);
++      if (st != RSX_ISCALE_OK) { ld_iscale_refused("zeta surface", (int)st, want.w, want.h); return 0; } }
+     if (slot == MAX_SURFACES) {
+         if (g.n_zdepths >= MAX_SURFACES) {
+             fprintf(stderr, "[zetatrack] live cache full; shared fallback\n");
+@@ -6603,6 +6638,7 @@
+     z->offset = offset;
+     z->w = want_w;
+     z->h = want_h;
++    z->phys_w = zphys.w; z->phys_h = zphys.h;   /* KZ2 patch 2300 */
+     z->had_write = 0;
+     z->snapshot_valid = 0;
+     z->snapshot_w = rt_w ? rt_w : want_w;
+@@ -8174,14 +8210,27 @@
+     }
+     return on;
+ }
++/* KZ2 patch 2300: the divisor that takes SV_Position back to guest pixels: the target's AA grid (wpos_aa, 0 = 1 per
++ * axis) composed with the internal scale (rsx_internal_scale.h order). Native here, so it is the AA grid and the
++ * shader text below is unchanged; a scaled target needs the scale in its pipeline key first. 0 = refused. */
++static int ld_wpos_divisor(u32 wpos_aa, rsx_iscale_grid scale, rsx_iscale_grid* out)
++{
++    const u32 ax = wpos_aa & 0xFFu, ay = (wpos_aa >> 8) & 0xFFu;
++    const rsx_iscale_grid aa = rsx_iscale_grid_make(ax ? ax : 1u, ay ? ay : 1u);
++    const rsx_iscale_status st = rsx_iscale_compose(aa, scale, out);
++    if (st != RSX_ISCALE_OK) { ld_iscale_refused("WPOS divisor", (int)st, wpos_aa, scale.x | (scale.y << 8)); return 0; }
++    return 1;
++}
+ static int ld_wpos_aa_apply(char* hlsl, size_t size, u32 wpos_aa)
+ {
+     const u32 ax = wpos_aa & 0xFFu, ay = (wpos_aa >> 8) & 0xFFu;
+     if (!hlsl || !wpos_aa || (ax <= 1u && ay <= 1u)) return 0;
++    rsx_iscale_grid d;
++    if (!ld_wpos_divisor(wpos_aa, rsx_iscale_native(), &d)) return -1;   /* patch 2300 */
+     static const char key[] = "input.position";
+     char rep[160];
+     snprintf(rep, sizeof rep, "float4(floor(input.position.xy / float2(%u.0, %u.0)) + 0.5, input.position.zw)",
+-             ax ? ax : 1u, ay ? ay : 1u);
++             d.x, d.y);
+     const size_t kl = sizeof key - 1, rl = strlen(rep);
+     size_t n = 0;
+     for (const char* p = strstr(hlsl, key); p; p = strstr(p + kl, key)) n++;
+@@ -8276,8 +8325,10 @@
+ }
+ static int ld_deriv_scale_apply(char* hlsl, size_t size, u32 wpos_aa, u32 flip)
+ {
+-    const u32 ax = wpos_aa & 0xFFu, ay = (wpos_aa >> 8) & 0xFFu;
+-    const float sx = ax > 1u ? (float)ax : 1.0f, sy = (ay > 1u ? (float)ay : 1.0f) * (flip ? -1.0f : 1.0f);
++    /* Patch 2300: samples per guest pixel, the WPOS divisor (AA grid composed with the native internal scale). */
++    rsx_iscale_grid d;
++    if (!ld_wpos_divisor(wpos_aa, rsx_iscale_native(), &d)) return -1;
++    const float sx = (float)d.x, sy = (float)d.y * (flip ? -1.0f : 1.0f);
+     const int r = rsx_fp_set_deriv_scale(hlsl, (u32)size, sx, sy);
+     static u32 logs;
+     if (r > 0 && logs++ < 8) fprintf(stderr, "[fp-deriv] program with DDX/DDY: scale (%.0f, %.0f)\n", sx, sy);
+@@ -14131,6 +14182,22 @@
+         (LONG)(g.surfaces[target].w ? g.surfaces[target].w : g.width),
+         (LONG)(g.surfaces[target].h ? g.surfaces[target].h : g.height)
+     };
++    /* KZ2 patch 2300: W x H and the surface rect are guest samples, the guest scissor is pixels; the host's viewport
++     * and scissor are physical. The surface rect goes to physical by the internal scale, the scissor by the AA grid
++     * composed with it (rsx_internal_scale.h order), and they are intersected there: the same rectangle as
++     * intersecting in samples and scaling after, and the identity at the native scale. A refused viewport keeps the
++     * sample extent; a refused scissor clips everything. */
++    const rsx_iscale_grid isc = ld_iscale();
++    { const rsx_iscale_extent vs = { sf.clip_w ? sf.clip_w : g.width, sf.clip_h ? sf.clip_h : g.height };
++      rsx_iscale_extent vph;
++      const rsx_iscale_status st = rsx_iscale_map_extent(vs, isc, &vph);
++      if (st == RSX_ISCALE_OK) { dvp.Width = (float)vph.w; dvp.Height = (float)vph.h; }
++      else ld_iscale_refused("draw viewport", (int)st, vs.w, vs.h); }
++    { const rsx_iscale_rect sm = { 0u, 0u, (u32)sc.right, (u32)sc.bottom };
++      rsx_iscale_rect ph;
++      const rsx_iscale_status st = rsx_iscale_map_rect(sm, isc, &ph);
++      if (st == RSX_ISCALE_OK) { sc.right = (LONG)ph.right; sc.bottom = (LONG)ph.bottom; }
++      else { ld_iscale_refused("draw surface rect", (int)st, sm.right, sm.bottom); sc.right = sc.bottom = 0; } }
+     /* Guest scissor, intersected with the surface rect. The nv40 reset value
+      * is a full-window 4096x4096; never-written regs read 0 here, so an
+      * unwritten scissor means "no scissor". A WRITTEN zero width or height is
+@@ -14141,17 +14208,23 @@
+     {
+         const u32 sh = rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL);
+         const u32 sv = rsx_dsp_reg(&g.rsx, M_SCISSOR_VERTICAL);
+-        /* The scissor is in pixels too: scale it to the sample grid. */
+-        const LONG ax = (LONG)sf.aa_sx, ay = (LONG)sf.aa_sy;
+-        const LONG sx = (LONG)(sh & 0xFFFFu) * ax, sw = (LONG)(sh >> 16) * ax;
+-        const LONG sy = (LONG)(sv & 0xFFFFu) * ay, svh = (LONG)(sv >> 16) * ay;
++        /* The scissor is in pixels too: scale it to the sample grid, then to physical (patch 2300: by its endpoints,
++         * checked; refused = the empty rectangle at 0, which clips everything). */
++        rsx_iscale_rect gs = { 0u, 0u, 0u, 0u }, px;
++        rsx_iscale_grid cg;
++        rsx_iscale_status st = rsx_iscale_rect_from_origin_size(sh & 0xFFFFu, sv & 0xFFFFu, sh >> 16, sv >> 16, &px);
++        if (st == RSX_ISCALE_OK) st = rsx_iscale_compose(rsx_iscale_grid_make(sf.aa_sx, sf.aa_sy), isc, &cg);
++        if (st == RSX_ISCALE_OK) st = rsx_iscale_map_rect(px, cg, &gs);
++        const LONG sx = (LONG)gs.left, sxe = (LONG)gs.right;
++        const LONG sy = (LONG)gs.top, sye = (LONG)gs.bottom;
+         const int written = g.rsx.seen[M_SCISSOR_HORIZONTAL >> 2] != 0 ||
+                             g.rsx.seen[M_SCISSOR_VERTICAL >> 2] != 0;
+         if (written) {
++            if (st != RSX_ISCALE_OK) ld_iscale_refused("draw scissor", (int)st, sh, sv);
+             if (sx > sc.left)            sc.left   = sx;
+             if (sy > sc.top)             sc.top    = sy;
+-            if (sx + sw  < sc.right)     sc.right  = sx + sw;
+-            if (sy + svh < sc.bottom)    sc.bottom = sy + svh;
++            if (sxe < sc.right)          sc.right  = sxe;
++            if (sye < sc.bottom)         sc.bottom = sye;
+             if (sc.right  < sc.left)     sc.right  = sc.left;
+             if (sc.bottom < sc.top)      sc.bottom = sc.top;
+         }
+@@ -14426,15 +14499,24 @@
+                * draw path's scissor; LD_CLEAR_AA_SCISSOR=0 = old: pixels taken as samples). */
+               static int aa_on = -1;
+               if (aa_on < 0) { const char* e = getenv("LD_CLEAR_AA_SCISSOR"); aa_on = e ? atoi(e) != 0 : 1; }
+-              const LONG ax = aa_on ? (LONG)csf.aa_sx : 1, ay = aa_on ? (LONG)csf.aa_sy : 1;
+-              const LONG sx = (LONG)(sh & 0xFFFFu) * ax, sw = (LONG)(sh >> 16) * ax;
+-              const LONG sy = (LONG)(sv & 0xFFFFu) * ay, svh = (LONG)(sv >> 16) * ay;
+-              if (sx > l) l = sx;
+-              if (sy > t) t = sy;
+-              if (sx + sw < r) r = sx + sw;
+-              if (sy + svh < b) b = sy + svh;
++              /* Patch 2300: by its endpoints, checked; a refused scissor clears nothing. */
++              const rsx_iscale_grid aa = aa_on ? rsx_iscale_grid_make(csf.aa_sx, csf.aa_sy) : rsx_iscale_native();
++              rsx_iscale_rect px, sm;
++              rsx_iscale_status st = rsx_iscale_rect_from_origin_size(sh & 0xFFFFu, sv & 0xFFFFu, sh >> 16, sv >> 16, &px);
++              if (st == RSX_ISCALE_OK) st = rsx_iscale_map_rect(px, aa, &sm);
++              if (st != RSX_ISCALE_OK) { ld_iscale_refused("clear scissor", (int)st, sh, sv); return; }
++              if ((LONG)sm.left > l) l = (LONG)sm.left;
++              if ((LONG)sm.top > t) t = (LONG)sm.top;
++              if ((LONG)sm.right < r) r = (LONG)sm.right;
++              if ((LONG)sm.bottom < b) b = (LONG)sm.bottom;
+           }
+           if (r <= l || b <= t) return;   /* empty rectangle: the clear writes nothing */
++          { /* Patch 2300: guest samples -> physical (the identity at the native scale); refused: clears nothing. */
++            const rsx_iscale_rect sm = { (u32)l, (u32)t, (u32)r, (u32)b };
++            rsx_iscale_rect ph;
++            const rsx_iscale_status st = rsx_iscale_map_rect(sm, ld_iscale(), &ph);
++            if (st != RSX_ISCALE_OK) { ld_iscale_refused("clear rect (physical)", (int)st, (u32)r, (u32)b); return; }
++            l = (LONG)ph.left; t = (LONG)ph.top; r = (LONG)ph.right; b = (LONG)ph.bottom; }
+           crect.left = l; crect.top = t; crect.right = r; crect.bottom = b;
+           n_crect = 1;
+       } }
+@@ -15333,6 +15415,7 @@
+             D3D12_CPU_DESCRIPTOR_HANDLE dh;
+             g.dsv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g.dsv_heap, &dh);
+             LD_SM_INVALIDATE(), g.dev->lpVtbl->CreateDepthStencilView(g.dev, g.depth, NULL, dh);
++            g.depth_phys_w = width; g.depth_phys_h = height;   /* KZ2 patch 2300: allocated as before */
+         } else {
+             g.depth = NULL;
+         }
