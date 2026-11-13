@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Host test for patch 2300 (internal resolution scale groundwork): the checked mapping header
+# Host test for patches 2300 and 2301 (internal resolution scale groundwork and its switch): the checked mapping header
 # libs/video/rsx_internal_scale.h, and wiring checks on rsx_live_draw.c: physical extents are recorded but take no part
 # in surface lookup, aliases or guest texture sizes, the pipeline key and the PSO template record do not see the scale,
-# and the header stays free of platform and port code. Needs $KZ2_OUT/ps3recomp-patched (tools/ps3recomp-patched.sh).
+# and the header stays free of platform and port code; RSX_INTERNAL_SCALE is read once, parsed by the header and not yet
+# active. Needs $KZ2_OUT/ps3recomp-patched (tools/ps3recomp-patched.sh).
 #   nix develop --command tools/sandbox.sh -- tools/runtime/test_internal_scale_map.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$ROOT"
@@ -45,6 +46,13 @@ grep -qF '((xi->wpos_aa & 0xFFFFu) << RSX_PT_WPOS_AA_SHIFT)' <<<"$(body ld_pt_no
 # The shader-side conversions compose the AA grid with the native scale only (a scaled grid needs its key first).
 n=$(grep -cF 'ld_wpos_divisor(wpos_aa, rsx_iscale_native(), &d)' "$LD")
 [[ $n == 2 ]] || bad "WPOS and DDX/DDY do not both take their divisor from ld_wpos_divisor at the native scale ($n)"
+
+# Patch 2301: RSX_INTERNAL_SCALE is read in one place, parsed by the header, read at start, and not yet active.
+n=$(grep -cF 'getenv("RSX_INTERNAL_SCALE")' "$LD")
+[[ $n == 1 ]] || bad "RSX_INTERNAL_SCALE is read $n times (want 1, in ld_iscale_requested)"
+grep -qF 'rsx_iscale_parse_switch(e, &req)' <<<"$(body ld_iscale_requested)" || bad "RSX_INTERNAL_SCALE is not parsed by rsx_iscale_parse_switch"
+grep -qF '(void)ld_iscale_requested();' "$LD" || bad "RSX_INTERNAL_SCALE is not read and logged at start"
+grep -qE 'ENHANCEMENT:.*RSX_INTERNAL_SCALE' "$LD" || bad "RSX_INTERNAL_SCALE is not marked ENHANCEMENT:"
 
 (( fail == 0 )) || exit 1
 echo "test_internal_scale_map.sh: ok"
