@@ -3,6 +3,8 @@
 /Game/
 /Game
 /work/
+*.iso
+*.ISO
 *.psarc
 *.BIK
 *.bik
