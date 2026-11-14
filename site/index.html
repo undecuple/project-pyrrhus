@@ -146,7 +146,8 @@
 <ul class="rlist">
 <li><span class="sec">Added</span><strong>Online:</strong> an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a community server you add yourself, one at a time. Killzone 2 does not play online yet; the choice is kept for later updates.</li>
 <li><span class="sec">Changed</span><strong>Performance:</strong> in busy scenes the renderer spends less time checking textures: it now asks Windows which memory pages were written instead of re-reading every texture each frame. In the busiest views of our scripted Corinth Sands runs under Proton the slowest frames got about 2.8 ms faster; average fps did not change measurably. <code>LD_TEX_WW=0</code> turns it off.</li>
-<li><span class="sec">Fixed</span><strong>Use my RPCS3 install:</strong> when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.</li>
+<li><span class="sec">Fixed</span><strong>Setup and launcher:</strong> when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.</li>
+<li><span class="sec">Fixed</span><strong>Setup and launcher:</strong> a native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked. Contributed by @Tzeentchnet (#69).</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
@@ -191,12 +192,12 @@
 <ul class="clog">
 <li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Online:** an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a...</span></li>
 <li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Performance:** in busy scenes the renderer spends less time checking textures: it now asks Windows which memory...</span></li>
-<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Use my RPCS3 install:** when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the...</span></li>
+<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Setup and launcher:** when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the...</span></li>
+<li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Setup and launcher:** a native Windows first-run build no longer rejects its freshly generated Lua unwind...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted...</span></li>
 <li><time datetime="2026-11-10">11-10</time><span><b>0.1.12</b> When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead...</span></li>
 <li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with...</span></li>
-<li><time datetime="2026-11-05">11-05</time><span><b>0.1.11</b> aim_assist_strength in gameplay.ini (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and...</span></li>
 </ul>
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
@@ -246,7 +247,7 @@
 <div class="tw"><table>
 <thead><tr><th>Item</th><th>Required</th><th>Details</th></tr></thead>
 <tbody>
-<tr><td><strong>Operating system</strong></td><td>yes</td><td>Windows 10 or 11, 64-bit. Tested by us under Proton on Linux; players report playing on native Windows 11 (issue #13).</td></tr>
+<tr><td><strong>Operating system</strong></td><td>yes</td><td>Windows 10 or 11, 64-bit. Tested by us under Proton on Linux; players report playing on native Windows 11 (issue #13). A contributor completed the portable first-run build and native start-up smokes on Windows 11 on 2026-11-12; no screenshot was taken, so that run did not check the picture.</td></tr>
 <tr><td><strong>Graphics card</strong></td><td>yes</td><td>A GPU with Direct3D 12 support.</td></tr>
 <tr><td><strong>Killzone 2 disc dump</strong></td><td>yes</td><td>Your own copy of the US disc (BCUS98116), dumped to a folder or a decrypted ISO file (an encrypted ISO is refused); a FAT32 dump with the disc archive in parts is accepted as it is. Other title ids are refused, naming the id found; the Killzone Trilogy disc (its Killzone 2 is BCUS98116, disc version 02.00) is accepted as untested (<a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">what each input must contain</a>).</td></tr>
 <tr><td><strong>Update 1.29</strong></td><td>yes</td><td>The game&#x27;s last update, from your own console or copy.</td></tr>
@@ -259,7 +260,7 @@
 <tr><td><strong>CPU</strong></td><td>x86-64 with AVX and FMA3 (Intel Haswell or AMD Piledriver, about 2013, and newer; checked at start-up), 6 cores, about 3.5 GHz sustained</td><td>8 or more cores, 4 GHz or more sustained, a recent desktop or laptop part</td></tr>
 <tr><td><strong>Memory</strong></td><td>8 GB (estimate)</td><td>16 GB (estimate)</td></tr>
 <tr><td><strong>Graphics card</strong></td><td>Direct3D 12 (an integrated GPU runs, slowly)</td><td>a discrete Direct3D 12 GPU of the RTX 4060 / RTX 4070 Laptop class (8 GB), driver current</td></tr>
-<tr><td><strong>Disk space</strong></td><td>about 12 GB free beyond the disc dump (estimate)</td><td>the same, on an SSD</td></tr>
+<tr><td><strong>Disk space</strong></td><td>about 15 GB free beyond the disc dump</td><td>20 GB, on an SSD</td></tr>
 <tr><td><strong>Operating system</strong></td><td>Windows 10 64-bit, or Linux with a current Proton</td><td>Windows 11</td></tr>
 <tr><td><strong>Controller</strong></td><td>a keyboard and mouse (the default key layout and mouse look)</td><td>a gamepad</td></tr>
 </tbody></table></div>

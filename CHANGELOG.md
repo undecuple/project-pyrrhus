@@ -4,6 +4,11 @@ All notable changes for players, newest first, in the style of [Keep a Changelog
 port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md). Versions follow
 `vMAJOR.MINOR.PATCH`; every release stays a pre-release until `v1.0.0`.
 
+## [Unreleased]
+
+### Added
+- **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
+
 ## [0.1.13] - 2026-11-13 (pre-release)
 
 ### Added
@@ -13,8 +18,8 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - **Performance:** in busy scenes the renderer spends less time checking textures: it now asks Windows which memory pages were written instead of re-reading every texture each frame. In the busiest views of our scripted Corinth Sands runs under Proton the slowest frames got about 2.8 ms faster; average fps did not change measurably. `LD_TEX_WW=0` turns it off.
 
 ### Fixed
-- **Use my RPCS3 install:** when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.
-- A native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked. Contributed by @Tzeentchnet (#69).
+- **Setup and launcher:** when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.
+- **Setup and launcher:** a native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked. Contributed by @Tzeentchnet (#69).
 
 ## [0.1.12] - 2026-11-10 (pre-release)
 

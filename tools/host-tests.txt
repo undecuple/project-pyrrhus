@@ -109,3 +109,5 @@ nix develop --command tools/sandbox.sh -- tools/runtime/test_walker73.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_skin2.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_spu_xrv.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjnorm.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_native_ctr.sh
+nix develop --command tools/sandbox.sh -- tools/spu/test_spu_pcguess.sh

@@ -59,6 +59,9 @@ struct Env {
     std::function<int(const char*, const unsigned char*)> map_host;
     std::function<int(const unsigned char*, unsigned short, unsigned short, int)> allow;
     std::function<void(int)> np_signed_in;
+    /* KZ2_NET_LISTEN only: ps3_net_policy_set_live_stop (patch 4022) with the port's stop; may be
+     * empty (tests that predate it): then nothing is armed. */
+    std::function<void(int)> live_stop;
 };
 
 struct Settings {
@@ -255,9 +258,12 @@ std::string join(const std::string& d, const char* f)
 /* KZ2_NET_LISTEN=1|np (Medius step 1; a developer diagnostic, off by default): the game's own lobby
  * client talks to a passive listener on this machine (tools/net/medius_listen.py) and nowhere else. The online
  * switch on, the policy strict, the lobby host (KZ2_NET_LISTEN_HOST, read from the EBOOT inside the sandbox by the
- * run recipe; never logged here) mapped to 127.0.0.1, only 127.0.0.1 allowed (every port, TCP and UDP), so the
- * policy's refusal log names any other destination the game tries. "np" also reports the NP manager signed in
- * (patch 4003), for a client that waits for it. Wins over the command line, the environment and the files. */
+ * run recipe; never logged here) mapped to 127.0.0.1, only 127.0.0.1 allowed (every port, TCP and UDP). Since
+ * an earlier change (2026-11-11) the policy's live stop (patch 4022) is armed: the first other destination or host
+ * name the game tries prints one "[net] refused ..." line without the address or name and ends the run (exit code
+ * 86). The game's UPnP gateway search no longer sends (kz2_upnp.h answers it "no gateway" at the source), so it does
+ * not trip the stop. "np" also reports the NP manager signed in (patch 4003), for a client that waits for it. Wins
+ * over the command line, the environment and the files. */
 static const unsigned char kLoopback[4] = {127, 0, 0, 1};
 
 static bool listen_mode(const Env& env, State& state)
@@ -284,12 +290,16 @@ static bool listen_mode(const Env& env, State& state)
     env.set_strict(1);
     if (env.map_host(host.c_str(), kLoopback) != 0) return fail("the network policy refused the host map");
     if (env.allow(kLoopback, 1, 65535, 3) != 0) return fail("the network policy refused the loopback allowlist");
+    /* Armed before the switch goes on, so no socket can exist without it (2026-11-11). */
+    const bool stop = static_cast<bool>(env.live_stop);
+    if (stop) env.live_stop(1);
     env.set_online(1);
     if (!strcmp(m, "np")) env.np_signed_in(1);
     state = KZ2_ONLINE_LISTEN;
     env.log("[online] KZ2_NET_LISTEN diagnostic: online switch on, policy strict, the lobby host (" +
             std::to_string(host.size()) + " characters) mapped to 127.0.0.1, only 127.0.0.1 allowed" +
-            (strcmp(m, "np") ? "" : ", NP manager signed in") + "; the settings files, flags and variables are not applied");
+            (strcmp(m, "np") ? "" : ", NP manager signed in") + "; the settings files, flags and variables are not applied" +
+            (stop ? "; live stop armed: the first refused destination or host name ends the run (exit code 86)" : ""));
     return true;
 }
 
@@ -300,7 +310,13 @@ State apply(const Env& env, const std::string& shared_dir, const std::string& ga
         State ls = KZ2_ONLINE_OFF;
         const bool listened = listen_mode(env, ls);
 #ifdef KZ2_ONLINE_DIAG   /* private diagnostics (kz2_online_diag.cpp; CMake defines this only when the file is there) */
-        kz2_online_diag_np(env.get, env.log, ls == KZ2_ONLINE_LISTEN && !strcmp(env.get("KZ2_NET_LISTEN"), "np"));
+        /* KZ2_ONLINE_NP_STARTED(v): the listen mode that starts the NP diagnostic. A macro only so the host test's
+         * negative control (NEG_ONLINE_GATE, in the private diagnostic's host test) can widen this one test and
+         * nothing else (an earlier change review: it used to redefine strcmp for both files). */
+#ifndef KZ2_ONLINE_NP_STARTED
+#define KZ2_ONLINE_NP_STARTED(v) (!strcmp((v), "np"))
+#endif
+        kz2_online_diag_np(env.get, env.log, ls == KZ2_ONLINE_LISTEN && KZ2_ONLINE_NP_STARTED(env.get("KZ2_NET_LISTEN")));
 #endif
         if (listened) return ls;
     }
@@ -453,9 +469,27 @@ void flags(int argc, char** argv, std::string& psnr, std::string& user)
 #include <stdlib.h>
 #endif
 #include "../../libs/network/net_policy.h"   /* ps3_net_set_online, ps3_net_policy_set_strict (patch 4001) */
+extern "C" void kz2_session_log_flush(unsigned timeout_ms);   /* kz2_session_log.c (declared here: this file builds alone in tests) */
 
 static std::vector<std::string>* s_lines;   /* until kz2_online_log_replay */
 static kz2_online_state s_state = KZ2_ONLINE_OFF;
+
+/* The live stop (patch 4022) of the KZ2_NET_LISTEN diagnostic: the policy has printed its "[net] refused ..." line;
+ * one more line, the session log drained, then the process ends at once with exit code 86 (no exit handlers: the
+ * refusing thread may be any guest thread). */
+#define KZ2_NET_LIVE_STOP_EXIT 86
+static void kz2_net_live_stop(void)
+{
+    printf("[net] live stop: the KZ2_NET_LISTEN diagnostic tried to reach something other than the listener; "
+           "the run ends (exit code %d)\n", KZ2_NET_LIVE_STOP_EXIT);
+    fflush(stdout);
+    fflush(stderr);
+    kz2_session_log_flush(2000);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), KZ2_NET_LIVE_STOP_EXIT);
+#endif
+    _Exit(KZ2_NET_LIVE_STOP_EXIT);
+}
 
 static void kz2_online_boot(void)
 {
@@ -486,6 +520,7 @@ static void kz2_online_boot(void)
         return ps3_net_policy_allow(ip, lo, hi, protos);
     };
     env.np_signed_in = [](int on) { ps3_net_set_np_signed_in(on); };
+    env.live_stop = [](int on) { ps3_net_policy_set_live_stop(on ? kz2_net_live_stop : nullptr); };
     std::string exe_dir, appdata, psnr, user;
 #ifdef _WIN32
     char p[MAX_PATH * 2];

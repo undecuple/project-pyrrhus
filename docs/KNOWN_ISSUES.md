@@ -2,51 +2,48 @@
 
 What is wrong or unfinished today, stated plainly. It is checked against [FEATURES.md](FEATURES.md) and the README's
 [status table](STATUS.md); where those change, this page changes with them. Last checked 2026-11-02.
-Unless an entry says otherwise, everything below was observed by us on Windows x64 builds run under Proton on Linux;
-numbers come from scripted runs unless an entry says hand play. On native Windows our own tests covered the installer
-and the first-run build (in a virtual machine without a GPU). Players have since installed and played the game on
-native Windows 11 (issue #13: a laptop with an RTX 4070 Laptop GPU and Intel Arc integrated graphics); those are their
-reports, not our measurements.
+Unless an entry says otherwise, we observed everything below on Windows x64 builds run under Proton on Linux. Numbers come from scripted runs unless an entry says hand play.
 
-If you hit something that is not listed, please open an issue with the bug report template (it asks for your system
-and the newest log file).
+On native Windows our own tests covered the installer and the first-run build, in a virtual machine without a GPU. Players have since installed and played the game on native Windows 11 (issue #13: a laptop with an RTX 4070 Laptop GPU and Intel Arc integrated graphics). Those are their reports, not our measurements.
+
+If something does not start, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). If you hit something that is not listed, please open an issue with the bug report template. It asks for your system and the newest log file.
+
+**Contents:** [Partly playable](#partly-playable) · [Frame rate](#frame-rate) · [Audio](#audio) · [Picture](#picture) · [Display](#display) · [Stability](#stability) · [Controls and motion](#controls-and-motion) · [Game data and version](#game-data-and-version) · [Building](#building)
 
 ## Partly playable
 
 - **Only the first level has been played.** Corinth River loads, draws and can be played with a pad, but the campaign
   has not been played from start to finish, and the other missions have not been tried. Checkpoint saves are written
-  in the first level; loading a checkpoint back is not checked yet, nor is loading a save copied over from RPCS3 (those
+  in the first level. Loading a checkpoint back is not checked yet. Nor is loading a save copied over from RPCS3 (those
   are copied unchanged, with no promise that they load).
 - **Pre-release; native Windows play so far from player reports only.** The installer and portable zip are published as pre-releases on the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). On 2026-10-27 and again on 2026-10-28 (the last
-  run) the installer ran in a Windows 10 virtual machine with no GPU: the silent install, the check of every installed file, the game-file checks (including
-  a OneDrive folder, wrong and swapped inputs, a drive root, a disc ISO and the disc's own EBOOT), the first-run build
-  (18.6 minutes with 2 jobs), start-up and uninstall all worked. The game started there and stopped when it tried to
-  open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players
-  (issue #13), not tested by us. See
-  [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
-- **Not yet in the port:** most of the game's settings and controls menus (only the Display page has port rows, see Display below), online play,
-  trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop"
-  entry and a Keyboard page that saves key choices to `keybinds.ini`; both were checked in scripted runs only.
+  run) the installer ran in a Windows 10 virtual machine with no GPU. These all worked:
+  - The silent install and the check of every installed file.
+  - The game-file checks (including a OneDrive folder, wrong and swapped inputs, a drive root, a disc ISO and the disc's own EBOOT).
+  - The first-run build (18.6 minutes with 2 jobs), start-up and uninstall.
+
+  The game started there and stopped when it tried to open its graphics device, because that machine has no GPU. Play on native Windows has been reported by players (issue #13), not tested by us. See [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md).
+- **Not yet in the port:** most of the game's settings and controls menus (only the Display page has port rows, see Display below). Also online play, trophies, a 60 frames-per-second option, and the 5.1/7.1 output below. The main menu now has an "Exit to desktop" entry and a Keyboard page that saves key choices to `keybinds.ini`. Both were checked in scripted runs only.
 - **Skirmish with bots (offline):** the main menu's Skirmish entry starts a match against bots. Checked in one scripted
-  run on one map with 7 bots: the match loaded, bots spawned, moved and scored, and our player fired, died and respawned,
+  run on one map with 7 bots. The match loaded, bots spawned, moved and scored, and our player fired, died and respawned,
   at about 15 frames per second. Other maps and modes, and hand play, are not checked by us. A player reports wrong
-  lighting on some guns and on one map in bot matches; we did not see it on the map we ran and are asking for details.
+  lighting on some guns and on one map in bot matches. We did not see it on the map we ran and are asking for details.
 
 ## Frame rate
 
 - **Not steadily at 30.** One 330 s scripted run of the first level on 2026-10-22 measured 23.3 frames per second
   after a logging fix (earlier runs gave 13-17). Short scripted turn-and-walk windows on 2026-10-29 gave a median of
   30.8 with the older defaults and 32.6 with the native post-processing that is now the default (single runs 22-44).
-  The PS3 runs it at 30. It has not been measured by hand. Speed varies with what else the computer is doing. The
-  translated SPU code is built for AVX and FMA3, so the port needs a CPU from about 2013 or later; it checks at start-up
+  The PS3 runs it at 30. It has not been measured by hand. Speed varies with what else the computer is doing.
+  The translated SPU code is built for AVX and FMA3, so the port needs a CPU from about 2013 or later. It checks at start-up
   and says so if they are missing.
 - **Heavy scenes are slowest:** large firefights and the post-processing stages (the game runs these on its SPUs) cost
   the most. Work on speed is ongoing; it is the main thing standing between the port and a playable first level.
 - **Stutter in the first minute of each area.** Shaders are compiled the first time they are needed, and the game
-  waits for them: hand-play recordings show pauses of 0.2 to 0.9 s, and some black frames, until most shaders are
+  waits for them. Hand-play recordings show pauses of 0.2 to 0.9 s, and some black frames, until most shaders are
   built. A later visit to the same area is smoother. A fix builds the known shaders during the load from a list kept
-  by each session: in two pairs of scripted runs with an empty cache, pauses over 0.1 s in the first minute of the
+  by each session. In two pairs of scripted runs with an empty cache, pauses over 0.1 s in the first minute of the
   level fell from 18-20 to 2. The installer and the portable zip ship this list
   (`pso-template.bin`); its effect has not been measured in an installed copy yet. A build from source needs the file
   next to `kz2.exe` or one folder up.
@@ -71,7 +68,7 @@ and the newest log file).
 - **Mouse cursor:** the cursor used to stay visible over the game. Patch 2098 hides it while the window has focus; this
   was checked on a virtual display only, not on a Wayland compositor. If it is still visible in game, please report it.
 - **Green sky in the first level (fixed, not yet confirmed on Windows):** the sky over Corinth River drew green instead
-  of hazy grey and yellow, because textures loaded after a full upload buffer were skipped and stayed empty. They are
+  of hazy grey and yellow. Textures loaded after a full upload buffer were skipped and stayed empty. They are
   now uploaded; scripted runs show the real sky. If you still see a green sky, please report it with your GPU.
 - **Compared with RPCS3:** apart from the sky above, the first level matched RPCS3's frames in the checks made so far,
   but only one level has been compared. Other levels may show missing or wrong effects.
@@ -80,19 +77,20 @@ and the newest log file).
   (seen after Mission Select or Continue, not yet reproduced); the load into the first level shows a black, frozen
   picture with the last subtitle still up for several seconds. That freeze is the shader wait above: with the shader
   list it fell from about 10 s to 2-3 s in scripted runs.
-- Other languages than the default are not tried; menu pages and subtitles were checked in one language. Russian (#39): letters the game's fonts lack are drawn in a bundled Noto Sans, lighter than the game's own face; the language is chosen in the game's first-boot list, not taken from Windows; only the gamma page was checked.
+- Other languages than the default are not tried. Menu pages and subtitles were checked in one language.
+  Russian (#39): letters the game's fonts lack are drawn in a bundled Noto Sans, lighter than the game's own face. The language is chosen in the game's first-boot list, not taken from Windows. Only the gamma page was checked.
 
 ## Display
 
 - **Borderless is the default window mode** for a new install (no `display.ini`); Alt+Enter switches to a window and
   back. An existing `display.ini` keeps its mode.
 - **Exclusive fullscreen is opt-in** (`mode = fullscreen` in `display.ini`, or the Display entry). On Windows it was
-  reported to freeze the picture after the switch on a flip-model swap chain; the port now resizes the swap chain after
-  every switch and keeps drawing (borderless) if a present fails, but this is only tried under Proton, not on real
+  reported to freeze the picture after the switch on a flip-model swap chain. The port now resizes the swap chain after
+  every switch and keeps drawing (borderless) if a present fails. This is only tried under Proton, not on real
   Windows.
 - **With a wide field of view** the view widens at the very end of a cutscene's hand-over, not during it.
 - **Laptops with two graphics chips:** the game now asks Windows for the high-performance GPU first and logs every
-  adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop; if the game still runs on
+  adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop. If the game still runs on
   the integrated chip, set `kz2.exe` to High performance in Windows' graphics settings and tell us in #13.
 
 ## Stability
@@ -102,7 +100,7 @@ and the newest log file).
   the reporter's setup, so keep the log from any recurrence.
 - **A stop in the SPU job system.** A `Gfx.PB.ShadowMap` assert stops a level load. It was seen once in a run with
   verbose logging on a heavily loaded machine, and in every test run with the per-event log lines switched off. The
-  cause was a timing race in how SPU task ids were handed over; after the fix (patch 7004) the quiet-log runs loaded
+  cause was a timing race in how SPU task ids were handed over. After the fix (patch 7004) the quiet-log runs loaded
   in 4 of 4 tries and 10 of 10 level starts. That does not yet prove it gone. If your log shows "ShadowMap" and "ASSERT", please attach it to an
   issue.
 - Verbose logging is now off by default; a 300 s run writes about 0.4 MB of log. With it off, four level loads in a
@@ -114,16 +112,22 @@ and the newest log file).
   pads work in code but have not been tried by hand. Prompts can show PlayStation, Xbox or keyboard symbols; a pad
   layout setting (Original or Modern) is available.
 - **Crouch and cover toggles, aim assist switch:** options in `gameplay.ini` (see ACCESSIBILITY.md), off or original by
-  default. They were checked in scripted runs on the first level only (the crouch and cover toggles worked there; the
-  aim assist's effect on the aim was not seen, because no enemy was in view); there is no in-game page for them, and
+  default. They were checked in scripted runs on the first level only. The crouch and cover toggles worked there. The
+  aim assist's effect on the aim was not seen, because no enemy was in view. There is no in-game page for them, and
   with `aim_assist = auto` the aim assist turns off while the mouse aims.
 - **Regions and languages:** the European, Asian and Japanese discs are untested. The language page appears at every
   start on a new profile, and the Keyboard entry is missing from non-English main menus that have no Controls row.
 - **Closes after a checkpoint restart (rare, #49):** the game may close with an internal-error message after restarting
   from a checkpoint. Please attach the newest log from the `logs` folder if it happens.
-- **Aim assist with a pad is subtle:** it only helps while an enemy's body is in clear view, and it nudges the aim by a
+- **Aim assist with a pad is subtle:** it only helps while an enemy's body is in clear view. It nudges the aim by a
   small amount, as in the game's own tuning. `aim_assist_strength` (0 to 4) in `gameplay.ini` makes it stronger.
-- **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks and push the right stick to one side (more than half way) and then the other; a controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. `motion = off` in `gameplay.ini` always uses the stick. With a keyboard, hold Z (or X) at the valve or charge, then switch to the other key (`tilt_left` / `tilt_right` in `keybinds.ini`). The real motion sensor reaches the game (the loading screen tilts). A pad reached over XInput has no motion sensors, so the stick is used. A pad whose gyro reaches Windows only through a DSU (cemuhook) server (DS4Windows, DualSenseX, a Steam Deck or phone DSU app) can tilt for real: set `dsu_port = on` (port 26760) or the server's port in `gameplay.ini`; it is off by default, talks only to 127.0.0.1, and was tested only against a fake server on the same computer, not a real one (the direction of the tilt is not yet checked; both directions are used). Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
+- **Valves and demolition charges (SIXAXIS):** without a motion sensor, hold L1 and R1 as the game asks. Push the right stick to one side (more than half way) and then the other.
+  - A controller with a working accelerometer (DualShock 3/4, DualSense through SDL3) tilts as on the PS3. The real motion sensor reaches the game (the loading screen tilts).
+  - `motion = off` in `gameplay.ini` always uses the stick. A pad reached over XInput has no motion sensors, so the stick is used.
+  - With a keyboard, hold Z (or X) at the valve or charge, then switch to the other key (`tilt_left` / `tilt_right` in `keybinds.ini`).
+  - A pad whose gyro reaches Windows only through a DSU (cemuhook) server can tilt for real. Examples are DS4Windows, DualSenseX, a Steam Deck or a phone DSU app. Set `dsu_port = on` (port 26760) or the server's port in `gameplay.ini`.
+  - DSU is off by default and talks only to 127.0.0.1. It was tested only against a fake server on the same computer, not a real one. The direction of the tilt is not yet checked; both directions are used.
+  - Not yet played through a valve or charge in the game, nor a full play-through of the second mission.
 - **Keyboard and mouse:** the game can be played with a keyboard and mouse: the mouse looks and aims, and its buttons fire and zoom by default (`keybinds.ini`). Mouse look has only been checked in scripted test runs, not yet by hand, and it does not work in vehicles or on mounted guns yet.
 
 ## Game data and version
@@ -131,11 +135,11 @@ and the newest log file).
 - **Downloadable content:** the downloadable content (the multiplayer map packs) is not used yet, even when it is
   installed for RPCS3. The campaign does not need it.
 - **Regions:** the port is built and tested on the US disc (BCUS98116) with update 1.29. The European (BCES00081),
-  Asian (BCAS20066) and Japanese (BCJS30032) discs, each with its own region's 1.29 update, are accepted but
-  untested: the code is the same (the 1.29 EBOOT is identical in all four), the data differs (the European game
-  archive is the US one; the Asian and Japanese archives and update data are their own), and no one has played them
-  through yet. Their languages and Japanese intro movie are not checked. A disc of one region with another region's
-  update is refused.
+  Asian (BCAS20066) and Japanese (BCJS30032) discs, each with its own region's 1.29 update, are accepted but untested.
+  - The code is the same (the 1.29 EBOOT is identical in all four).
+  - The data differs: the European game archive is the US one, and the Asian and Japanese archives and update data are their own.
+  - No one has played them through yet. Their languages and Japanese intro movie are not checked.
+  - A disc of one region with another region's update is refused.
 - **Update 1.29:** its added archives and patch files are read; the effect of the patches on the game's data is not
   fully checked yet.
 - **You need a decrypted main program made from your own copy**, see [requirements.md](requirements.md). This project
@@ -143,12 +147,13 @@ and the newest log file).
 
 ## Building
 
-- The build is heavy: each lifted source chunk can need over 1 GB of memory to compile, the build takes roughly 18
-  minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. 16 GB of RAM or more
+- The build is heavy. Each lifted source chunk can need over 1 GB of memory to compile. The build takes roughly 18
+  minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. At least 16 GB of RAM
   is advised (8 GB works with 2 jobs; see [requirements.md](requirements.md)).
-- macOS and native Windows builds are untested ([BUILDING.md](BUILDING.md)). Cross builds from a Linux host outside our Nix shell: the toolchain fixes (#34) are checked with a test project and our own build, not on a real Fedora, Debian or Arch host.
+- Builds for macOS and native Windows are untested ([BUILDING.md](BUILDING.md)).
+- Cross builds from a Linux host outside our Nix shell: the toolchain fixes (#34) are checked with a test project and our own build. They are not checked on a real Fedora, Debian or Arch host.
 - **Install folder.** From 0.1.8 the game reads your game folder where it is and writes its caches under the install
-  folder's `vfs` folder; nothing is linked, so any drive that can hold the install works. With a disc ISO, a FAT32
+  folder's `vfs` folder. Nothing is linked, so any drive that can hold the install works. With a disc ISO, a FAT32
   install drive is still refused before the copy, because FAT32 cannot hold the game's 6.5 GiB archive. An install made
   with 0.1.7 or earlier on a drive without links keeps using its folder under `%LOCALAPPDATA%\Project Pyrrhus`
   (`vfs-` and six letters and digits) for the caches, so nothing is rebuilt; uninstalling removes it. Tested with host

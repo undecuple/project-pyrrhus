@@ -32,7 +32,9 @@ checks = [
   ("arm publishes the EA (seq_cst) before it re-reads the word", arm.index("__ATOMIC_SEQ_CST") < arm.index("vm_read32(ea) != w") and "gcm_walker_kick()" in arm),
   ("the SPU put hook fences, then checks the park EA and kicks", hook.index("__atomic_thread_fence(__ATOMIC_SEQ_CST)") < hook.index("s_park_wake_ea") < hook.index("gcm_walker_kick()")),
   ("the put check runs before the page notes", hook.index("gcm_walker_kick()") < hook.index("cellGcm_note_guest_write_pages_ea")),
-  ("the wait sleeps when unarmed or KZ2_PARK_WAKE=0", re.search(r"!gcm_park_wake_on\(\) \|\| !__atomic_load_n\(&s_park_wake_ea, __ATOMIC_ACQUIRE\)\) \{\s*Sleep\(ms\);", wait) is not None),
+  ("the wait sleeps when unarmed or KZ2_PARK_WAKE=0", re.search(r"!gcm_park_wake_on\(\) \|\| !__atomic_load_n\(&s_park_wake_ea, __ATOMIC_ACQUIRE\)\)( && !wla\)\))? \{\s*Sleep\(ms\);", wait) is not None),
+  # KZ2 6082: an acquire wait (GCM_SEMA_ACQUIRE=1) also waits on the event, whatever KZ2_PARK_WAKE says
+  ("6082: an acquire wait is on the event, independent of KZ2_PARK_WAKE", "wla" not in wait or "&s_park_wake_ea, __ATOMIC_ACQUIRE)) && !wla)) {" in wait),
   ("the wait is on the auto-reset event otherwise", "WaitForSingleObject(s_walker_wake, ms)" in wait and "CreateEventA(NULL, FALSE, FALSE, NULL)" in wait),
   ("frame_clock sleeps through cellGcm_walker_wait(4), no bare Sleep(4)", "cellGcm_walker_wait(4);" in fc and "Sleep(4)" not in fc),
 ]

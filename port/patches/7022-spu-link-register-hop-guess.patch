@@ -1,0 +1,161 @@
+KZ2 patch 7022: computed hops whose target is a link register plus a constant get a lift-time guess
+(KZ3 patch 1098's SPU_IB_HOP_G), switched by KZ2_SPU_PCGUESS=1 (off by default until a heavy-view A/B).
+The SPU job libraries open and close their interrupt windows with `brsl $r2, .+4 ; ai $r2, $r2, 8 ; bid|bie $r2` (and
+`bihz $rC, $r2`): a computed hop to the instruction after the branch. compute_ib_guesses followed only `il`/`ila`
+constants, so each of these hops went through spu_ib_direct (its state tests, the lookup memo and probe) and, with an
+interrupt pending, the full resolver: Gfx.Particles.UpdateJob has 24 such sites around its lock-line helpers
+(0xF6A0-0xFE20), VertexJob 11, Skinning 7; dispatch (spu_indirect_branch, spu_lifted_lookup, do_linear_probe_nonempty,
+spu_ib_direct) was 14 % of UpdateJob's samples and 10 % of VertexJob's in the spu 35 profile (150-170 s).
+Here resolve() also takes `brsl rX` (rX = its address + 4) and `ai rX, rY, K` (offset K) when the caller asks for
+link-register guesses (pc_guesses); those (site, target) pairs are emitted as SPU_IB_GUESS_PC, which is SPU_IB_GUESS
+behind g_kz2_pcguess (spu_drain.c spu_hop_init: KZ2_SPU_PCGUESS=1 and the 1098 guesses on). The guess is only a hint:
+the hop is taken directly only when the register equals it and spu_ib_guess_ok() holds (an enabled pending interrupt
+still goes to the drain), else the old path runs. The guess targets join the TU's verified list (spu_ib_guess_register),
+like 1098's. In UpdateJob 22 of the 27 unguessed computed hops get a guess (the two `bihz $r17|$r16, $r2` sites at
+0xF858/0xF944 jump to the middle of a lifted function, no guess). Host test: tools/spu/test_spu_pcguess.sh (hops on/off
+give the same registers and steps; off goes through spu_ib_direct; interrupt pending, wrong target and guesses off
+fall back; negative control with the switch ignored; the lifter half on the idiom's real encodings).
+
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -386,7 +386,7 @@
+ _IB_GUESS_EXCLUDE = {0, 0xA00, 0x9C0, 0x9D0, 0xA70, 0x4A40, 0x3FF00}
+ 
+ 
+-def compute_ib_guesses(insns, func_starts, sites, window=512, max_guesses=2) -> dict:
++def compute_ib_guesses(insns, func_starts, sites, window=512, max_guesses=2, pc_guesses=None) -> dict:
+     """KZ3 patch 1098: likely targets of computed hops, for SPU_IB_HOP_G.
+ 
+     A software-pipelined SPU loop closes with `bi rX`, rX = selb(head, exit, cond), head loaded by `ila` before the
+@@ -397,7 +397,7 @@
+     ordered = sorted(insns, key=lambda x: x.addr)
+     idx_of = {ins.addr: i for i, ins in enumerate(ordered)}
+ 
+-    def resolve(reg, start_idx, depth, out):
++    def resolve(reg, start_idx, depth, out, add=0, pc=None):
+         if depth > 4 or len(out) >= max_guesses:
+             return
+         for j in range(start_idx, max(-1, start_idx - window), -1):
+@@ -407,22 +407,41 @@
+             ops = _ops(w.operands)
+             if w.mnemonic in ("il", "ila") and len(ops) >= 2:
+                 try:
+-                    c = int(ops[1], 0) & 0x3FFFF
++                    c = (int(ops[1], 0) + add) & 0x3FFFF
+                 except ValueError:
+                     return
+                 if c in func_starts and c not in _IB_GUESS_EXCLUDE and c not in out:
+                     out.append(c)
+                 return
+-            if w.mnemonic == "selb" and len(ops) >= 3:
+-                for r in (ops[1], ops[2]):
+-                    rr = _reg(r)
+-                    if rr.isdigit():
+-                        resolve(int(rr), j - 1, depth + 1, out)
++            # KZ2 patch 7022: a link register as a constant. `brsl rX, T` leaves rX = its own address + 4 (also for
++            # a PC-getter, `brsl rX, .+4`); the interrupt-window idiom of the job libraries is
++            # `brsl $r2, .+4 ; ai $r2, $r2, 8 ; bid|bie $r2` (and `bihz $rC, $r2`), a computed hop to the
++            # instruction after the branch. Such guesses go in `pc` (emitted as SPU_IB_GUESS_PC, KZ2_SPU_PCGUESS).
++            if w.mnemonic in ("brsl", "brasl") and pc is not None:
++                c = (w.addr + 4 + add) & 0x3FFFF
++                if c in func_starts and c not in _IB_GUESS_EXCLUDE and c not in out:
++                    out.append(c)
++                    pc.add(c)
+                 return
+             if w.mnemonic in ("ori", "ai") and len(ops) == 3 and ops[2].strip() in ("0", "0x0"):
+                 rr = _reg(ops[1])
+                 if rr.isdigit():
+-                    resolve(int(rr), j - 1, depth + 1, out)
++                    resolve(int(rr), j - 1, depth + 1, out, add, pc)
++                return
++            if w.mnemonic == "ai" and len(ops) == 3 and pc is not None:   # KZ2 patch 7022: rX = rY + K
++                rr = _reg(ops[1])
++                try:
++                    k = int(ops[2], 0)
++                except ValueError:
++                    return
++                if rr.isdigit():
++                    resolve(int(rr), j - 1, depth + 1, out, add + k, pc)
++                return
++            if w.mnemonic == "selb" and len(ops) >= 3:
++                for r in (ops[1], ops[2]):
++                    rr = _reg(r)
++                    if rr.isdigit():
++                        resolve(int(rr), j - 1, depth + 1, out, add, pc)
+                 return
+             return
+         return
+@@ -434,7 +453,10 @@
+         if r is None or not r.isdigit():
+             continue
+         out = []
+-        resolve(int(r), idx_of[a] - 1, 0, out)
++        pcs = set() if pc_guesses is not None else None
++        resolve(int(r), idx_of[a] - 1, 0, out, 0, pcs)
++        if pcs:
++            pc_guesses.update((a, t) for t in pcs)   # KZ2 patch 7022: (site, target)
+         if out:
+             guesses[a] = out
+     return guesses
+@@ -1112,7 +1134,9 @@
+         if not gs:
+             return f"SPU_IB_HOP(ctx, {texpr});"
+         self.ib_guess_targets.update(gs)
+-        body = " ".join(f"SPU_IB_GUESS(ctx, 0x{t:X}u, {self.prefix}spu_func_{t:08X})" for t in gs)
++        pcg = getattr(self, "ib_pc_guesses", set())   # KZ2 patch 7022: link-register guesses, own switch
++        body = " ".join(f"SPU_IB_GUESS{'_PC' if (addr, t) in pcg else ''}(ctx, 0x{t:X}u, {self.prefix}spu_func_{t:08X})"
++                        for t in gs)
+         return f"SPU_IB_HOP_G(ctx, {texpr}, {body});"
+ 
+     def _hop(self, tgt) -> str:
+@@ -1373,7 +1397,8 @@
+     lifter.func_starts = {s for s, e in bounds}  # for fall-through tail-call chaining
+     # KZ3 patch 1098: computed-hop guesses (sites: every bi/biz/binz... that is not a return)
+     _sites = {i.addr for i in insns if _bi_target_reg(i) is not None}
+-    lifter.ib_guesses = compute_ib_guesses(insns, lifter.func_starts, _sites)
++    lifter.ib_pc_guesses = set()   # KZ2 patch 7022
++    lifter.ib_guesses = compute_ib_guesses(insns, lifter.func_starts, _sites, pc_guesses=lifter.ib_pc_guesses)
+     lifter.ib_guess_targets = set()
+     for s, e in bounds:
+         lifter.lift_function(insns, s, e)
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -1302,6 +1302,13 @@
+             spu_hop_note((ctx), (G));                                                            \
+             SPU_HOP_TAIL(F(ctx));                                                                \
+         }
++/* KZ2 patch 7022: a guess the lifter took from a link register (`brsl rX` + `ai rX, rX, K`: the
++ * job libraries' interrupt-window idiom `brsl $r2, .+4 ; ai $r2, $r2, 8 ; bid|bie $r2`, 24 sites in
++ * Gfx.Particles.UpdateJob, 11 in VertexJob). The same test and tail call as SPU_IB_GUESS; KZ2_SPU_PCGUESS=1 turns
++ * them on (default off until measured), so a same-exe A/B compares them alone. Off: these hops go through
++ * spu_ib_direct's lookup as before. */
++extern int g_kz2_pcguess;                  /* spu_drain.c spu_hop_init */
++#define SPU_IB_GUESS_PC(ctx, G, F) if (g_kz2_pcguess > 0) { SPU_IB_GUESS(ctx, G, F) }
+ /* SPU_IB_HOP with lift-time guesses (GUESSES = SPU_IB_GUESS(...) ...), tried after the bracket-return test */
+ #define SPU_IB_HOP_G(ctx, T, GUESSES) do {                                                       \
+         (ctx)->pc = (T);                                                                         \
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -782,6 +782,7 @@
+  * switch that makes the drain loop or spu_indirect_branch do more than dispatch (their diagnostics need every hop). */
+ int g_spu_hop_on SPU_READ_MOSTLY = -1;
+ int g_spu_ib_guess SPU_READ_MOSTLY = 0;   /* KZ3 patch 1098 */
++int g_kz2_pcguess SPU_READ_MOSTLY = 0;    /* KZ2 patch 7022: KZ2_SPU_PCGUESS=1 */
+ void spu_hop_init(void)
+ {
+     static const char* const diag[] = {"SPU_TAILRET", "SPU_JOBTRACE", "SPU_JOBEXEC", "SPU_POLLTRACE", "SPU_IBCOV",
+@@ -796,6 +797,11 @@
+       const int gon = on && !(g && g[0] == '0');
+       if (g_spu_hop_on < 0) fprintf(stderr, "[spu] computed-hop guesses %s (KZ3 patch 1098)\n", gon ? "on" : "off");
+       g_spu_ib_guess = gon ? ((st && st[0] == '1') ? 2 : 1) : 0; }
++    /* KZ2 patch 7022: link-register guesses (SPU_IB_GUESS_PC), KZ2_SPU_PCGUESS=1 on; need the guesses on too */
++    { const char* p = getenv("KZ2_SPU_PCGUESS");
++      const int pon = g_spu_ib_guess > 0 && p && p[0] == '1';
++      if (g_spu_hop_on < 0) fprintf(stderr, "[spu] link-register hop guesses %s (KZ2 patch 7022)\n", pon ? "on" : "off");
++      g_kz2_pcguess = pon; }
+     g_spu_hop_on = on;
+ }
+ 

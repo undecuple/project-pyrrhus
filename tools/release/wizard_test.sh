@@ -240,6 +240,7 @@ rpcs3)
   #   A  RPCS3 path: wrong folder (error), a tree missing the update (the problems box), fixed (Retry), the build
   #      fixture, the save question (dry run), No
   #   B  manual path with an encrypted EBOOT.BIN (HELP_ENCRYPTED)
+  #   I  RPCS3 lists the disc as a .dec.iso file (synthetic ISO, an earlier change): the EBOOT notice once, then Retry with an EBOOT.elf
   #   E  manual path, the EBOOT page with KZ2_WT_EBOOT (a Z:\ path, e.g. a real EBOOT read through the sandbox's
   #      read-only binds) and KZ2_WT_EFX (the fixture set, manual or manual-eu): the page's answer (box or Ready page)
   #      is shot; with KZ2_WT_EBOX=1 the box is answered with Return (its default: OK, or No for a WARN) and the page
@@ -303,6 +304,18 @@ rpcs3)
     chg 120 keyw . Return; sleep 15; rshot A-08-build                                               # Retry: found, build fixture
     waitbox 300; rshot A-09-save-question                                                 # the dry run text
     chg 60 keyw . n; calm 10 120; rshot A-10-after-save-no
+  elif [[ "$WALK" == I ]]; then
+    # RPCS3 lists the disc as "Killzone 2 (USA).dec.iso"; the update is installed, no EBOOT.elf yet
+    chg 60 key Return; rshot I-02-rpcs3-folder
+    typ "$(winpath "$FX/iso/rpcs3")"; sleep 3; rshot I-04-folder-typed
+    chg 60 key Return; rshot I-05-ready
+    chg 240 key Return; calm 20 120; rshot I-06-found-outside                             # install, then the approval box
+    chg 120 keyw . y; waitbox 240; rshot I-07-problems                                    # (1) no "not a folder", (2) one EBOOT message
+    mkdir -p "$FX/iso/rpcs3/dev_hdd0/game/BCUS98116/USRDIR"
+    cp "$FX/iso/update-elf/EBOOT.elf" "$FX/iso/rpcs3/dev_hdd0/game/BCUS98116/USRDIR/EBOOT.elf"
+    chg 120 keyw . Return; sleep 15; rshot I-08-build                                     # Retry (3): nothing refused
+    waitbox 300; rshot I-09-save-question
+    chg 60 keyw . n; calm 10 120; rshot I-10-after-save-no
   elif [[ "$WALK" == E ]]; then
     EFX="$FX/${KZ2_WT_EFX:-manual}"
     chg 60 key Down; chg 60 key Return; rshot E-03-dump

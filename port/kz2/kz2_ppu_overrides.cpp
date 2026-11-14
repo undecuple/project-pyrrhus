@@ -2624,3 +2624,36 @@ void func_003F9870(ppu_context* ctx) { kz2_lua_gettable(ctx, func_003F9870__lift
 #ifdef PPU_OVERRIDE_003ED420
 void func_003ED420(ppu_context* ctx) { kz2_lua_gettable(ctx, func_003ED420__lifted); }   // @0x003ED420 luaV_gettable (v1.01)
 #endif
+
+/* The game's UPnP gateway search start @0x00767B78 (1.29) / @0x0075A2F8 (v1.01, 600 fixed bytes, delta 0xD880),
+ * answered "no gateway" at the source (2026-11-11): the game gets the end state of a network
+ * without a UPnP gateway (code 0xD6D9, its own search timeout) and nothing is sent to 239.255.255.250:1900. The
+ * reading and the decision: kz2_upnp.h. KZ2_UPNP=search runs the game's own search (diagnostic). One line per
+ * service type. */
+#include "kz2_upnp.h"
+static uint32_t kz2_upnp_rd32(uint32_t a) { return vm_read32(a); }
+static void kz2_upnp_wr32(uint32_t a, uint32_t v) { vm_write32(a, v); }
+[[maybe_unused]] static void kz2_upnp_search(ppu_context* ctx, void (*lifted)(ppu_context*), const kz2_upnp_site* site)
+{
+    static int mode = -1;
+    static unsigned said;   /* bit per service type logged */
+    if (mode < 0) mode = kz2_upnp_mode_from(getenv("KZ2_UPNP"));
+    uint32_t r3 = 0;
+    const uint32_t type = (uint32_t)ctx->gpr[4];
+    if (kz2_upnp_search_answer(site, (uint32_t)ctx->gpr[3], type, (uint32_t)ctx->gpr[5], mode, kz2_upnp_rd32,
+                               kz2_upnp_wr32, &r3)) {
+        const unsigned bit = type == 0x1000 ? 1u : type == 0x800 ? 2u : type == 0x40 ? 4u : type == 0x20 ? 8u : 16u;
+        if (!(__atomic_fetch_or(&said, bit, __ATOMIC_RELAXED) & bit))
+            printf("[net] UPnP: no gateway on this network: the game's %s search answered 0x%04X (its own search "
+                   "timeout) without a send\n", kz2_upnp_type_name(type), r3);
+        ctx->gpr[3] = (uint64_t)r3;
+        return;
+    }
+    lifted(ctx);
+}
+#ifdef PPU_OVERRIDE_00767B78
+void func_00767B78(ppu_context* ctx) { kz2_upnp_search(ctx, func_00767B78__lifted, &kz2_upnp_site_129); }   // @0x00767B78 (1.29)
+#endif
+#ifdef PPU_OVERRIDE_0075A2F8
+void func_0075A2F8(ppu_context* ctx) { kz2_upnp_search(ctx, func_0075A2F8__lifted, &kz2_upnp_site_101); }   // @0x0075A2F8 (v1.01)
+#endif

@@ -36,3 +36,4 @@
 003EF350  # v1.01 luaG_errormsg (= 1.29 0x3FB7A0, 40 words with branches masked, unique): diagnostic
 003ED420  # v1.01 luaV_gettable (= 1.29 0x3F9870, checked by disassembly): diagnostic
 007B6084  # v1.01 libc longjmp: restore guest registers, then unwind to the host setjmp continuation (issue 49)
+0075A2F8  # v1.01 UPnP gateway search start (= 1.29 0x767B78, 600 fixed bytes with branches masked, unique): kz2_upnp.h

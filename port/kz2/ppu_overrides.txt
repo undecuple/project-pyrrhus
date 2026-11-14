@@ -86,3 +86,4 @@
 003FB7A0  # 1.29 luaG_errormsg(L) (luaD_throw inlined): "[lua] script error N caught by pcall" / unprotected line; lifted runs (#49)
 003F9870  # 1.29 luaV_gettable(L, t, key, val): logs a bad L or t with its caller (lr); lifted runs (#49)
 007C3A0C  # libc longjmp: restore guest registers, then unwind to the host setjmp continuation (issue 49)
+00767B78  # 1.29 UPnP gateway search start (obj, service type, callback): answered "no gateway" (0xD6D9) without a send, kz2_upnp.h; KZ2_UPNP=search

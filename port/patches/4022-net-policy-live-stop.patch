@@ -1,0 +1,111 @@
+KZ2 4022 (2026-11-11): the live stop of an outside-contact diagnostic. Killzone 2's loopback
+listener run (KZ2_NET_LISTEN, D56) must end at the first attempt to reach anything but the listener, instead of being
+found afterwards in the log (an earlier change's UPnP search was). net_policy gets ps3_net_policy_set_live_stop(fn): with a
+stop armed, the first refusal in strict mode, of a destination (connect / sendto) or of a host name (gethostbyname,
+cellHttp, a DNS query answered locally by 4004), prints one "[net] refused ..." line and calls the stop, which ends the
+process. That line names no address and no host name (D56: the address class, the port, the name's length only). A
+denied name stops in any mode. NULL (the default) changes nothing: the refusal and its log line stay as 4001 made them.
+ps3_net_policy_addr_class names the class of an IPv4 address. The port arms it (port/kz2/kz2_online.cpp, listener
+mode only). Test: tools/runtime/test_upnp_live_stop.sh.
+
+--- a/libs/network/net_policy.c	2026-11-12 21:11:47.192368145 -0600
++++ b/libs/network/net_policy.c	2026-11-12 21:13:32.405448405 -0600
+@@ -29,6 +29,31 @@
+ static void log_lock(void)   { while (__atomic_test_and_set(&s_log_lock, __ATOMIC_ACQUIRE)) { } }
+ static void log_unlock(void) { __atomic_clear(&s_log_lock, __ATOMIC_RELEASE); }
+ 
++/* KZ2 4022: the live stop of an outside-contact diagnostic (NULL: off). Read on the refusing thread. */
++static ps3_net_policy_stop_fn s_live_stop;
++
++void ps3_net_policy_set_live_stop(ps3_net_policy_stop_fn fn) { __atomic_store_n(&s_live_stop, fn, __ATOMIC_RELEASE); }
++
++const char* ps3_net_policy_addr_class(const uint8_t ip[4])
++{
++    if (ip[0] == 127) return "loopback";
++    if (ip[0] >= 224 && ip[0] <= 239) return "multicast";
++    if (ip[0] == 10 || (ip[0] == 172 && (ip[1] & 0xF0) == 16) || (ip[0] == 192 && ip[1] == 168) ||
++        (ip[0] == 169 && ip[1] == 254))
++        return "private";
++    if (ip[0] == 0 || ip[0] == 255) return "special";
++    return "public";
++}
++
++/* KZ2 4022: with the stop armed, one line that names no address or name, then the stop (it does not return; if a
++ * stop ever returns, the refusal stands as before). */
++static void live_stop_refused(ps3_net_policy_stop_fn stop, const char* what)
++{
++    printf("[net] refused %s; live stop: the diagnostic ends here\n", what);
++    fflush(stdout);
++    stop();
++}
++
+ int ps3_net_online(void)
+ {
+     int v = __atomic_load_n(&s_online, __ATOMIC_ACQUIRE);
+@@ -115,11 +140,26 @@
+ int ps3_net_policy_resolve(const char* name, uint8_t ip[4])
+ {
+     char n[PS3_NET_POLICY_NAME_MAX + 1];
+-    if (!norm_name(name, n)) return s_strict ? 0 : -1;   /* odd names: the host resolver judges them */
+-    if (denied(n)) return 0;
++    ps3_net_policy_stop_fn stop = __atomic_load_n(&s_live_stop, __ATOMIC_ACQUIRE);
++    if (!norm_name(name, n)) {                            /* odd names: the host resolver judges them */
++        if (s_strict && stop) live_stop_refused(stop, "a host name the policy cannot read");
++        return s_strict ? 0 : -1;
++    }
++    if (denied(n)) {
++        if (stop) live_stop_refused(stop, "a denied host name");
++        return 0;
++    }
+     for (int i = 0; i < s_nmap; i++)
+         if (!strcmp(n, s_map[i].name)) { memcpy(ip, s_map[i].ip, 4); return 1; }
+-    return s_strict ? 0 : -1;
++    if (s_strict) {
++        if (stop) {
++            char what[64];
++            snprintf(what, sizeof what, "a host name (%u characters, not mapped)", (unsigned)strlen(n));
++            live_stop_refused(stop, what);
++        }
++        return 0;
++    }
++    return -1;
+ }
+ 
+ /* KZ3 4004: the DNS answer (RFC 1035 wire format). Only the question is read: header (12 bytes), one QNAME of
+@@ -171,6 +211,17 @@
+ 
+ static void log_refusal(int proto, const uint8_t ip[4], uint16_t port)
+ {
++    ps3_net_policy_stop_fn stop = __atomic_load_n(&s_live_stop, __ATOMIC_ACQUIRE);
++    if (stop) {   /* KZ2 4022: the diagnostic's line names the address class and port only */
++        char what[96];
++        snprintf(what, sizeof what, "%s to a %s address, port %u (not the configured server)",
++                 proto == PS3_NET_PROTO_TCP ? "TCP" : "UDP", ps3_net_policy_addr_class(ip), (unsigned)port);
++        log_lock();
++        if (s_nlogged < LOGGED_MAX) s_nlogged++;
++        log_unlock();
++        live_stop_refused(stop, what);
++        return;
++    }
+     int say = 1;
+     log_lock();
+     for (unsigned i = 0; i < s_nlogged; i++)
+--- a/libs/network/net_policy.h	2026-11-12 21:11:47.192387224 -0600
++++ b/libs/network/net_policy.h	2026-11-12 21:13:32.405544107 -0600
+@@ -69,6 +69,16 @@
+ #define PS3_NET_DNS_MAX 512
+ size_t ps3_net_policy_dns_answer(const uint8_t* q, size_t qlen, uint8_t* out, size_t cap);
+ 
++/* KZ2 4022: the live stop of an outside-contact diagnostic (Killzone 2's KZ2_NET_LISTEN run). With a stop armed,
++ * the first refusal in strict mode, a destination (connect / sendto) or a host name (gethostbyname, cellHttp, a DNS
++ * query answered locally), prints one "[net] refused ..." line that names no address and no host name (the address
++ * class, the port, the name's length), then calls the stop, which ends the process. NULL disarms (default). A
++ * denied name stops in any mode. */
++typedef void (*ps3_net_policy_stop_fn)(void);
++void ps3_net_policy_set_live_stop(ps3_net_policy_stop_fn fn);
++/* "loopback", "multicast", "private", "special" or "public" for a network-order IPv4 address. */
++const char* ps3_net_policy_addr_class(const uint8_t ip[4]);
++
+ /* Refusals logged so far (tests). */
+ unsigned ps3_net_policy_refusals_logged(void);
+ 

@@ -51,7 +51,6 @@ static void arm(int on)
 
 /* ---- the native side's globals (kz2_native_jobs.c / the generated spu_workloads.c in the game) ---- */
 int (*g_kz2_native_gate[KZ2_NATIVE_SLOTS])(spu_context*);
-kz2_native_ctr g_kz2_native_ctr[KZ2_NATIVE_SLOTS][KZ2_NATIVE_SHARDS];
 long kz2_native_calls_sum(int slot) { (void)slot; return 0; }
 long kz2_native_fallback_sum(int slot) { (void)slot; return 0; }
 void kz2_native_count_print(int slot, long calls) { (void)slot; (void)calls; }

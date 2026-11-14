@@ -1,7 +1,8 @@
 # Install walkthrough and FAQ
 
 A worked example for a common setup, then the questions players ask most. The full reference for each input and
-every check is [GETTING-FILES.md](GETTING-FILES.md); where this page is shorter, that page is the reference.
+every check is [GETTING-FILES.md](GETTING-FILES.md); where this page is shorter, that page is the reference. If
+something does not start or works wrongly, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md), organised by what you see.
 No game files, keys or decryption steps are given here or anywhere in this project: you need your own copy.
 
 ## Walkthrough: RPCS3 on one drive, the game ISO on another
@@ -63,8 +64,36 @@ Yes: set `KZ2_SKIP_INTRO=1` (in a Command Prompt, `setx KZ2_SKIP_INTRO 1`, then 
 
 **Where are the logs?**
 The setup and first run write `Project-Pyrrhus-firstrun.log` in the install folder; the launcher writes
-`logs\launcher.log`, and the game its own log in `logs`. Attach the newest one to an
-[issue](https://github.com/undecuple/project-pyrrhus/issues/new/choose).
+`logs\launcher.log`, and the game its own log, the newest `kz2-` file in `build\logs`. What to attach to an
+[issue](https://github.com/undecuple/project-pyrrhus/issues/new/choose), and how user names are hidden:
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#where-the-logs-are-and-what-to-attach-to-an-issue).
+
+**What does installing an update keep, and what does it rebuild?**
+Run the new setup over the same install folder. It offers the folders you picked last time.
+- **Kept:**
+  - Your saves (the `gamedata` folder in your data folder, `%APPDATA%\Project Pyrrhus`, or in the install folder for the portable zip).
+  - The settings files `display.ini`, `keybinds.ini` and `gameplay.ini` in that same folder (an existing `gameplay.ini` is never changed).
+  - The Online settings (`repsn.ini`, `community.ini`), in `%APPDATA%\PS3Recomp`, or in `shared` in the install folder when portable.
+  - The build folder, so the game's translated code is not thrown away.
+  - The game's caches, and the logs.
+- **Replaced:** only the port's own program folders (`port`, `ps3recomp`, `toolchain`, `kz2-setup`). They are replaced whole, so a file a newer version dropped cannot linger.
+- **Written again:** the options on the setup's options page go back into `kz2-install.ini` each time you run the setup. These are portable or not, pad layout, button prompts, window mode and checking for new versions. Check them on that page. The folder pages are filled in from last time.
+- **Rebuilt, if needed:** the launcher compares the build with the install.
+  - If only the port changed, it compiles again, which its message calls "usually minutes".
+  - If the new version changes the translation of the game's code, or the EBOOT or game folders changed, it translates and compiles again. That takes longer.
+  - Steps whose inputs did not change are skipped. The launcher says which applies and asks before it starts.
+- **Caches:**
+  - The game's shader and pipeline cache (in the `scratch` folder) stays.
+  - The saved list of pipelines belongs to the build that made it. When the shader translation changed, it is discarded with a line in the log and rebuilt on the first start (slower, with some stutter).
+  - The game's disk cache of disc files (`cache.idx`, `cache.dat`) carries a stamp of the game's `kz2.exe`. A new exe removes it and the game makes a new one, so the first load after an update can be slower.
+  - Neither is a save.
+- **Uninstalling** is different: it removes the build, the logs and the caches, and asks whether to keep your saves.
+  The settings files are not removed, and your game files and RPCS3 folder are never touched.
+
+**Which pads work?**
+Pads go through SDL3 (PlayStation and Xbox pads, and others SDL3 recognises; Windows' XInput is the fallback). Only the
+DualShock 4 has been played by hand (2026-10-22); Xbox, DualSense and other pads are untested. If a pad is not
+detected, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#my-pad-is-not-detected).
 
 **Do I need RPCS3?**
 No. It is only a convenient place to find your files. Nothing of RPCS3 runs while you play.

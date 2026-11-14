@@ -18,20 +18,17 @@
 
 extern int (*g_kz2_native_gate[KZ2_NATIVE_SLOTS])(spu_context*);   /* generated spu_workloads.c (tools/spu/gen_spu_register.py) */
 
-__attribute__((aligned(64))) kz2_native_ctr g_kz2_native_ctr[KZ2_NATIVE_SLOTS][KZ2_NATIVE_SHARDS];
-
 long kz2_native_calls_sum(int slot)
 {
     long n = 0;
-    for (int k = 0; k < KZ2_NATIVE_SHARDS; k++) n += g_kz2_native_ctr[slot & (KZ2_NATIVE_SLOTS - 1)][k].calls;
+    for (int k = 0; k <= KZ2_NATIVE_CTXS; k++)
+        n += __atomic_load_n(&g_kz2_native_rows[k].calls[slot & (KZ2_NATIVE_SLOTS - 1)], __ATOMIC_RELAXED);
     return n;
 }
 
 long kz2_native_fallback_sum(int slot)
 {
-    long n = 0;
-    for (int k = 0; k < KZ2_NATIVE_SHARDS; k++) n += g_kz2_native_ctr[slot & (KZ2_NATIVE_SLOTS - 1)][k].fallback;
-    return n;
+    return __atomic_load_n(&g_kz2_native_fb[slot & (KZ2_NATIVE_SLOTS - 1)], __ATOMIC_RELAXED);
 }
 
 static const char* s_rec_dir;

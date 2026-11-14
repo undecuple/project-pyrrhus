@@ -1,15 +1,33 @@
 # Getting your files ready
 
-The setup needs three things from your own copy of Killzone 2: the disc dump, the 1.29 update folder and the decrypted
-1.29 EBOOT. This page says what each one must look like and what the setup tells you when something is off. It does
-not say how to make the files, and nothing here is shipped or downloaded by this project. If you play the game in the
-PS3 emulator RPCS3, the setup can find all three in your RPCS3 install ("Use my RPCS3 install"); for installing the
-update and adding the game there, see RPCS3's documentation. With the RPCS3 folder left empty, the setup looks in
-`%LOCALAPPDATA%\Programs\rpcs3`, `%APPDATA%\rpcs3`, and for an unzipped RPCS3 in Documents, on the Desktop, in
-Downloads (also where Windows has moved those folders), in Games or Emulators in your user folder, in Program Files,
-and at the root of each local drive and its Games, Emulators, Emulator or PS3 folder: a folder named `RPCS3` or with
-"rpcs3" in its name (such as `rpcs3-v0.0.34-...-win64`), one level deep, and only one that holds `rpcs3.exe` or
-RPCS3's settings; anywhere else, pick the folder with `rpcs3.exe` yourself.
+The setup needs three things from your own copy of Killzone 2. This page says what each one must look like and what the setup tells you when something is off. It does not say how to make the files, and this project ships or downloads none of them. If a check fails, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for symptoms and the code table below for each check.
+
+## What you need
+
+| You need | What it is |
+|---|---|
+| The disc dump | A folder that holds `PS3_GAME`, or a decrypted `.iso` file |
+| The 1.29 update | The update folder of your disc's region |
+| The decrypted 1.29 EBOOT | The file `EBOOT.elf`, made from that update |
+| Free disk space | About 7 GB more when the disc is an ISO, because its files are copied once into the install folder |
+
+## Steps
+
+1. **Check the disc dump.** Open the folder. You should see `PS3_GAME`, and inside it `PARAM.SFO` and `USRDIR`. For an ISO, you need the file itself, decrypted.
+2. **Check the update folder.** Open it. You should see `PARAM.SFO` next to `USRDIR`. On a PS3 or in RPCS3 it is `dev_hdd0/game/<the disc's title id>`, such as `dev_hdd0/game/BCUS98116`.
+3. **Check the EBOOT.** It must be `EBOOT.elf`, made from the update's `USRDIR/EBOOT.BIN`, not from the disc's. You should see a file that starts with the letters `ELF`. An encrypted file starts with `SCE`.
+4. **Run the setup and pick each input once.** Pick the folder or the file itself, not the drive that holds it. You should see the setup name the disc's title id under the folder.
+5. **Or let it search RPCS3.** If you play the game in the PS3 emulator RPCS3, choose "Use my RPCS3 install". The setup then finds all three in your RPCS3 folder. For installing the update and adding the game there, see RPCS3's documentation. You should see the three fields filled in.
+6. **Read the first-run check.** It prints one line per check. You should see `OK` for each. A `WARN` lets the setup go on, and a `FAIL` stops it. See [the check table](#what-the-first-run-check-can-print).
+
+With the RPCS3 folder left empty, the setup looks in these places:
+
+- `%LOCALAPPDATA%\Programs\rpcs3` and `%APPDATA%\rpcs3`.
+- An unzipped RPCS3 in Documents, on the Desktop or in Downloads (also where Windows has moved those folders).
+- An unzipped RPCS3 in Games or Emulators in your user folder, or in Program Files.
+- An unzipped RPCS3 at the root of each local drive, or in its Games, Emulators, Emulator or PS3 folder.
+
+In those places it takes a folder named `RPCS3` or with "rpcs3" in its name (such as `rpcs3-v0.0.34-...-win64`). It looks one level deep, and takes only a folder that holds `rpcs3.exe` or RPCS3's settings. Anywhere else, pick the folder with `rpcs3.exe` yourself.
 
 ## Regions
 
@@ -49,16 +67,19 @@ instead of the file, the setup looks for `EBOOT.elf` in it and in its `USRDIR` f
 finds none. The port cannot decrypt
 the EBOOT itself, and this project gives no decryption tools or instructions.
 
-You give these once. The setup writes them into the install folder's `kz2-install.ini`. If you did not tick "Build
-now", or a check failed, the first start of the game shows the check in a console window and starts from the folders
-you gave in the setup. When the check fails, the setup's message box, the dialog of `Project Pyrrhus.exe` and the portable zip's
-console show the reason (the same text as the log). On the next start the check runs first. When only the EBOOT is
-wrong (E1), it asks for the EBOOT again and offers the update's `USRDIR/EBOOT.elf` when there is one. Otherwise, when
-you choose to change the folders, it asks only for the inputs whose checks failed (the disc for D, I and A codes, the
-update for U codes). The reason names the input and the path, so a disc and an update given the wrong way round are
-easy to spot: an update folder (with `PARAM.SFO` and `USRDIR/EBOOT.BIN`, or the update's own
-`USRDIR/added_data_ps3.psarc` or `USRDIR/patch_data_ps3` and no disc archive) given as the disc is named as the update,
-and a folder holding `PS3_GAME` given as the update is named as the disc dump.
+You give these once. The setup writes them into the install folder's `kz2-install.ini`.
+
+If you did not tick "Build now", or a check failed, the first start of the game shows the check in a console window. It starts from the folders you gave in the setup.
+
+When the check fails, the setup's message box, the dialog of `Project Pyrrhus.exe` and the portable zip's console show the reason. It is the same text as the log. On the next start the check runs first.
+
+- When only the EBOOT is wrong (E1), it asks for the EBOOT again. It offers the update's `USRDIR/EBOOT.elf` when there is one.
+- Otherwise, when you choose to change the folders, it asks only for the inputs whose checks failed: the disc for D, I and A codes, the update for U codes.
+
+The reason names the input and the path, so a disc and an update given the wrong way round are easy to spot.
+
+- An update folder given as the disc is named as the update. It has `PARAM.SFO` and `USRDIR/EBOOT.BIN`, or the update's own `USRDIR/added_data_ps3.psarc` or `USRDIR/patch_data_ps3`, and no disc archive.
+- A folder holding `PS3_GAME` given as the update is named as the disc dump.
 
 ## Accepted layouts
 
@@ -66,8 +87,8 @@ and a folder holding `PS3_GAME` given as the update is named as the disc dump.
   or of `PS3_GAME/USRDIR` is taken as the folder above it. In the same way, a pick of the update's `USRDIR` folder is
   taken as the update folder.
 - **Decrypted ISO.** A disc image (`.iso`) that is already decrypted can be picked instead of a folder ("Browse for
-  ISO file" in the setup). The first-run check reads the disc inside it; then its game files (about 7 GB) are copied
-  once into the install folder (`game/disc`) and the build uses that copy; the ISO itself is only read. The archive
+  ISO file" in the setup). The first-run check reads the disc inside it. Then its game files (about 7 GB) are copied
+  once into the install folder (`game/disc`). The build uses that copy, and the ISO itself is only read. The archive
   check (A1) runs while the files are copied. An encrypted ISO is refused (I1), and so is a file that is not a
   readable ISO (I2). Uninstalling removes the copy, not the ISO.
 - **Split archive.** A dump copied to a FAT32 drive holds `data_ps3.psarc.66600`, `.66601`, ... instead of one
@@ -81,8 +102,8 @@ and a folder holding `PS3_GAME` given as the update is named as the disc dump.
   (version 01.01). The archive check (A1) says whether its game archive is the same.
 - **OneDrive.** Do not install into a OneDrive folder (a precaution from a problem reported on Project Helghast): OneDrive syncs the build's thousands of files while they are
   written and locks them. The setup refuses such a folder, and the first-run check refuses an install or build folder
-  inside OneDrive (O1). Game files inside OneDrive are fine when they are on this device; files that are only online
-  are refused before anything is read (O2): right-click the folder and choose "Always keep on this device" first.
+  inside OneDrive (O1). Game files inside OneDrive are fine when they are on this device. Files that are only online
+  are refused before anything is read (O2). Right-click the folder and choose "Always keep on this device" first.
 - **EBOOT version.** The port is built on the 1.29 EBOOT. Your EBOOT is identified by its SHA-256, else by its
   program segments (so a copy that another tool laid out with extra padding is still recognised), else by its size.
   The disc's own 1.01 EBOOT is refused: on the setup's EBOOT page (a silent install with `/EBOOT=` stops with the same
@@ -112,12 +133,9 @@ A `WARN` lets it go on. The full log is next to the installer (or in the install
 | E1 | OK / WARN / FAIL | FAIL: no decrypted `EBOOT.elf` was found; "This EBOOT is an encrypted SELF, not an ELF"; "This file is not a PS3 executable"; or "This EBOOT is Killzone 2 1.01 ..., the disc's own version" (or another known version). Each FAIL names the EBOOT this release needs, such as "Killzone 2 1.29 (BCUS98116, US)". WARN: an unknown size | Pick the decrypted EBOOT of the 1.29 update, from the update's `USRDIR` folder |
 | H1 | OK / WARN / FAIL | The EBOOT is compared with the known Killzone 2 EBOOTs, by SHA-256, else by its program segments. OK: the US 1.29 EBOOT (tested). WARN: the 1.29 EBOOT of an untested region; "Wrong region" (a known EBOOT of another region than the disc's); "Your EBOOT is the 1.29 size but its contents differ from a clean copy. It may be patched or damaged." (unknown or modified); an EBOOT that matches no known build; or the comparison could not be made. FAIL: "a build this port does not run", or a known EBOOT whose status this check does not know | For "contents differ": make it again from your own 1.29 update's `EBOOT.BIN`, without patches, and pick the new file. For a FAIL: pick the 1.29 EBOOT |
 
-When a check fails, the setup's message box, the dialog of `Project Pyrrhus.exe` and the console show one line per
-input that failed, labelled `Disc dump`, `1.29 update` or `EBOOT`: the path it looked at, what is there, and what that
-folder or file must hold, followed by the failed checks' own messages when the input is the right kind of thing. They
-also say when the folder looks like the other input (the update given as the disc, or the disc dump or its
-`PS3_GAME` folder given as the update), and which folders look like the disc dump or the update one level below the
-folder you picked (two levels below a drive root such as `E:\`). A last line says which inputs passed, for example
+When a check fails, the setup's message box, the dialog of `Project Pyrrhus.exe` and the console show one line per input that failed. It is labelled `Disc dump`, `1.29 update` or `EBOOT`. It gives the path it looked at, what is there, and what that folder or file must hold. The failed checks' own messages follow when the input is the right kind of thing.
+
+The lines also say when the folder looks like the other input. That is the update given as the disc, or the disc dump or its `PS3_GAME` folder given as the update. They also say which folders look like the disc dump or the update one level below the folder you picked (two levels below a drive root such as `E:\`). A last line says which inputs passed, for example
 "Passed: the 1.29 update and the decrypted EBOOT." The log keeps the coded lines above.
 
 The build can also stop later with a plain message (no code):

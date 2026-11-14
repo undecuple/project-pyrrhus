@@ -1,0 +1,135 @@
+KZ2 6082: vblank ticks against guest vblank-handler calls, one call per tick on request, and the
+walker woken when a handler meets the acquire it stopped on. The vblank ticker only marks a pending bit and the guest
+handler runs when a guest thread next pumps (an HLE call, a timer sleep, a semaphore wait), so ticks that come before
+one pump give one call; the PS3 runs the handler once per vblank. Killzone 2's handler (1.29 0x48F40, v1.01 0x48660)
+counts down from 2 and writes GCM label 0x49 = 1 at zero; the frame end (1.29 0x486A8..0x486CC, in the user-command
+handler's frame-end function 0x48580) emits ACQUIRE label 0x49 == 1, then RELEASE 0: the game's own 30 Hz gate on the
+RSX. A lost call delays that gate's next opening. Counted always (ticks, calls, ticks lost to coalescing);
+GCM_ACQ_STATS=1 adds them to patch 6081's [acq] line. GCM_VBLANK_EACH=1 (off by default until measured) makes one call
+per tick, at most 4 per pump. When a drain stops on an acquire (GCM_SEMA_ACQUIRE=1 only), the frame thread waits on its
+wake event instead of a plain 4 ms sleep, and the pump kicks it when a guest handler it ran has met that label (a label
+met between the stop and the wait ends the wait at once), so the walker resumes at the write as the RSX does.
+Diagnostic plus switches; no default behaviour change (with GCM_SEMA_ACQUIRE unset no drain stops on an acquire).
+
+--- a6v/libs/video/cellGcmSys.c	2026-11-12 21:21:48.565701256 -0600
++++ b6/libs/video/cellGcmSys.c	2026-11-12 21:33:19.986877611 -0600
+@@ -321,6 +321,25 @@
+ 
+ /* VBlank counter (incremented on each flip as approximation) */
+ static u32 s_vblank_count = 0;
++/* KZ2 patch 6082: vblank ticks against guest vblank-handler calls. The ticker marks a pending bit
++ * and the handler runs when a guest thread next pumps, so two ticks before one pump give one call; on the PS3 the
++ * handler runs once per vblank. Killzone 2's handler (1.29 0x48F40) counts down from 2 and writes label 0x49 = 1 at
++ * zero, and the frame end acquires label 0x49 == 1 (1.29 0x486A8..0x486CC): a 30 Hz gate that a lost call slows.
++ * Counted always (two atomics per tick / call); GCM_ACQ_STATS=1 prints them in 6081's [acq] line.
++ * GCM_VBLANK_EACH=1 (off by default until measured): one call per tick, at most 4 per pump (the rest counted lost). */
++static volatile u32 s_vb_ticks, s_vb_taken, s_vb_calls, s_vb_lost;
++/* KZ2 patch 6082: the acquire a drain stopped on (GCM_SEMA_ACQUIRE=1 only; 0 = none): label EA and wanted value. The
++ * frame thread then waits on its wake event instead of a plain 4 ms sleep, and the pump kicks it once a guest handler
++ * it ran has met the label (KZ2's vblank handler writes the frame gate's label 0x49), so the walker resumes at the
++ * write, as the RSX does, not up to 4 ms later. */
++static volatile u32 s_acq_wait_la, s_acq_wait_v;
++static void gcm_walker_kick(void);
++static int gcm_vblank_each(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("GCM_VBLANK_EACH"); on = e && atoi(e) != 0; }
++    return on;
++}
+ 
+ /* IO map reservation tracking */
+ static u32 s_io_map_reserved = 0;  /* bytes reserved for IO mapping */
+@@ -801,6 +820,7 @@
+ void cellGcm_request_tick(void)
+ {
+     s_vblank_count++;
++    __atomic_fetch_add(&s_vb_ticks, 1u, __ATOMIC_RELAXED);   /* KZ2 patch 6082 */
+     /* GCM_FLIP_NEEDS_FIFO=1: only mark a flip pending once the walker has
+      * actually consumed up to `put`.
+      *
+@@ -874,9 +894,23 @@
+                    fprintf(stderr, "[gcm-pump] calls=%u vblank=%u flip=%u vcount=%u%c",
+                            calls, nv, nf, s_vblank_count, 10); } }
+     if ((p & 1) && s_vblank_handler_opd && g_ps3_guest_caller) {
+-        ydkj_restore_handler_opd(s_vblank_handler_opd, s_vblank_handler_code);
+-        g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)s_vblank_count,
+-                           0, 0, 0, 0, 0, 0, 0);
++        /* KZ2 patch 6082: the ticks since the last delivery; one call each with GCM_VBLANK_EACH=1 (at most 4). */
++        const u32 t = __atomic_load_n(&s_vb_ticks, __ATOMIC_RELAXED);
++        const u32 n = t - s_vb_taken;
++        s_vb_taken = t;
++        u32 k = gcm_vblank_each() ? (n < 1u ? 1u : n > 4u ? 4u : n) : 1u;
++        if (n > k) __atomic_fetch_add(&s_vb_lost, n - k, __ATOMIC_RELAXED);
++        for (u32 i = 0; i < k; i++) {
++            ydkj_restore_handler_opd(s_vblank_handler_opd, s_vblank_handler_code);
++            g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)s_vblank_count,
++                               0, 0, 0, 0, 0, 0, 0);
++        }
++        __atomic_fetch_add(&s_vb_calls, k, __ATOMIC_RELAXED);
++        /* KZ2 patch 6082: the handler may have met the acquire the walker waits on (seq_cst against the walker's
++         * store of s_acq_wait_la and its re-read of the label in cellGcm_walker_wait) */
++        __atomic_thread_fence(__ATOMIC_SEQ_CST);
++        const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
++        if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) gcm_walker_kick();
+     }
+     if (p & 2) {
+         /* Delivery waits for a guest thread to reach an HLE call or a timer
+@@ -910,7 +944,7 @@
+ 
+ /* Back-compat: the old direct entry points now just mark a tick pending (so any
+  * caller other than the ticker still works) -- delivery stays on the main thread. */
+-void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
++void cellGcmTickVBlank(void) { s_vblank_count++; __atomic_fetch_add(&s_vb_ticks, 1u, __ATOMIC_RELAXED); GCM_PENDING_SET(1); }
+ /* Only deliver a flip completion when a flip is actually outstanding.
+  *
+  * Ticking unconditionally at 60 Hz fires the guest's flip handler even when
+@@ -1125,7 +1159,11 @@
+ {
+ #ifdef _WIN32
+     if (!s_walker_wake) s_walker_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+-    if (!s_walker_wake || !gcm_park_wake_on() || !__atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE)) {
++    /* KZ2 patch 6082: a drain stopped on an acquire also waits on the event (the pump kicks it); a label met
++     * between the stop and here ends the wait at once */
++    const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
++    if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
++    if (!s_walker_wake || ((!gcm_park_wake_on() || !__atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE)) && !wla)) {
+         Sleep(ms);
+         return 0;
+     }
+@@ -2995,10 +3033,17 @@
+                 top[k] = i; topn[k] = n; break;
+             }
+     }
++    /* KZ2 patch 6082: vblank ticks, guest handler calls and ticks lost to coalescing in the same window */
++    static u32 vb_t0, vb_c0, vb_l0;
++    const u32 vb_t = __atomic_load_n(&s_vb_ticks, __ATOMIC_RELAXED), vb_c = __atomic_load_n(&s_vb_calls, __ATOMIC_RELAXED),
++              vb_l = __atomic_load_n(&s_vb_lost, __ATOMIC_RELAXED);
+     fprintf(stderr, "[acq] %.1f s: seen=%llu met=%llu unmet=%llu (behind=%llu other=%llu) mode=%s; most unmet labels "
+-                    "0x%X=%u 0x%X=%u 0x%X=%u 0x%X=%u\n", (now - s_acq.t0) / 1000.0, s_acq.seen, s_acq.met, s_acq.unmet,
++                    "0x%X=%u 0x%X=%u 0x%X=%u 0x%X=%u; vblank ticks=%u handler calls=%u lost=%u (%s)\n",
++            (now - s_acq.t0) / 1000.0, s_acq.seen, s_acq.met, s_acq.unmet,
+             s_acq.behind, s_acq.other, blk ? "block (each return counted)" : "pass (consumed unmet)",
+-            top[0], topn[0], top[1], topn[1], top[2], topn[2], top[3], topn[3]);
++            top[0], topn[0], top[1], topn[1], top[2], topn[2], top[3], topn[3],
++            vb_t - vb_t0, vb_c - vb_c0, vb_l - vb_l0, gcm_vblank_each() ? "each" : "coalesced");
++    vb_t0 = vb_t; vb_c0 = vb_c; vb_l0 = vb_l;
+     memset(&s_acq, 0, sizeof s_acq);
+     s_acq.t0 = now;
+ }
+@@ -3514,6 +3559,7 @@
+                      * not hold the value yet, the producer may still write, so the stands are held until it does
+                      * (rsx_live_draw_vr_acquire, checked at each draw). */
+                     if (m == 0x68u && rsx_live_draw_enabled()) rsx_live_draw_vr_acquire(la, v, vm_read32(la) == v);
++                    if (m == 0x68u) __atomic_store_n(&s_acq_wait_la, 0u, __ATOMIC_RELAXED);   /* KZ2 patch 6082: set again below if it blocks */
+                     if (m == 0x68u && gcm_acq_stats_on()) gcm_acq_note(s_sema_offset, vm_read32(la), v);   /* KZ2 patch 6081 */
+                     { static int sn = 0, recdbg = -1; if (recdbg < 0) recdbg = getenv("GCM_RECDBG") ? 1 : 0;
+                       if (recdbg && PS3_LOG_FIRST(sn, 12))
+@@ -3582,6 +3628,8 @@
+                 if (!b_t0 || b_off != s_sema_offset || b_val != v) { b_off = s_sema_offset; b_val = v; b_t0 = now; }
+                 if (!blk_ms || now - b_t0 < blk_ms) {
+                     if (PS3_FT_ON() && !s_ft_sema_t0) s_ft_sema_t0 = ps3_ft_now();
++                    __atomic_store_n(&s_acq_wait_v, v, __ATOMIC_RELAXED);   /* KZ2 patch 6082 */
++                    __atomic_store_n(&s_acq_wait_la, la, __ATOMIC_SEQ_CST);
+                     sem_blocked = 1; break;
+                 }
+                 { static int tn; if (PS3_LOG_FIRST(tn, 12))

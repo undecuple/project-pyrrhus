@@ -89,31 +89,48 @@ int kz2_native_run(spu_context* ctx, const kz2_native_entry* e);
 #define KZ2_NATIVE_SLOTS 128
 
 /* Calls and fallbacks per slot (the native function counts its own fallbacks). kz2_native_count prints
- * `[native] slot N calls=C fallback=F` when one shard's count reaches 1024 and every power of two after (C: the sum
- * of the slot's shards then). An earlier change: the counts are split into KZ2_NATIVE_SHARDS cache-line-sized shards picked by
- * the SPU context, so the SPU threads running the same job no longer bounce one line per call (one atomic add on a
- * shared line per native call: kz2_native_run was 4.9 % of VertexJob's samples in spu 33's profile, whose gates run
- * four times per particle on four or five SPU threads at once). Diagnostic only: nothing reads the counts but the
- * print. */
-#define KZ2_NATIVE_SHARDS 8
-typedef struct { volatile long calls, fallback; char pad[64 - 2 * sizeof(long)]; } kz2_native_ctr;
-extern kz2_native_ctr g_kz2_native_ctr[KZ2_NATIVE_SLOTS][KZ2_NATIVE_SHARDS];
-static inline kz2_native_ctr* kz2_native_shard(int slot, const void* ctx)
+ * `[native] slot N calls=C fallback=F` when one context's count reaches 1024 and every power of two after (C: the sum
+ * over every context then). Diagnostic only: nothing reads the counts but the print.
+ * one row of call counters per SPU context, each written only by the thread that runs that context, with a
+ * plain load and store (no lock prefix). An earlier change's eight shards picked by a hash of the context still took one
+ * `lock xadd` per call, and two contexts could share a shard: kz2_native_run stayed 4.9 % of VertexJob's samples, 239 of
+ * its 318 samples on the instruction after that `lock xadd` (spu 35 profile, 150-170 s; slot 81 runs ~350 000 times a
+ * second). A context gets its row the first time it calls a native gate (kz2_native_row_claim: a 64-entry table of
+ * context pointers, home index from the pointer's hash, linear probe, CAS to claim); a context that finds no free row
+ * counts in the shared row KZ2_NATIVE_CTXS with an atomic add, as before. ASSUMPTION: one SPU context runs on one
+ * thread at a time (persistent policy contexts belong to one (workload, SPU) pair; job contexts live on their thread's
+ * stack); if two threads ever ran one context at once, only counts would be lost, never a crash. */
+#define KZ2_NATIVE_CTXS 64
+typedef struct { volatile long calls[KZ2_NATIVE_SLOTS]; } kz2_native_row;
+extern kz2_native_row g_kz2_native_rows[KZ2_NATIVE_CTXS + 1];   /* native_common.c; the last row is shared */
+extern const void* volatile g_kz2_native_keys[KZ2_NATIVE_CTXS];
+extern volatile long g_kz2_native_fb[KZ2_NATIVE_SLOTS];
+unsigned kz2_native_row_claim(const void* ctx);                   /* native_common.c: row index, or KZ2_NATIVE_CTXS */
+static inline unsigned kz2_native_home(const void* ctx)
 {
-    const unsigned k = (unsigned)(((uint64_t)(uintptr_t)ctx * 0x9E3779B97F4A7C15ull) >> 61);
-    return &g_kz2_native_ctr[slot & (KZ2_NATIVE_SLOTS - 1)][k];
+    return (unsigned)(((uint64_t)(uintptr_t)ctx * 0x9E3779B97F4A7C15ull) >> 58);
 }
 long kz2_native_calls_sum(int slot);
 long kz2_native_fallback_sum(int slot);
 void kz2_native_count_print(int slot, long calls);
 static inline void kz2_native_count(int slot, const void* ctx)
 {
-    const long c = __atomic_add_fetch(&kz2_native_shard(slot, ctx)->calls, 1, __ATOMIC_RELAXED);
+    const unsigned s = (unsigned)slot & (KZ2_NATIVE_SLOTS - 1);
+    unsigned r = kz2_native_home(ctx);
+    if (__builtin_expect(__atomic_load_n(&g_kz2_native_keys[r], __ATOMIC_RELAXED) != ctx, 0)) r = kz2_native_row_claim(ctx);
+    long c;
+    if (__builtin_expect(r < KZ2_NATIVE_CTXS, 1)) {
+        c = __atomic_load_n(&g_kz2_native_rows[r].calls[s], __ATOMIC_RELAXED) + 1;
+        __atomic_store_n(&g_kz2_native_rows[r].calls[s], c, __ATOMIC_RELAXED);
+    } else {
+        c = __atomic_add_fetch(&g_kz2_native_rows[KZ2_NATIVE_CTXS].calls[s], 1, __ATOMIC_RELAXED);
+    }
     if (__builtin_expect(c >= 1024 && !(c & (c - 1)), 0)) kz2_native_count_print(slot, kz2_native_calls_sum(slot));
 }
 static inline void kz2_native_fell_back(int slot, const void* ctx)
 {
-    __atomic_fetch_add(&kz2_native_shard(slot, ctx)->fallback, 1, __ATOMIC_RELAXED);
+    (void)ctx;
+    __atomic_fetch_add(&g_kz2_native_fb[(unsigned)slot & (KZ2_NATIVE_SLOTS - 1)], 1, __ATOMIC_RELAXED);
 }
 
 #ifdef __cplusplus
