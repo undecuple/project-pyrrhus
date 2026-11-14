@@ -1,0 +1,108 @@
+gcm/live-draw: RSX_INTERNAL_SCALE, the internal resolution scale switch (1 or 2, default 1), read and validated; not
+active yet.
+
+Purpose (issue #55, step 2 of the internal resolution scale, first patch of it): one switch for the internal scale,
+shared with the other port, read in one place and checked before anything depends on it. ENHANCEMENT: the PS3 game
+always renders at its own resolution.
+
+Change:
+- libs/video/rsx_internal_scale.h: rsx_iscale_parse_switch(), the text of a scale switch. Unset or empty = 1x; "1"
+  or "2", optionally followed by x or X, with spaces or tabs around. Anything else (0, 3 and above, fractions, signs,
+  trailing text, long digit strings) is refused with RSX_ISCALE_E_FACTOR and leaves 1x. Still standard C only, and it
+  names no switch: reading the variable is the caller's business. RSX_ISCALE_SWITCH_MAX (2) is the largest scale
+  accepted; arbitrary and fractional scales are for a later step.
+- rsx_live_draw.c: ld_iscale_requested() reads RSX_INTERNAL_SCALE once, when live-draw starts, and logs one [iscale]
+  line: the scale, or that a value was refused (rendering at 1x). The switch is documented there with its default.
+  ld_iscale() stays native: a requested 2x logs that the scaled path is not in this build yet and renders at 1x. It
+  goes live in a later patch of this series, together with the scaled allocation and the native-size guards at every
+  guest-visible boundary, so that the game never sees anything but its own resolution.
+- Nothing else reads the switch: allocation, raster state, shaders, pipeline keys and PSO template records are as
+  after patch 2300.
+
+Verification: tools/runtime/test_internal_scale_map.sh. The switch text: the accepted forms give 1x or 2x, 17 invalid
+forms are refused and leave 1x, and both accepted scales compose with the 1x1, 2x1 and 2x2 AA grids. Wiring checks:
+RSX_INTERNAL_SCALE is read once, parsed by the header, read at start and marked ENHANCEMENT:; ld_iscale() is still
+native. rsx_live_draw.c compiled with MinGW-w64 gcc 16.2 at -O2 -Wall -Wextra. No game run.
+
+Written for this port; not taken from RPCS3 or any other emulator.
+
+diff -ruN a/libs/video/rsx_internal_scale.h b/libs/video/rsx_internal_scale.h
+--- a/libs/video/rsx_internal_scale.h	2026-11-13 13:21:12.236729800 -0800
++++ b/libs/video/rsx_internal_scale.h	2026-11-13 15:02:00.877751300 -0800
+@@ -182,4 +182,34 @@
+     return rsx_iscale_target_from_sample(sample, aa, scale, out);
+ }
+ 
++/* The scales a renderer may be asked for: 1x and 2x, the same factor on both axes. Arbitrary and fractional scales
++ * are not accepted yet. */
++#define RSX_ISCALE_SWITCH_MAX 2u
++
++/* Parses the text of an internal-scale switch: absent or empty = 1x; "1", "2", optionally followed by "x" or "X",
++ * with surrounding spaces or tabs. Anything else (another number, a fraction, a sign, trailing text) is refused with
++ * RSX_ISCALE_E_FACTOR, and *out is set to 1x so a caller that only logs the refusal renders at the native size.
++ * Reading the variable is the caller's business; this function names no switch. */
++static inline rsx_iscale_status rsx_iscale_parse_switch(const char* text, rsx_iscale_grid* out)
++{
++    *out = rsx_iscale_native();
++    if (!text) return RSX_ISCALE_OK;
++    const char* p = text;
++    while (*p == ' ' || *p == '\t') p++;
++    if (!*p) return RSX_ISCALE_OK;
++    uint32_t v = 0;
++    int digits = 0;
++    while (*p >= '0' && *p <= '9') {
++        if (v > RSX_ISCALE_SWITCH_MAX) return RSX_ISCALE_E_FACTOR;   /* long input: stop before it can wrap */
++        v = v * 10u + (uint32_t)(*p - '0');
++        p++; digits++;
++    }
++    if (!digits) return RSX_ISCALE_E_FACTOR;
++    if (*p == 'x' || *p == 'X') p++;
++    while (*p == ' ' || *p == '\t') p++;
++    if (*p || v < 1u || v > RSX_ISCALE_SWITCH_MAX) return RSX_ISCALE_E_FACTOR;
++    *out = rsx_iscale_grid_make(v, v);
++    return RSX_ISCALE_OK;
++}
++
+ #endif /* RSX_INTERNAL_SCALE_H */
+diff -ruN a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c	2026-11-13 13:19:54.637759300 -0800
++++ b/libs/video/rsx_live_draw.c	2026-11-13 15:02:31.949035600 -0800
+@@ -267,6 +267,30 @@
+     static unsigned logs;
+     if (logs < 16) { logs++; fprintf(stderr, "[iscale] %s: mapping refused (status %d, %u, %u)\n", where, st, a, b); }
+ }
++/* KZ2 patch 2301, ENHANCEMENT: RSX_INTERNAL_SCALE, the internal resolution scale the player asks for (issue #55).
++ * Default (unset or empty): 1, the PS3's own resolution. Accepted: 1 or 2, optionally written 1x or 2x
++ * (rsx_iscale_parse_switch); any other value is refused with one log line and the game renders at 1x. Read once, when
++ * live-draw starts, and logged once under [iscale]. EXPERIMENTAL: 2 is accepted but not active in this patch;
++ * ld_iscale() stays native until the scaled allocation and the native-size guards at every guest-visible boundary
++ * (write-back, NV0039 copies, reports) are in. The game always sees its own resolution. */
++static rsx_iscale_grid ld_iscale_requested(void)
++{
++    static int read;
++    static rsx_iscale_grid req;
++    if (!read) {
++        read = 1;
++        const char* e = getenv("RSX_INTERNAL_SCALE");
++        const rsx_iscale_status st = rsx_iscale_parse_switch(e, &req);
++        if (st != RSX_ISCALE_OK)
++            fprintf(stderr, "[iscale] RSX_INTERNAL_SCALE=\"%s\" is not 1 or 2: rendering at 1x\n", e);
++        else if (!rsx_iscale_grid_is_native(req))
++            fprintf(stderr, "[iscale] RSX_INTERNAL_SCALE=%u requested; the scaled path is not in this build yet: "
++                            "rendering at 1x\n", (unsigned)req.x);
++        else
++            fprintf(stderr, "[iscale] internal scale 1x\n");
++    }
++    return req;
++}
+ 
+ typedef struct {
+     u32 location, offset;
+@@ -15444,6 +15468,7 @@
+     sink.report = sink_report;   /* patch 2025 */
+     rsx_dispatch_init(&g.rsx, &sink);
+ 
++    (void)ld_iscale_requested();   /* KZ2 patch 2301: read and log RSX_INTERNAL_SCALE once, at start */
+     g.ready = 1;
+     g.enabled = 1;
+     return 0;
