@@ -1,0 +1,900 @@
+gcm/live-draw: every live host target and every path between them ready for an internal scale, and native-size guards
+at every guest-visible boundary; the scale stays 1x.
+
+Purpose (issue #55, step 2 of the internal resolution scale): the fixed-2x path needs every host resource that
+live-draw renders into or copies between to be held at one scale, and the game must only ever see its own resolution
+(the maintainer's condition). This patch makes every such path take the scale and adds the guards; the scale itself
+stays native, so nothing changes at 1x. Patch 6082 sets it from RSX_INTERNAL_SCALE (it applies after the FSR 1 and
+present patches it has to touch). ENHANCEMENT: the PS3 renders at its own resolution only.
+
+Change (all in libs/video/rsx_live_draw.c unless named):
+- Allocation at the physical extent (guest sample size times the scale): colour surfaces (surface_get), zetas and
+  their depth snapshots (zdepth_get, zdepth_grow_snapshot; snapshot_w/h stay the guest size for 2021's unnormalised
+  divisor and 2063's windows, snap_pw/ph is the physical size), the shared depth, the 2063 zeta windows, the 2087/2097
+  surface windows, the 2065 R16G16 copy, and the 2023 FXAA and 2070 gamma targets. The feedback copy is made from the
+  surface's own description. ld_iscale_activate() runs once at start, before the shared depth is made.
+- Copies and passes between them scale their boxes, origins and dispatch sizes: the surface and zeta windows, the 1:1
+  resolve copy and ld_downsample (the k x k box stays k x k), ld_scaled_blit's destination rect (its source rect is
+  normalised), the NV3089 GPU blit, the depth snapshot and R16G16 dispatches. Draw viewport, scissor and clear rects
+  were already mapped by 2300.
+- The game's boundary (ld_is_down / ld_is_up_rows / ld_is_count): a scaled surface gets a companion at its guest size
+  (same format, RENDER_TARGET, made on first need, replaced with the surface; one SRV and one RTV per surface slot).
+  Before a write-back (ld_rb_record, the batched path; rsx_live_draw_debug_read_surface, the per-surface path and the
+  host tests' hook) and the movie-caption capture, one pass refreshes the companion from the surface and the existing
+  copy reads the companion: R8G8B8A8_UNORM and R16G16B16A16_FLOAT average the scale x scale texels, R32_FLOAT takes the
+  top-left one, so data is never blended. Guest rows uploaded into a scaled surface (ld_gv_upload_rows, used by 2017's
+  validation and 6008's SPU puts) land in the companion and are expanded nearest-neighbour. Occlusion counts written to
+  the guest (2027) are divided by the texels per guest sample, rounded up (rsx_internal_scale.h
+  rsx_iscale_count_to_guest): 0 stays 0, any coverage counts at least 1. CPU depth probes read the first physical
+  texel of their guest point. ASSUMPTION: an RGBA8 or FP16 surface that reaches the guest holds colour.
+- Shaders: WPOS (2088) and DDX/DDY (2096) divide by the AA grid composed with the scale (ld_wpos_divisor). On a scaled
+  target WPOS keeps each texel's sub-pixel position, pixel + (j + 0.5) / scale, so screen-space lookups into a scaled
+  G-buffer stay texel-exact; the 1x text is unchanged. ASSUMPTION: no guest program needs WPOS to be exactly the pixel
+  centre (floor(WPOS) is unchanged). ld_xl_in carries the scale (0 at 1x) and the pipeline key hashes it only when it
+  is not 0, so 1x keys, warm caches and PSO template records are unchanged; template records are written at 1x only
+  and prewarmed with the live scale after their 1x key is checked.
+- Diagnostics: LD_SURF_DUMP / LD_FRAME_DUMP and the zeta PFM dump write the host image (physical size).
+
+At 1x every ld_isx/ld_isy is the identity, every allocation, box, dispatch, key and shader text is as before, and no
+companion is made (ld_is_down returns the surface itself).
+
+Verification: tools/runtime/test_internal_scale_map.sh (with 6082). rsx_live_draw.c compiled with MinGW-w64 gcc 16.2 at
+-O2 -Wall -Wextra with no new diagnostics. A native Windows 11 build of the series ran at 1x and at 2x (see 6082).
+
+Written for this port; not taken from RPCS3 or any other emulator.
+
+--- a/libs/video/rsx_internal_scale.h	2026-11-13 15:36:29.082940100 -0800
++++ b/libs/video/rsx_internal_scale.h	2026-11-13 16:16:58.342004600 -0800
+@@ -182,6 +182,18 @@
+     return rsx_iscale_target_from_sample(sample, aa, scale, out);
+ }
+ 
++/* A count of covered physical texels (an occlusion / ZPASS report) -> the count at the guest's resolution: divided by
++ * the texels per guest sample (g.x * g.y), rounded up, so any coverage still counts at least 1 and a zero stays zero.
++ * A count above UINT32_MAX saturates first. An invalid grid returns the count unchanged (the identity is the only
++ * answer that never hides a draw). */
++static inline uint32_t rsx_iscale_count_to_guest(uint64_t physical, rsx_iscale_grid g)
++{
++    const uint32_t v = physical > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)physical;
++    if (!rsx_iscale_grid_ok(g)) return v;
++    const uint32_t k = g.x * g.y;   /* <= 16 * 16 */
++    return v / k + (v % k != 0u);
++}
++
+ /* The scales a renderer may be asked for: 1x and 2x, the same factor on both axes. Arbitrary and fractional scales
+  * are not accepted yet. */
+ #define RSX_ISCALE_SWITCH_MAX 2u
+--- a/libs/video/rsx_live_draw.c	2026-11-13 15:36:29.087941300 -0800
++++ b/libs/video/rsx_live_draw.c	2026-11-13 16:17:44.629732900 -0800
+@@ -257,9 +257,18 @@
+ 
+ #include "rsx_internal_scale.h"   /* KZ2 patch 2300: guest pixel / guest sample / physical extents */
+ /* KZ2 patch 2300: the internal resolution scale of live-draw's host resources (rsx_internal_scale.h: guest pixels ->
+- * guest samples by the AA grid -> physical extent by this scale). Native (1x1) in this patch, so every physical extent
+- * equals its guest sample extent and every mapping through it is the identity. */
+-static rsx_iscale_grid ld_iscale(void) { return rsx_iscale_native(); }
++ * guest samples by the AA grid -> physical extent by this scale). KZ2 patch 2302: every live colour surface, zeta,
++ * depth snapshot and helper target is allocated at this scale and every GPU-to-GPU copy between them scales its box,
++ * so they stay consistent at any scale. Native in this patch (ld_iscale_activate leaves it at 1x), so every physical
++ * extent equals its guest sample extent and every mapping through it is the identity; KZ2 patch 6082 sets it from
++ * RSX_INTERNAL_SCALE. */
++static rsx_iscale_grid g_ld_iscale = { 1u, 1u };
++static rsx_iscale_grid ld_iscale(void) { return g_ld_iscale; }
++static int ld_iscale_on(void) { return !rsx_iscale_grid_is_native(g_ld_iscale); }
++/* A guest-sample coordinate or size -> physical, for host boxes and offsets. The inputs are surface sizes and offsets
++ * inside them (at most 8192, surface_get), so the product cannot overflow; it still saturates rather than wraps. */
++static u32 ld_isx(u32 v) { u32 r; return rsx_iscale_mul(v, g_ld_iscale.x, &r) == RSX_ISCALE_OK ? r : RSX_ISCALE_COORD_MAX; }
++static u32 ld_isy(u32 v) { u32 r; return rsx_iscale_mul(v, g_ld_iscale.y, &r) == RSX_ISCALE_OK ? r : RSX_ISCALE_COORD_MAX; }
+ /* A refused mapping is logged (16 lines in all) and handled by the caller as described there. The inputs are 16-bit
+  * registers and surface sizes, so at the native scale a refusal means a bug or a corrupt register. */
+ static void ld_iscale_refused(const char* where, int st, unsigned a, unsigned b)
+@@ -291,12 +300,17 @@
+     }
+     return req;
+ }
++/* KZ2 patch 2302: called once at live-draw start, before the shared depth and the first surface are made. Reads and
++ * logs the switch (patch 2301); the scale itself stays native here. */
++static void ld_iscale_activate(void) { (void)ld_iscale_requested(); }
+ 
+ typedef struct {
+     u32 location, offset;
+     ID3D12Resource* tex;
+     u32 w, h;                 /* guest sample extent: lookup, aliases and every guest-visible size use it */
+     u32 phys_w, phys_h;       /* KZ2 patch 2300: physical extent of tex (w, h at the native internal scale) */
++    ID3D12Resource* nat;      /* KZ2 patch 2302: w x h companion of a scaled tex, the guest's view (ld_is_down) */
++    ID3D12Resource* nat_src;  /* KZ2 patch 2302: the tex nat was made for */
+     DXGI_FORMAT fmt;
+     ID3D12Resource* fb_tex;   /* feedback copy, see surface_feedback_srv */
+     u32 pitch;                /* guest row pitch of colour target 0 (bytes), 0 = unknown */
+@@ -342,7 +356,8 @@
+     ID3D12Resource* snapshot;
+     u32 w, h;                 /* guest sample extent, as surface_t */
+     u32 phys_w, phys_h;       /* KZ2 patch 2300: physical extent of tex, as surface_t */
+-    u32 snapshot_w, snapshot_h;
++    u32 snapshot_w, snapshot_h;   /* guest sample extent of the snapshot (2021's unnormalised divisor, 2063 windows) */
++    u32 snap_pw, snap_ph;     /* KZ2 patch 2302: physical extent of snapshot (snapshot_w, h times the scale) */
+     D3D12_RESOURCE_STATES snapshot_state;
+     int cleared;
+     int had_write;
+@@ -355,7 +370,7 @@
+     u32 depth_format;   /* patch 2012: SURFACE_FORMAT depth of the last draw into it (1 Z16, 2 Z24S8) */
+     u32 zwrite_gen;     /* patch 2044: g_ld_cw_gen of the last depth write (test+write draw or depth clear) */
+     u32 snap_gen;       /* patch 2063: bumped at every snapshot refresh */
+-    struct { ID3D12Resource* tex; u32 w, h, gen, used; } win[LD_ZWIN_PER];   /* patch 2063 */
++    struct { ID3D12Resource* tex; u32 w, h, gen, used; } win[LD_ZWIN_PER];   /* patch 2063: w, h guest; tex physical */
+ } zdepth_t;
+ typedef struct {
+     u32 location, offset, format, width, height, pitch, remap;
+@@ -4845,6 +4860,234 @@
+     s->gv_frame = g_ld_frames;
+ }
+ 
++/* ===== KZ2 patch 2302: the guest-visible boundary of a scaled surface (issue #55, the maintainer's condition: the game
++ * only ever sees its own resolution). A scaled colour surface gets a companion at its guest size (w x h, same format,
++ * RENDER_TARGET like the surface, made on first need and replaced with the surface):
++ *  - colour leaving the GPU (write-back, NV0039 copies through it, readbacks): ld_is_down refreshes the companion from
++ *    the surface (one pass, scale x scale texels per guest texel) and the existing copy then reads the companion;
++ *  - guest bytes entering the surface (ld_gv_upload_rows): the rows land in the companion as before, then
++ *    ld_is_up_rows expands them nearest-neighbour into the surface.
++ * The pass averages the texels of a colour surface (R8G8B8A8_UNORM, R16G16B16A16_FLOAT) and takes the top-left one of
++ * a data surface (R32_FLOAT), so data values are never blended. ASSUMPTION: an RGBA8 or FP16 surface that reaches the
++ * guest holds colour (Killzone 2's scene copy for the SPU post chain); a byte-packed RGBA8 data target written back
++ * would be averaged. Native scale: none of this runs and every caller uses the surface itself. Written for this port;
++ * RPCS3 was not consulted. */
++/* One SRV per surface for its companion, after the CPU heap's other slots (the heap is made that much larger); their
++ * RTVs follow the surfaces'. */
++#define SRV_ISNAT_BASE     SRV_CPU_HEAP_SLOTS
++#define LD_RTV_ISNAT_BASE  (LD_SWAP_BUFFERS + MAX_SURFACES)
++static ID3D12RootSignature* g_is_rs;
++static struct { DXGI_FORMAT fmt; ID3D12PipelineState* pso; } g_is_pso[4];
++static int g_is_failed;
++static u64 g_is_downs, g_is_ups;
++
++static ID3D12PipelineState* ld_is_pso(DXGI_FORMAT fmt)
++{
++    for (int i = 0; i < 4; i++)
++        if (g_is_pso[i].pso && g_is_pso[i].fmt == fmt) return g_is_pso[i].pso;
++    if (g_is_failed) return NULL;
++    static const char src[] =
++        "Texture2D<float4> s : register(t0);\n"
++        "cbuffer c : register(b0) { int sx; int sy; int mode; };\n"
++        "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
++        "    float2 t = float2((id << 1) & 2, id & 2);\n"
++        "    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);\n"
++        "}\n"
++        "float4 ps(float4 p : SV_Position) : SV_Target {\n"
++        "    int2 q = int2(p.xy);\n"
++        "    if (mode == 0) return s.Load(int3(q.x / sx, q.y / sy, 0));\n"   /* expand: nearest */
++        "    int2 b = q * int2(sx, sy);\n"
++        "    if (mode == 2) return s.Load(int3(b, 0));\n"                     /* data: one texel */
++        "    float4 a = 0;\n"
++        "    for (int y = 0; y < sy; y++)\n"
++        "        for (int x = 0; x < sx; x++) a += s.Load(int3(b + int2(x, y), 0));\n"
++        "    return a / (float)(sx * sy);\n"
++        "}\n";
++    HRESULT hr = S_OK;
++    if (!g_is_rs) {
++        D3D12_DESCRIPTOR_RANGE range = {0};
++        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++        range.NumDescriptors = 1;
++        D3D12_ROOT_PARAMETER rp[2] = {0};
++        rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++        rp[0].Constants.Num32BitValues = 3;
++        rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        rp[1].DescriptorTable.NumDescriptorRanges = 1;
++        rp[1].DescriptorTable.pDescriptorRanges = &range;
++        rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++        rsd.NumParameters = 2; rsd.pParameters = rp;
++        ID3DBlob* sig = NULL; ID3DBlob* err = NULL;
++        hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++        if (err) err->lpVtbl->Release(err);
++        if (SUCCEEDED(hr)) {
++            hr = g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                    sig->lpVtbl->GetBufferSize(sig), &IID_ID3D12RootSignature, (void**)&g_is_rs);
++            sig->lpVtbl->Release(sig);
++        }
++        if (FAILED(hr)) g_is_rs = NULL;
++    }
++    ID3DBlob *vsb = NULL, *psb = NULL, *err = NULL;
++    if (SUCCEEDED(hr) && g_is_rs)
++        hr = D3DCompile(src, sizeof(src) - 1u, "iscale_resample", NULL, NULL, "vs", "vs_5_0",
++                        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err);
++    if (err) { if (FAILED(hr)) fprintf(stderr, "[iscale] VS: %s\n", (const char*)err->lpVtbl->GetBufferPointer(err));
++               err->lpVtbl->Release(err); err = NULL; }
++    if (SUCCEEDED(hr) && vsb)
++        hr = D3DCompile(src, sizeof(src) - 1u, "iscale_resample", NULL, NULL, "ps", "ps_5_0",
++                        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err);
++    if (err) { if (FAILED(hr)) fprintf(stderr, "[iscale] PS: %s\n", (const char*)err->lpVtbl->GetBufferPointer(err));
++               err->lpVtbl->Release(err); err = NULL; }
++    ID3D12PipelineState* pso = NULL;
++    if (SUCCEEDED(hr) && vsb && psb) {
++        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_is_rs;
++        pd.VS.pShaderBytecode = vsb->lpVtbl->GetBufferPointer(vsb);
++        pd.VS.BytecodeLength = vsb->lpVtbl->GetBufferSize(vsb);
++        pd.PS.pShaderBytecode = psb->lpVtbl->GetBufferPointer(psb);
++        pd.PS.BytecodeLength = psb->lpVtbl->GetBufferSize(psb);
++        pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++        pd.SampleMask = 0xFFFFFFFFu;
++        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++        pd.NumRenderTargets = 1;
++        pd.RTVFormats[0] = fmt;
++        pd.SampleDesc.Count = 1;
++        hr = g.dev->lpVtbl->CreateGraphicsPipelineState(g.dev, &pd, &IID_ID3D12PipelineState, (void**)&pso);
++    }
++    if (vsb) vsb->lpVtbl->Release(vsb);
++    if (psb) psb->lpVtbl->Release(psb);
++    if (FAILED(hr) || !pso) {
++        fprintf(stderr, "[iscale] resample pipeline for format %u failed hr=0x%08lX: scaled surfaces of that format "
++                        "are not written back\n", (unsigned)fmt, (unsigned long)hr);
++        if (!g_is_rs) g_is_failed = 1;
++        return NULL;
++    }
++    for (int i = 0; i < 4; i++)
++        if (!g_is_pso[i].pso) { g_is_pso[i].fmt = fmt; g_is_pso[i].pso = pso; return pso; }
++    pso->lpVtbl->Release(pso);   /* more formats than live-draw makes (ld_color_dxgi): refuse */
++    return NULL;
++}
++
++/* One resample pass: src (SRV slot src_srv; RENDER_TARGET, restored) drawn into the render target dst_rtv of fmt,
++ * dst_w x dst_h, rows [y0, y1) only. mode 0 = expand by the scale (nearest), 1 = box, 2 = top-left texel. */
++static int ld_is_pass(ID3D12Resource* src, u32 src_srv, D3D12_CPU_DESCRIPTOR_HANDLE dst_rtv, DXGI_FORMAT fmt,
++                      u32 mode, u32 dst_w, u32 dst_h, u32 y0, u32 y1)
++{
++    ID3D12PipelineState* pso = ld_is_pso(fmt);
++    if (!pso || !src || y0 >= y1 || y1 > dst_h) return 0;
++    u32 slots[SRV_TABLE_SIZE];
++    for (u32 i = 0; i < SRV_TABLE_SIZE; i++) slots[i] = SRV_WHITE;
++    slots[0] = src_srv;
++    D3D12_GPU_DESCRIPTOR_HANDLE table = srv_table(slots);
++    if (!table.ptr) {   /* ring full: as the draw path, submit and reuse the ring */
++        ld_flush(LD_FLUSH_DESCRIPTOR_RING);
++        if (!g.ready) return 0;
++        g.srv_ring_used = 0; g_srv_desc_gen++;
++        g.smp_ring_used = 0;
++        table = srv_table(slots);
++        if (!table.ptr) return 0;
++    }
++    D3D12_RESOURCE_BARRIER b = {0};
++    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b.Transition.pResource = src;
++    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &dst_rtv, FALSE, NULL);
++    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
++    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
++    g.list->lpVtbl->SetPipelineState(g.list, pso);
++    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_is_rs);
++    LD_SM_INVALIDATE();   /* own PSO, root signature, heaps, RT, viewport: the next draw re-records all */
++    const u32 c[3] = { g_ld_iscale.x, g_ld_iscale.y, mode };
++    g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 0, 3, c, 0);
++    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
++    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)dst_w, (float)dst_h, 0.0f, 1.0f };
++    const D3D12_RECT sc = { 0, (LONG)y0, (LONG)dst_w, (LONG)y1 };
++    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
++    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    return 1;
++}
++
++/* The companion of surface si (made or remade for its current resource), RENDER_TARGET; NULL if it cannot be made. */
++static ID3D12Resource* ld_is_nat(u32 si)
++{
++    surface_t* s = &g.surfaces[si];
++    if (!s->tex) return NULL;
++    if (s->nat && s->nat_src == s->tex) return s->nat;
++    if (s->nat) { retire_texture(s->nat); s->nat = NULL; s->nat_src = NULL; }
++    D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++    D3D12_RESOURCE_DESC rd = {0};
++    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++    rd.Width = s->w; rd.Height = s->h; rd.DepthOrArraySize = 1;
++    rd.MipLevels = 1; rd.Format = s->fmt; rd.SampleDesc.Count = 1;
++    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++    D3D12_CLEAR_VALUE cv = {0}; cv.Format = s->fmt;
++    ID3D12Resource* nat = NULL;
++    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++            D3D12_RESOURCE_STATE_RENDER_TARGET, &cv, &IID_ID3D12Resource, (void**)&nat))) {
++        static u32 n_fail;
++        if (n_fail++ < 8)
++            fprintf(stderr, "[iscale] native companion %u:0x%X %ux%u failed: not written back\n", s->location, s->offset,
++                    s->w, s->h);
++        return NULL;
++    }
++    LD_SM_INVALIDATE(), g.dev->lpVtbl->CreateRenderTargetView(g.dev, nat, NULL, rtv_handle(LD_RTV_ISNAT_BASE + si));
++    srv_write(SRV_ISNAT_BASE + si, nat);
++    s->nat = nat; s->nat_src = s->tex;
++    static u32 n_log;
++    if (n_log++ < 16)
++        fprintf(stderr, "[iscale] surface %u:0x%X %ux%u (host %ux%u): native companion for the guest's view (slot %u)\n",
++                s->location, s->offset, s->w, s->h, s->phys_w, s->phys_h, si);
++    return nat;
++}
++
++/* The resource that holds surface si at its guest size, RENDER_TARGET: the surface itself at the native scale, else
++ * its companion, refreshed from the surface now (recorded into the open list). NULL = no native-size image: the
++ * caller copies nothing (a copy of the scaled resource would not fit the guest's footprint). */
++static ID3D12Resource* ld_is_down(u32 si)
++{
++    surface_t* s = &g.surfaces[si];
++    if (!ld_iscale_on()) return s->tex;
++    ID3D12Resource* nat = ld_is_nat(si);
++    if (!nat) return NULL;
++    const u32 mode = s->fmt == DXGI_FORMAT_R8G8B8A8_UNORM || s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1u : 2u;
++    if (!ld_is_pass(s->tex, SRV_SURFACE_BASE + si, rtv_handle(LD_RTV_ISNAT_BASE + si), s->fmt, mode, s->w, s->h, 0u,
++                    s->h)) return NULL;
++    if (g_is_downs++ < 4 || !(g_is_downs & 0xFFFu))
++        fprintf(stderr, "[iscale] down #%llu: surface %u:0x%X %ux%u -> %ux%u (%s) frame %u\n",
++                (unsigned long long)g_is_downs, s->location, s->offset, s->phys_w, s->phys_h, s->w, s->h,
++                mode == 1u ? "box" : "one texel", g_ld_frames);
++    return nat;
++}
++
++/* After guest rows [y0, y1) were copied into the companion of si: expand them into the surface. */
++static int ld_is_up_rows(u32 si, u32 y0, u32 y1)
++{
++    surface_t* s = &g.surfaces[si];
++    if (!s->nat || s->nat_src != s->tex) return 0;
++    const int ok = ld_is_pass(s->nat, SRV_ISNAT_BASE + si, rtv_handle(LD_SWAP_BUFFERS + si), s->fmt, 0u, s->phys_w,
++                              s->phys_h, ld_isy(y0), ld_isy(y1));
++    if (ok && (g_is_ups++ < 4 || !(g_is_ups & 0xFFFu)))
++        fprintf(stderr, "[iscale] up #%llu: surface %u:0x%X rows %u-%u expanded to %ux%u frame %u\n",
++                (unsigned long long)g_is_ups, s->location, s->offset, y0, y1, s->phys_w, s->phys_h, g_ld_frames);
++    return ok;
++}
++
++/* An occlusion (ZPASS) count of a scaled draw -> what the guest's resolution gives: divided by the samples per guest
++ * sample, rounded up, so a draw that passed any sample still counts at least 1 and a conditional render never flips
++ * from visible to hidden. The identity at the native scale. */
++static u32 ld_is_count(u64 v) { return rsx_iscale_count_to_guest(v, g_ld_iscale); }
++
+ /* Guest rows [y0, y1) of surface s -> host layout -> the surface (RENDER_TARGET
+  * state outside a draw, as rsx_live_draw_debug_read_surface assumes). */
+ static int ld_gv_upload_rows(surface_t* s, u32 y0, u32 y1)
+@@ -4875,9 +5118,13 @@
+         }
+     }
+     g.upload_used = start + pitch * rows;
++    /* KZ2 patch 2302: a scaled surface takes the guest's rows in its native companion, expanded below. */
++    const u32 si = (u32)(s - g.surfaces);
++    ID3D12Resource* dres = ld_iscale_on() ? ld_is_nat(si) : s->tex;
++    if (!dres) return 0;
+     D3D12_RESOURCE_BARRIER b = {0};
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+-    b.Transition.pResource = s->tex;
++    b.Transition.pResource = dres;
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+@@ -4890,11 +5137,12 @@
+     src.PlacedFootprint.Footprint.Height = rows;
+     src.PlacedFootprint.Footprint.Depth = 1;
+     src.PlacedFootprint.Footprint.RowPitch = pitch;
+-    dst.pResource = s->tex; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    dst.pResource = dres; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, y0, 0, &src, NULL);
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    if (dres != s->tex && !ld_is_up_rows(si, y0, y1)) return 0;   /* KZ2 patch 2302 */
+     g_gv.uploads_bands += (rows + LD_GV_BAND - 1u) / LD_GV_BAND;
+     return 1;
+ }
+@@ -5745,7 +5993,7 @@
+     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+     D3D12_CLEAR_VALUE cv = {0}; cv.Format = rd.Format;
+     surface_t* s = &g.surfaces[slot];
+-    /* KZ2 patch 2300: the physical extent of the new resource. The allocation itself stays want_w x want_h here. */
++    /* KZ2 patch 2300: the physical extent of the new resource. KZ2 patch 2302: allocated at it. */
+     rsx_iscale_extent phys;
+     { const rsx_iscale_extent want = { want_w, want_h };
+       const rsx_iscale_status st = rsx_iscale_map_extent(want, ld_iscale(), &phys);
+@@ -5753,6 +6001,7 @@
+           ld_iscale_refused("colour surface", (int)st, want_w, want_h);
+           return slot < g.n_surfaces && s->tex ? slot : LD_INVALID_SURFACE;   /* as a failed create below */
+       } }
++    rd.Width = phys.w; rd.Height = phys.h;
+     ID3D12Resource* replacement = NULL;
+     const HRESULT create_hr = g.dev->lpVtbl->CreateCommittedResource(
+         g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+@@ -5783,6 +6032,7 @@
+     }
+     for (u32 j = 0; j < LD_SWIN_PER; j++)   /* windows are sized and typed for the old resource */
+         if (s->swin[j].tex) { retire_texture(s->swin[j].tex); s->swin[j].tex = NULL; }
++    if (s->nat) { retire_texture(s->nat); s->nat = NULL; s->nat_src = NULL; }   /* KZ2 patch 2302: as the windows */
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
+     s->phys_w = phys.w; s->phys_h = phys.h;   /* KZ2 patch 2300 */
+@@ -5870,7 +6120,7 @@
+         s->swin[k].tex = NULL;
+         D3D12_RESOURCE_DESC rd;
+         s->tex->lpVtbl->GetDesc(s->tex, &rd);              /* the surface's format and sample count */
+-        rd.Width = w; rd.Height = h; rd.Alignment = 0;
++        rd.Width = ld_isx(w); rd.Height = ld_isy(h); rd.Alignment = 0;   /* KZ2 patch 2302: physical, as the surface */
+         rd.Flags = D3D12_RESOURCE_FLAG_NONE;
+         D3D12_HEAP_PROPERTIES hp = {0};
+         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+@@ -5915,7 +6165,7 @@
+         D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
+         dst.pResource = s->swin[k].tex; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+         src.pResource = s->tex;         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-        D3D12_BOX box = { 0, 0, 0, w, h, 1 };
++        D3D12_BOX box = { 0, 0, 0, ld_isx(w), ld_isy(h), 1 };   /* KZ2 patch 2302: the guest's w x h, physical */
+         g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, &box);
+         b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+         b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -6050,6 +6300,9 @@
+                          u32 di, u32 dx, u32 dy, u32 w, u32 h)
+ {
+     const DXGI_FORMAT fmt = g.surfaces[di].fmt;
++    /* KZ2 patch 2302: origins and the rect in physical texels; the k x k box per destination texel stays k x k (both
++     * surfaces are at the same scale). The identity at the native scale. */
++    sx = ld_isx(sx); sy = ld_isy(sy); dx = ld_isx(dx); dy = ld_isy(dy); w = ld_isx(w); h = ld_isy(h);
+     ID3D12PipelineState* pso = NULL;
+     u32 n = 0;
+     for (; n < 4 && g.downsample_pso[n]; n++)
+@@ -6292,8 +6545,9 @@
+                          (sx + sw) / (float)s->w, (sy + sh) / (float)s->h };
+     g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 0, 4, r, 0);
+     g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
+-    D3D12_VIEWPORT vp = { (float)dx, (float)dy, (float)dw, (float)dh, 0.0f, 1.0f };
+-    D3D12_RECT sc = { (LONG)dx, (LONG)dy, (LONG)(dx + dw), (LONG)(dy + dh) };
++    /* KZ2 patch 2302: r is normalised (guest units over the guest size); the destination rect goes physical. */
++    D3D12_VIEWPORT vp = { (float)ld_isx(dx), (float)ld_isy(dy), (float)ld_isx(dw), (float)ld_isy(dh), 0.0f, 1.0f };
++    D3D12_RECT sc = { (LONG)ld_isx(dx), (LONG)ld_isy(dy), (LONG)ld_isx(dx + dw), (LONG)ld_isy(dy + dh) };
+     g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
+     g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+     g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+@@ -6383,8 +6637,8 @@
+     D3D12_TEXTURE_COPY_LOCATION sl = {0}, dl = {0};
+     sl.pResource = s;        sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     dl.pResource = dst->tex; dl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { sx, sy, 0, sx + w, sy + h, 1 };
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dl, dx, dy, 0, &sl, &box);
++    D3D12_BOX box = { ld_isx(sx), ld_isy(sy), 0, ld_isx(sx + w), ld_isy(sy + h), 1 };   /* KZ2 patch 2302: physical */
++    g.list->lpVtbl->CopyTextureRegion(g.list, &dl, ld_isx(dx), ld_isy(dy), 0, &sl, &box);
+     for (int q = 0; q < 2; q++) {
+         b[q].Transition.StateBefore = b[q].Transition.StateAfter;
+         b[q].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -6450,8 +6704,8 @@
+     D3D12_TEXTURE_COPY_LOCATION s = {0}, d = {0};
+     s.pResource = src; s.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     d.pResource = dst; d.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { sx, sy, 0, sx + w, sy + h, 1 };
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &d, dx, dy, 0, &s, &box);
++    D3D12_BOX box = { ld_isx(sx), ld_isy(sy), 0, ld_isx(sx + w), ld_isy(sy + h), 1 };   /* KZ2 patch 2302: physical */
++    g.list->lpVtbl->CopyTextureRegion(g.list, &d, ld_isx(dx), ld_isy(dy), 0, &s, &box);
+     for (int k = 0; k < 2; k++) {
+         b[k].Transition.StateBefore = b[k].Transition.StateAfter;
+         b[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -6538,8 +6792,8 @@
+     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = nw;
+-    rd.Height = nh;
++    rd.Width = ld_isx(nw);   /* KZ2 patch 2302: physical */
++    rd.Height = ld_isy(nh);
+     rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1;
+     rd.Format = DXGI_FORMAT_R32_FLOAT;
+@@ -6561,6 +6815,7 @@
+     z->snapshot = snap;
+     z->snapshot_w = nw;
+     z->snapshot_h = nh;
++    z->snap_pw = (u32)rd.Width; z->snap_ph = rd.Height;   /* KZ2 patch 2302 */
+     z->snapshot_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+     srv_write_zdepth(SRV_ZDEPTH_BASE + i, z->snapshot);
+     uav_write_zdepth(UAV_ZDEPTH_BASE + i, z->snapshot);
+@@ -6634,8 +6889,8 @@
+     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = want_w;
+-    rd.Height = want_h;
++    rd.Width = zphys.w;    /* KZ2 patch 2302: allocated at the physical extent (want_w x want_h at the scale) */
++    rd.Height = zphys.h;
+     rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1;
+     rd.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
+@@ -6669,6 +6924,7 @@
+     z->snapshot_h = rt_h ? rt_h : want_h;
+     if (z->snapshot_w > want_w) z->snapshot_w = want_w;
+     if (z->snapshot_h > want_h) z->snapshot_h = want_h;
++    z->snap_pw = ld_isx(z->snapshot_w); z->snap_ph = ld_isy(z->snapshot_h);   /* KZ2 patch 2302 */
+     D3D12_DEPTH_STENCIL_VIEW_DESC dsvd = {0};
+     dsvd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+     dsvd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+@@ -6681,8 +6937,8 @@
+      * not a depth-resource copy operation. */
+     D3D12_RESOURCE_DESC snapshot_rd = {0};
+     snapshot_rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    snapshot_rd.Width = z->snapshot_w;
+-    snapshot_rd.Height = z->snapshot_h;
++    snapshot_rd.Width = z->snap_pw;    /* KZ2 patch 2302: physical, as the depth it resolves */
++    snapshot_rd.Height = z->snap_ph;
+     snapshot_rd.DepthOrArraySize = 1;
+     snapshot_rd.MipLevels = 1;
+     snapshot_rd.Format = DXGI_FORMAT_R32_FLOAT;
+@@ -6776,12 +7032,12 @@
+     g.list->lpVtbl->SetComputeRootDescriptorTable(
+         g.list, 1, destination_table);
+     {
+-        const UINT size[2] = { z->snapshot_w, z->snapshot_h };
++        const UINT size[2] = { z->snap_pw, z->snap_ph };   /* KZ2 patch 2302: physical texels */
+         g.list->lpVtbl->SetComputeRoot32BitConstants(g.list, 2, 2, size, 0);
+     }
+     g.list->lpVtbl->Dispatch(
+-        g.list, (z->snapshot_w + 7u) / 8u,
+-        (z->snapshot_h + 7u) / 8u, 1);
++        g.list, (z->snap_pw + 7u) / 8u,
++        (z->snap_ph + 7u) / 8u, 1);
+ 
+     D3D12_RESOURCE_BARRIER uav_done = {0};
+     uav_done.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+@@ -6851,7 +7107,7 @@
+         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+         D3D12_RESOURCE_DESC rd = {0};
+         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-        rd.Width = w; rd.Height = h;
++        rd.Width = ld_isx(w); rd.Height = ld_isy(h);   /* KZ2 patch 2302: physical, as the snapshot */
+         rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+         rd.Format = DXGI_FORMAT_R32_FLOAT;
+         rd.SampleDesc.Count = 1;
+@@ -6888,7 +7144,7 @@
+         D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
+         dst.pResource = z->win[k].tex; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+         src.pResource = z->snapshot;   src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-        D3D12_BOX box = { 0, 0, 0, w, h, 1 };
++        D3D12_BOX box = { 0, 0, 0, ld_isx(w), ld_isy(h), 1 };   /* KZ2 patch 2302: physical */
+         g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, &box);
+         b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+         b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+@@ -6968,7 +7224,7 @@
+         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+         D3D12_RESOURCE_DESC rd = {0};
+         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-        rd.Width = s->w; rd.Height = s->h;
++        rd.Width = s->phys_w; rd.Height = s->phys_h;   /* KZ2 patch 2302: texel for texel with the surface */
+         rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+         rd.Format = DXGI_FORMAT_R16G16_FLOAT;
+         rd.SampleDesc.Count = 1;
+@@ -7036,9 +7292,9 @@
+         g.list->lpVtbl->SetComputeRootSignature(g.list, g.depth_snapshot_rootsig);
+         g.list->lpVtbl->SetComputeRootDescriptorTable(g.list, 0, src_table);
+         g.list->lpVtbl->SetComputeRootDescriptorTable(g.list, 1, dst_table);
+-        const UINT size[2] = { s->w, s->h };
++        const UINT size[2] = { s->phys_w, s->phys_h };   /* KZ2 patch 2302 */
+         g.list->lpVtbl->SetComputeRoot32BitConstants(g.list, 2, 2, size, 0);
+-        g.list->lpVtbl->Dispatch(g.list, (s->w + 7u) / 8u, (s->h + 7u) / 8u, 1);
++        g.list->lpVtbl->Dispatch(g.list, (s->phys_w + 7u) / 8u, (s->phys_h + 7u) / 8u, 1);
+         b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+         b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+         b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -8200,7 +8456,15 @@
+                                                 * origin is the bottom and the program reads WPOS, else 0 */
+     u32 deriv_flip;                            /* KZ2 patch 2096: 1 when the program uses DDY on a bottom-origin
+                                                 * shader window, else 0 */
++    u32 iscale;                                /* KZ2 patch 2302: internal scale x | y << 8 when not native, else 0
++                                                * (WPOS and DDX/DDY go back to guest pixels through it) */
+ } ld_xl_in;
++/* KZ2 patch 2302: the scale field of ld_xl_in for the live scale (0 at the native scale, so 1x keys are unchanged). */
++static u32 ld_xl_iscale(void) { return ld_iscale_on() ? (g_ld_iscale.x | (g_ld_iscale.y << 8)) : 0u; }
++static rsx_iscale_grid ld_xl_grid(u32 iscale)
++{
++    return iscale ? rsx_iscale_grid_make(iscale & 0xFFu, (iscale >> 8) & 0xFFu) : rsx_iscale_native();
++}
+ static CRITICAL_SECTION g_ld_xl_cs;
+ static volatile LONG g_ld_xl_state;
+ static void ld_xl_lock(void)
+@@ -8245,16 +8509,30 @@
+     if (st != RSX_ISCALE_OK) { ld_iscale_refused("WPOS divisor", (int)st, wpos_aa, scale.x | (scale.y << 8)); return 0; }
+     return 1;
+ }
+-static int ld_wpos_aa_apply(char* hlsl, size_t size, u32 wpos_aa)
++/* KZ2 patch 2302, ENHANCEMENT (RSX_INTERNAL_SCALE): on a scaled target SV_Position counts physical texels, scale x
++ * scale of them per guest sample. WPOS goes back to guest pixels through the composed divisor aa * scale, but within
++ * the guest pixel it keeps the texel's own position: pixel + (j + 0.5) / scale, j = the texel's index inside its
++ * sample (P mod scale). So a screen-space lookup (WPOS / screen size, Killzone 2's deferred lighting into its
++ * G-buffer) samples the scaled G-buffer texel for texel instead of every texel of a pixel reading the same one, which
++ * would bring the lighting back to the guest's resolution. At scale 1 the two forms give the same value; the old text
++ * is kept there so 1x shaders and keys are unchanged. ASSUMPTION: no guest program depends on WPOS being exactly the
++ * pixel centre (floor(WPOS) is unchanged; frac(WPOS) is 0.25 or 0.75 at 2x instead of 0.5). */
++static int ld_wpos_aa_apply(char* hlsl, size_t size, u32 wpos_aa, rsx_iscale_grid scale)
+ {
+     const u32 ax = wpos_aa & 0xFFu, ay = (wpos_aa >> 8) & 0xFFu;
+-    if (!hlsl || !wpos_aa || (ax <= 1u && ay <= 1u)) return 0;
++    const int scaled = !rsx_iscale_grid_is_native(scale);
++    if (!hlsl || ((!wpos_aa || (ax <= 1u && ay <= 1u)) && !scaled)) return 0;
+     rsx_iscale_grid d;
+-    if (!ld_wpos_divisor(wpos_aa, rsx_iscale_native(), &d)) return -1;   /* patch 2300 */
++    if (!ld_wpos_divisor(wpos_aa, scale, &d)) return -1;   /* patch 2300; 2302: with the internal scale */
+     static const char key[] = "input.position";
+-    char rep[160];
+-    snprintf(rep, sizeof rep, "float4(floor(input.position.xy / float2(%u.0, %u.0)) + 0.5, input.position.zw)",
+-             d.x, d.y);
++    char rep[360];
++    if (!scaled)
++        snprintf(rep, sizeof rep, "float4(floor(input.position.xy / float2(%u.0, %u.0)) + 0.5, input.position.zw)",
++                 d.x, d.y);
++    else
++        snprintf(rep, sizeof rep, "float4(floor(input.position.xy / float2(%u.0, %u.0)) + (fmod(floor(input.position.xy), "
++                 "float2(%u.0, %u.0)) + 0.5) / float2(%u.0, %u.0), input.position.zw)",
++                 d.x, d.y, scale.x, scale.y, scale.x, scale.y);
+     const size_t kl = sizeof key - 1, rl = strlen(rep);
+     size_t n = 0;
+     for (const char* p = strstr(hlsl, key); p; p = strstr(p + kl, key)) n++;
+@@ -8347,11 +8625,12 @@
+     }
+     return on;
+ }
+-static int ld_deriv_scale_apply(char* hlsl, size_t size, u32 wpos_aa, u32 flip)
++static int ld_deriv_scale_apply(char* hlsl, size_t size, u32 wpos_aa, u32 flip, rsx_iscale_grid scale)
+ {
+-    /* Patch 2300: samples per guest pixel, the WPOS divisor (AA grid composed with the native internal scale). */
++    /* Patch 2300: physical texels per guest pixel, the WPOS divisor (AA grid composed with the internal scale; KZ2
++     * patch 2302: the live scale, so a derivative spans one guest pixel at 2x too). */
+     rsx_iscale_grid d;
+-    if (!ld_wpos_divisor(wpos_aa, rsx_iscale_native(), &d)) return -1;
++    if (!ld_wpos_divisor(wpos_aa, scale, &d)) return -1;
+     const float sx = (float)d.x, sy = (float)d.y * (flip ? -1.0f : 1.0f);
+     const int r = rsx_fp_set_deriv_scale(hlsl, (u32)size, sx, sy);
+     static u32 logs;
+@@ -8432,9 +8711,11 @@
+         fi = -1;
+     if (fi > 0 && in->wpos_flip && ld_wpos_flip_apply(ps_hlsl, ps_sz, in->wpos_flip) < 0)   /* KZ2 patch 2090 */
+         fi = -1;
+-    if (fi > 0 && in->wpos_aa && ld_wpos_aa_apply(ps_hlsl, ps_sz, in->wpos_aa) < 0)   /* KZ2 patch 2088 */
++    if (fi > 0 && (in->wpos_aa || in->iscale) &&   /* KZ2 patch 2088; 2302: also on a scaled target */
++        ld_wpos_aa_apply(ps_hlsl, ps_sz, in->wpos_aa, ld_xl_grid(in->iscale)) < 0)
+         fi = -1;
+-    if (fi > 0 && ld_deriv_scale_apply(ps_hlsl, ps_sz, in->wpos_aa, in->deriv_flip) < 0)   /* KZ2 patch 2096 */
++    if (fi > 0 && ld_deriv_scale_apply(ps_hlsl, ps_sz, in->wpos_aa, in->deriv_flip,   /* KZ2 patch 2096 */
++                                       ld_xl_grid(in->iscale)) < 0)
+         fi = -1;
+     if (fi > 0 && srgb_out && rsx_fp_apply_srgb_output(ps_hlsl, ps_sz) < 0) {   /* patch 2055 */
+         static int said; if (!said++) fprintf(stderr, "[srgb-out] apply failed: PSO left linear\n");
+@@ -8490,6 +8771,8 @@
+     if (xi->wpos_flip) { const u32 tag = 0x57504F00u | 0x46u; key = fnv1a(&tag, sizeof tag, key);   /* KZ2 patch 2090 */
+                          key = fnv1a(&xi->wpos_flip, sizeof xi->wpos_flip, key); }
+     if (xi->deriv_flip) { const u32 tag = 0x44445900u | 0x46u; key = fnv1a(&tag, sizeof tag, key); }   /* KZ2 patch 2096 */
++    if (xi->iscale) { const u32 tag = 0x49534300u | 0x4Bu; key = fnv1a(&tag, sizeof tag, key);   /* KZ2 patch 2302 */
++                      key = fnv1a(&xi->iscale, sizeof xi->iscale, key); }
+     if (masked_layout) {
+         static const u32 masked_layout_tag = 0x314B534Du; /* "MSK1" */
+         const u32 payload_stride =
+@@ -8549,6 +8832,7 @@
+ /* ---- export (walker thread) ---- */
+ static void ld_pt_note(u64 key, const ld_xl_in* xi, int packed, int depth)
+ {
++    if (xi->iscale) return;   /* KZ2 patch 2302: a record has no field for the scale; templates are written at 1x */
+     if (!rsx_pt_set_add(&g_pt.seen, key)) return;
+     if (!ld_fp_constants_buffered()) return;
+     if (g_pt.n_out == g_pt.cap_out) {
+@@ -8700,6 +8984,8 @@
+         if (!fh || ld_pso_key_tail(fh, &xi, packed, NULL) != r->key) {
+             InterlockedIncrement(&g_pt.failed_key); return;
+         }
++        xi.iscale = ld_xl_iscale();   /* KZ2 patch 2302: checked as written (1x), built for the live scale */
++        if (xi.iscale) key = ld_pso_key_tail(fh, &xi, packed, NULL);
+         if (masked && packed && ld_vtx_gpu_on()) {   /* patch 2076: build the GPU-fetch variant the walker will use */
+             packed = 2; xi.vgpu = 1;
+             key = ld_pso_key_tail(fh, &xi, packed, NULL);
+@@ -9862,6 +10148,7 @@
+         }
+     }
+     ld_xl_in xi;   /* patch 2071 */
++    xi.iscale = ld_xl_iscale();   /* KZ2 patch 2302 */
+     xi.vp_uc = vp_uc; xi.vp_instrs = vp_instrs; xi.vp_start = start; xi.layout = masked_layout; xi.vtex_mask = vtex_mask;
+     xi.fp_uc = fp_uc; xi.fp_size = fp_size; xi.fp_ctrl = fp_ctrl; xi.cube_mask = cube_mask; xi.rs = &rs;
+     xi.shadow_mask = shadow_mask; xi.shadow_zfunc = shadow_zfunc; xi.unnorm_mask = unnorm_mask; xi.unnorm_dim = unnorm_dim;
+@@ -11681,7 +11968,8 @@
+         g.movie_overlay_valid = 0;
+         return;
+     }
+-    ID3D12Resource* rt = g.surfaces[target].tex;
++    ID3D12Resource* rt = ld_is_down(target);   /* KZ2 patch 2302: the guest-size image (the surface itself at 1x) */
++    if (!rt) { g.movie_overlay_valid = 0; return; }
+     D3D12_RESOURCE_BARRIER b = {0};
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     b.Transition.pResource = rt;
+@@ -12772,8 +13060,9 @@
+         dst.PlacedFootprint.Footprint.Height = 1;
+         dst.PlacedFootprint.Footprint.Depth = 1;
+         dst.PlacedFootprint.Footprint.RowPitch = 256;
+-        const u32 x = xs[k] < z->snapshot_w ? xs[k] : z->snapshot_w - 1u;
+-        const u32 y = ys[k] < z->snapshot_h ? ys[k] : z->snapshot_h - 1u;
++        /* KZ2 patch 2302: guest points, clamped in guest space, read at the first physical texel of their cell */
++        const u32 x = ld_isx(xs[k] < z->snapshot_w ? xs[k] : z->snapshot_w - 1u);
++        const u32 y = ld_isy(ys[k] < z->snapshot_h ? ys[k] : z->snapshot_h - 1u);
+         D3D12_BOX box = { x, y, 0, x + 1u, y + 1u, 1 };
+         g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, &box);
+     }
+@@ -12797,7 +13086,7 @@
+ {
+     *mn = 1.0f; *mx = 0.0f;
+     if (!z->snapshot || !z->snapshot_valid || !z->snapshot_w || !z->snapshot_h) return UINT64_MAX;
+-    const u32 w = z->snapshot_w, h = z->snapshot_h, pitch = (w * 4u + 255u) & ~255u;
++    const u32 w = z->snap_pw, h = z->snap_ph, pitch = (w * 4u + 255u) & ~255u;   /* KZ2 patch 2302: the host image */
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+     D3D12_RESOURCE_DESC bd = {0};
+     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = (UINT64)pitch * h;
+@@ -13059,7 +13348,7 @@
+         const u32 k = (u32)(g_rb.tail % LD_RB_N);
+         if (g_rb.e[k].fence > done) break;
+         const u64 c = g_rb.map[k];
+-        const u32 v = c > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)c;
++        const u32 v = ld_is_count(c);   /* KZ2 patch 2302: the count at the guest's resolution (saturated as before) */
+         const int i = ld_oq_slot(g_rb.e[k].off, 0);
+         if (i >= 0) { g_oq.slot[i].val = v; g_oq.slot[i].has_val = 1; }
+         if (g_rb.e[k].guest) {
+@@ -15281,7 +15570,7 @@
+     /* RTV heap: [0..1] backbuffers, [2..] surface cache */
+     D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
+     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+-    hd.NumDescriptors = LD_SWAP_BUFFERS + MAX_SURFACES;
++    hd.NumDescriptors = LD_SWAP_BUFFERS + 2u * MAX_SURFACES;   /* KZ2 patch 2302: + the native companions */
+     g.dev->lpVtbl->CreateDescriptorHeap(g.dev, &hd, &IID_ID3D12DescriptorHeap, (void**)&g.rtv_heap);
+     g.rtv_step = g.dev->lpVtbl->GetDescriptorHandleIncrementSize(g.dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+     ld_dm_get_buffers();   /* patch 2095 */
+@@ -15337,7 +15626,7 @@
+ 
+     /* SRV heaps */
+     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+-    hd.NumDescriptors = SRV_CPU_HEAP_SLOTS; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
++    hd.NumDescriptors = SRV_CPU_HEAP_SLOTS + MAX_SURFACES; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+     g.dev->lpVtbl->CreateDescriptorHeap(g.dev, &hd, &IID_ID3D12DescriptorHeap, (void**)&g.srv_cpu_heap);
+     hd.NumDescriptors = SRV_RING_TABLES * SRV_TABLE_SIZE;
+     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+@@ -15419,6 +15708,7 @@
+         g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
+     }
+ 
++    ld_iscale_activate();   /* KZ2 patch 2302: RSX_INTERNAL_SCALE, before the shared depth and any surface */
+     /* depth */
+     D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
+     dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+@@ -15430,7 +15720,7 @@
+         D3D12_HEAP_PROPERTIES dhp = {0}; dhp.Type = D3D12_HEAP_TYPE_DEFAULT;
+         D3D12_RESOURCE_DESC drd = {0};
+         drd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-        drd.Width = width; drd.Height = height; drd.DepthOrArraySize = 1;
++        drd.Width = ld_isx(width); drd.Height = ld_isy(height); drd.DepthOrArraySize = 1;   /* KZ2 patch 2302 */
+         drd.MipLevels = 1; drd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT; drd.SampleDesc.Count = 1;
+         drd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+         D3D12_CLEAR_VALUE dcv = {0}; dcv.Format = drd.Format; dcv.DepthStencil.Depth = 1.0f;
+@@ -15439,7 +15729,7 @@
+             D3D12_CPU_DESCRIPTOR_HANDLE dh;
+             g.dsv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g.dsv_heap, &dh);
+             LD_SM_INVALIDATE(), g.dev->lpVtbl->CreateDepthStencilView(g.dev, g.depth, NULL, dh);
+-            g.depth_phys_w = width; g.depth_phys_h = height;   /* KZ2 patch 2300: allocated as before */
++            g.depth_phys_w = (u32)drd.Width; g.depth_phys_h = drd.Height;   /* KZ2 patch 2300; 2302: at the scale */
+         } else {
+             g.depth = NULL;
+         }
+@@ -15468,7 +15758,6 @@
+     sink.report = sink_report;   /* patch 2025 */
+     rsx_dispatch_init(&g.rsx, &sink);
+ 
+-    (void)ld_iscale_requested();   /* KZ2 patch 2301: read and log RSX_INTERNAL_SCALE once, at start */
+     g.ready = 1;
+     g.enabled = 1;
+     return 0;
+@@ -15994,8 +16283,8 @@
+ {
+     ID3D12Resource* rt = surface ? surface->tex : NULL;
+     if (!rt) return UINT64_MAX;
+-    const u32 width = surface->w;
+-    const u32 height = surface->h;
++    const u32 width = surface->phys_w;    /* KZ2 patch 2302: the host image as drawn (w x h at the native scale) */
++    const u32 height = surface->phys_h;
+     if (!width || !height) return UINT64_MAX;
+     const int fp16 = surface->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT;
+     const u32 texel = fp16 ? 8u : 4u;
+@@ -16150,6 +16439,9 @@
+     const u32 texel = surface->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8u : 4u;
+     const u32 pitch = (width * texel + 255) & ~255u;
+     if ((u64)width * height * texel > out_bytes) return -1;
++    /* KZ2 patch 2302: the guest's view, w x h (the companion of a scaled surface, refreshed now) */
++    ID3D12Resource* const view = ld_is_down((u32)(surface - g.surfaces));
++    if (!view) return -1;
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+     D3D12_RESOURCE_DESC bd = {0};
+     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = (UINT64)pitch * height;
+@@ -16162,13 +16454,13 @@
+         return -1;
+     D3D12_RESOURCE_BARRIER b = {0};
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+-    b.Transition.pResource = surface->tex;
++    b.Transition.pResource = view;
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+-    src.pResource = surface->tex; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    src.pResource = view; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     dst.pResource = rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+     dst.PlacedFootprint.Footprint.Format = surface->fmt;
+     dst.PlacedFootprint.Footprint.Width = width;
+@@ -16290,15 +16582,18 @@
+             { g_ld_rb[k] = NULL; return 0; }
+         g_ld_rb_bytes[k] = bytes;
+     }
++    /* KZ2 patch 2302: the guest's view (w x h): the surface at 1x, its refreshed native companion when scaled */
++    ID3D12Resource* const view = ld_is_down(i);
++    if (!view) return 0;
+     D3D12_RESOURCE_BARRIER b = {0};
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+-    b.Transition.pResource = sf->tex;
++    b.Transition.pResource = view;
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+-    src.pResource = sf->tex; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    src.pResource = view; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     dst.pResource = g_ld_rb[k]; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+     dst.PlacedFootprint.Footprint.Format = sf->fmt;
+     dst.PlacedFootprint.Footprint.Width = sf->w;
+@@ -16606,7 +16901,9 @@
+     surface_t* sf = &g.surfaces[i];
+     if (!sf->tex || sf->fmt != DXGI_FORMAT_R8G8B8A8_UNORM || sf->w < 640u || sf->h < 360u) return 0;
+     if (g_aa_frame[i] == g_ld_frames + 1u) return 0;
+-    if (!ld_host_aa_pipeline() || !ld_host_aa_target(sf->w, sf->h)) return 0;
++    /* KZ2 patch 2302: the pass runs over the host image (physical extent; w x h at the native scale) */
++    const u32 pw = sf->phys_w, ph = sf->phys_h;
++    if (!ld_host_aa_pipeline() || !ld_host_aa_target(pw, ph)) return 0;
+     if (g.srv_ring_used >= SRV_RING_TABLES) return 0;
+     const u32 base = g.srv_ring_used++ * SRV_TABLE_SIZE;
+     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+@@ -16646,12 +16943,12 @@
+     g.list->lpVtbl->SetComputeRootDescriptorTable(g.list, 0, gpu);
+     g.list->lpVtbl->SetComputeRootDescriptorTable(g.list, 1, gpu_uav);
+     {
+-        const float rw = 1.0f / (float)sf->w, rh = 1.0f / (float)sf->h;
+-        UINT k[4] = { sf->w, sf->h, 0, 0 };
++        const float rw = 1.0f / (float)pw, rh = 1.0f / (float)ph;
++        UINT k[4] = { pw, ph, 0, 0 };
+         memcpy(&k[2], &rw, 4); memcpy(&k[3], &rh, 4);
+         g.list->lpVtbl->SetComputeRoot32BitConstants(g.list, 2, 4, k, 0);
+     }
+-    g.list->lpVtbl->Dispatch(g.list, (sf->w + 7u) / 8u, (sf->h + 7u) / 8u, 1);
++    g.list->lpVtbl->Dispatch(g.list, (pw + 7u) / 8u, (ph + 7u) / 8u, 1);
+     b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+     b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+     b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -16736,7 +17033,8 @@
+     if (!ld_gamma_enabled() || !(gm > 0.0f) || gm == 1.0f || i >= MAX_SURFACES) return NULL;
+     surface_t* sf = &g.surfaces[i];
+     if (!sf->tex || sf->fmt != DXGI_FORMAT_R8G8B8A8_UNORM) return NULL;
+-    if (!ld_gamma_pipeline() || !ld_host_aa_target(sf->w, sf->h)) return NULL;
++    const u32 pw = sf->phys_w, ph = sf->phys_h;   /* KZ2 patch 2302: over the host image, as the present shows it */
++    if (!ld_gamma_pipeline() || !ld_host_aa_target(pw, ph)) return NULL;
+     if (g.srv_ring_used >= SRV_RING_TABLES) return NULL;
+     const u32 base = g.srv_ring_used++ * SRV_TABLE_SIZE;
+     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+@@ -16777,11 +17075,11 @@
+     g.list->lpVtbl->SetComputeRootDescriptorTable(g.list, 1, gpu_uav);
+     {
+         const float inv = gm, pad = 0.0f;
+-        UINT k[4] = { sf->w, sf->h, 0, 0 };
++        UINT k[4] = { pw, ph, 0, 0 };
+         memcpy(&k[2], &inv, 4); memcpy(&k[3], &pad, 4);
+         g.list->lpVtbl->SetComputeRoot32BitConstants(g.list, 2, 4, k, 0);
+     }
+-    g.list->lpVtbl->Dispatch(g.list, (sf->w + 7u) / 8u, (sf->h + 7u) / 8u, 1);
++    g.list->lpVtbl->Dispatch(g.list, (pw + 7u) / 8u, (ph + 7u) / 8u, 1);
+     b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+     b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
