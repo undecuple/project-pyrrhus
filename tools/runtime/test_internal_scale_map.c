@@ -1,7 +1,8 @@
 /* Host test for the internal resolution scale mapping (patch 2300, libs/video/rsx_internal_scale.h): checked
  * conversion between guest pixel, guest sample and physical extents, and the equivalence of the live-draw call sites
- * routed through it (draw and clear scissor, viewport, WPOS divisor, DDX/DDY scale) with the code they replaced; and
- * the RSX_INTERNAL_SCALE text (patch 2301, rsx_iscale_parse_switch). */
+ * routed through it (draw and clear scissor, viewport, WPOS divisor, DDX/DDY scale) with the code they replaced; the
+ * RSX_INTERNAL_SCALE text (patch 2301, rsx_iscale_parse_switch); and the 2x path (patch 6082): composed extents and
+ * rectangles, the scaled WPOS formula and report counts (rsx_iscale_count_to_guest). */
 #include <stdio.h>
 #include <string.h>
 #include "rsx_internal_scale.h"
@@ -286,6 +287,55 @@ static void switch_text(void)
         }
 }
 
+/* Patch 6082's WPOS on a scaled target, as the shader text computes it (ld_wpos_aa_apply): physical texel P (SV_Position
+ * = P + 0.5) -> floor(p / (aa * s)) + (fmod(floor(p), s) + 0.5) / s; at s = 1 the old floor(p / aa) + 0.5. */
+static double wpos_scaled(uint32_t P, uint32_t aa, uint32_t s)
+{
+    const double p = (double)P + 0.5;
+    return (double)(uint32_t)(p / (double)(aa * s)) + ((double)(P % s) + 0.5) / (double)s;
+}
+
+/* Patch 6082 (RSX_INTERNAL_SCALE=2): extents, rectangles, WPOS and report counts at 2x. */
+static void scaled_2x(void)
+{
+    const rsx_iscale_grid s2 = G(2, 2);
+    /* Killzone 2's G-buffer: 1280x720 pixels, 2x1 AA -> 2560x720 samples -> 5120x1440 physical */
+    rsx_iscale_target t;
+    const rsx_iscale_extent px = { 1280u, 720u };
+    CHECK(rsx_iscale_target_from_pixel(px, G(2, 1), s2, &t) == RSX_ISCALE_OK);
+    CHECK(t.sample.w == 2560u && t.sample.h == 720u && t.physical.w == 5120u && t.physical.h == 1440u);
+    /* the draw scissor: pixels -> physical by the AA grid composed with the scale (one mapping, checked endpoints) */
+    rsx_iscale_rect r, m;
+    rsx_iscale_grid cg;
+    CHECK(rsx_iscale_rect_from_origin_size(10u, 20u, 100u, 50u, &r) == RSX_ISCALE_OK);
+    CHECK(rsx_iscale_compose(G(2, 1), s2, &cg) == RSX_ISCALE_OK && cg.x == 4u && cg.y == 2u);
+    CHECK(rsx_iscale_map_rect(r, cg, &m) == RSX_ISCALE_OK && rect_eq(m, 40u, 40u, 440u, 140u));
+    /* the clear: pixels -> samples (AA), then samples -> physical (scale): the same rectangle as the composed grid */
+    rsx_iscale_rect sm, ph;
+    CHECK(rsx_iscale_map_rect(r, G(2, 1), &sm) == RSX_ISCALE_OK && rsx_iscale_map_rect(sm, s2, &ph) == RSX_ISCALE_OK);
+    CHECK(rect_eq(ph, m.left, m.top, m.right, m.bottom));
+    /* WPOS: the guest pixel of every physical texel is floor(P / (aa * s)); at aa 1 the position is texel-exact
+     * (wpos * s - 0.5 == P), and at s = 1 it is the old pixel centre for every AA grid */
+    for (uint32_t a = 1; a <= 2; a++)
+        for (uint32_t P = 0; P < 4096u; P++) {
+            const double w = wpos_scaled(P, a, 2u);
+            CHECK((uint32_t)w == P / (a * 2u));
+            const double f = w - (double)(uint32_t)w;
+            CHECK(f == 0.25 || f == 0.75);
+            if (a == 1) CHECK(w * 2.0 - 0.5 == (double)P);
+            CHECK(wpos_scaled(P, a, 1u) == (double)(P / a) + 0.5);
+        }
+    /* report counts: divided by the texels per guest sample, rounded up; 0 stays 0, any coverage counts */
+    static const struct { uint64_t v; uint32_t want; } c[] = {
+        { 0u, 0u }, { 1u, 1u }, { 3u, 1u }, { 4u, 1u }, { 5u, 2u }, { 921600u * 4u, 921600u },
+        { 0xFFFFFFFFull, 0x40000000u }, { 0x1FFFFFFFFull, 0x40000000u },
+    };
+    for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) CHECK(rsx_iscale_count_to_guest(c[i].v, s2) == c[i].want);
+    CHECK(rsx_iscale_count_to_guest(12345u, rsx_iscale_native()) == 12345u);
+    CHECK(rsx_iscale_count_to_guest(0x100000000ull, rsx_iscale_native()) == 0xFFFFFFFFu);   /* saturates as before */
+    CHECK(rsx_iscale_count_to_guest(77u, G(0, 2)) == 77u);   /* invalid grid: identity, never hides a draw */
+}
+
 int main(void)
 {
     identity();
@@ -295,6 +345,7 @@ int main(void)
     overflow_and_invalid();
     shader_side();
     switch_text();
+    scaled_2x();
     if (fails) { printf("test_internal_scale_map: %d failure(s)\n", fails); return 1; }
     printf("test_internal_scale_map: ok\n");
     return 0;

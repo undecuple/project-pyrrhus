@@ -94,6 +94,12 @@ and the newest log file).
 - **Laptops with two graphics chips:** the game now asks Windows for the high-performance GPU first and logs every
   adapter it found and the one it chose (#13). This is not yet confirmed on a hybrid laptop; if the game still runs on
   the integrated chip, set `kz2.exe` to High performance in Windows' graphics settings and tell us in #13.
+- **Internal resolution 2x is experimental and environment-only** (`RSX_INTERNAL_SCALE=2`, issue #55; unset or `1`
+  renders as before). There is no menu row, only 1x and 2x exist, and FSR 1 is switched off while it is on (the
+  UPSCALING row has no effect). The game itself still sees its own 1280x720: whatever it composes on the SPUs from a
+  surface copied back to memory (its post-processing chain) is at that resolution and expanded. Checked on native
+  Windows 11 only: scripted to the main menu and one hand-play session, with no artefacts seen; frame cost on the same
+  scene is not measured yet.
 
 ## Stability
 
