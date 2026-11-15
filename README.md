@@ -175,6 +175,8 @@ The port's own code, tools and documentation: [MIT](LICENSE). Third-party compon
 
 **[Project Helghast](https://github.com/undecuple/project-helghast)**: Killzone 3 (PS3) ported to PC the same way. Project Pyrrhus uses its method and reuses its general runtime work (ps3recomp fixes, renderer, SPU job system), adapted to Killzone 2. Most patches in `port/patches/` come from there; the rest are Killzone 2's own. Its builds are pre-releases on its [releases page](https://github.com/undecuple/project-helghast/releases), as this project's are.
 
+**[Project Vekta](https://github.com/gustavomorinaga/project-vekta)**: Killzone HD, the PS3 remaster of the first Killzone, ported to PC the same way by Gustavo Morinaga, with Windows and Linux [pre-releases](https://github.com/gustavomorinaga/project-vekta/releases). Its README has the current state.
+
 This port currently supports Direct3D 12 only. For a Vulkan version of a Killzone 2 port, please use [Tokisaki Port](https://github.com/YYOzcan/tokisaki-port), which is developed separately by its own author.
 
 Project Pyrrhus is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple), Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440), Discord **itekso.** (on the ps3recomp server). Builds and fixes come only from this repository's [GitHub Releases](https://github.com/undecuple/project-pyrrhus/releases). We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or donations in this project's name is not us.
