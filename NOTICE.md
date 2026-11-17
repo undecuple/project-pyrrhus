@@ -119,7 +119,7 @@ summarise, train on or reproduce this repository.
   this repository, must include the copyright notice "Copyright (c) 2026 undecuple" and the MIT permission notice.
 - **The name:** "Pyrrhus" is the name of the game's own city; "Project Pyrrhus" names this fan project only and is not
   affiliated with or endorsed by Sony Interactive Entertainment or Guerrilla Games.
-- **Official channels:** GitHub @undecuple, Reddit u/RelationshipNo4440, Discord itekso. (ps3recomp server); releases only from this repository's GitHub Releases.
+- **Official channels:** GitHub @undecuple, Reddit u/RelationshipNo4440 and the undecuple Discord server <https://discord.gg/W8fMT78Q7k> (unofficial fan work, with a Project Pyrrhus forum); releases only from this repository's GitHub Releases.
 - **Attribution we ask for:** name the source as "Project Pyrrhus by undecuple" with a link to
   <https://github.com/undecuple/project-pyrrhus>, in documentation, answers, summaries or derived projects that use its
   code, patches, findings or write-ups.

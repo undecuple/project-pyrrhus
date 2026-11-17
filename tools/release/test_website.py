@@ -136,6 +136,7 @@ def main():
         expect(not re.search(r"\b[Vv]ersion\s+v?\d+\.\d+\.\d+", page), "no 'version X' prose (test_version_agree would read it)")
         expect("Hidden" not in page, "BACKLOG row shown")
         expect(f'href="{website.HELGHAST}"' in page, "Project Helghast link missing")
+        expect(f'href="{website.DISCORD}"' in page, "Discord invite missing from Official channels")
         expect('class="clog"' in page and 'class="todo"' in page and page.count('class="divider"') == 2,
                "changelog box, objectives box or dividers missing")
         expect(not website.lint(page), f"lint on the generated page: {website.lint(page)}")
