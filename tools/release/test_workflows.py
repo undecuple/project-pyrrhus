@@ -4,7 +4,7 @@ tree). Text checks only (standard library, no YAML parser, no network):
   - every `uses:` of a third-party action is pinned to a full 40-hex commit SHA with its version in a comment;
   - every workflow sets top-level `permissions:` and every job its own; no secret other than the run's own token
     (github.token / GITHUB_TOKEN) is read; checkouts keep no credentials;
-  - each file names where it was adapted from (Project Helghast);
+  - each file names where it was adapted from (Project Helghast, or J-Stars Victory VS-EX for release-notify.yml);
   - pages.yml: both jobs run only when the repository variable PAGES_ENABLED is "true"; the page's ../assets images
     are staged;
   - release.yml: a tag push or workflow_dispatch only; the tag must be v + installer/VERSION; the draft pre-release
@@ -65,8 +65,8 @@ def test_common(files):
     for p in files:
         name = os.path.relpath(p, GH)
         t = read(p)
-        check("adapted from Project Helghast" in "\n".join(t.splitlines()[:12]),
-              f"{name}: header names where it was adapted from (Project Helghast)")
+        src = "Adapted from J-Stars Victory VS-EX" if name.endswith("release-notify.yml") else "adapted from Project Helghast"
+        check(src in "\n".join(t.splitlines()[:12]), f"{name}: header names where it was adapted from ({src})")
         if "/workflows/" not in p.replace(os.sep, "/"):
             continue
         check(re.search(r"^permissions:", t, re.M) is not None, f"{name}: top-level permissions set")
@@ -79,8 +79,10 @@ def test_common(files):
             check(bool(ok), f"{name}: {ref.split('@')[0]} pinned to a commit SHA with its version", line.strip())
         for job, body in jobs(t).items():
             check(re.search(r"^    permissions:", body, re.M) is not None, f"{name}: job {job} sets its own permissions")
-        secrets = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", t)) - {"GITHUB_TOKEN"}
-        check(not secrets, f"{name}: no secret beyond the run's own token", secrets)
+        # release-notify.yml: the Discord webhook is its only secret.
+        allowed = {"GITHUB_TOKEN"} | ({"DISCORD_RELEASE_WEBHOOK"} if name.endswith("release-notify.yml") else set())
+        extra = sorted(set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", t)) - allowed)  # names only, never values
+        check(not extra, f"{name}: no secret beyond the run's own token", ", ".join(extra))
         for m in re.finditer(r"uses: actions/checkout@\S+[^\n]*\n((?:\s{8,}[^\n]*\n)*)", t):
             check("persist-credentials: false" in m.group(1), f"{name}: checkout keeps no credentials", m.group(0))
         check("pull_request_target" not in t and "workflow_run" not in t, f"{name}: no privileged trigger")
