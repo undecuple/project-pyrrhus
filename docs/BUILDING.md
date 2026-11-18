@@ -165,8 +165,12 @@ ran to the end and produced `kz2.exe`, linked with the lifted SPU code. Step 5 w
 ## Building on macOS
 
 **Experimental native ARM64 route:** the port executable and runtime compile on Apple silicon and the synthetic
-boot passed on an Apple M4 Pro with Metal, both offscreen and in a Cocoa window. This is not a Killzone 2 run.
-The real game's lift, build, rendering, audio, input and gameplay remain untested on macOS.
+boot passed on an Apple M4 Pro with Metal, both offscreen and in a Cocoa window. With patches 6084 (lwcond) and
+6085 (font folder), the USA 1.29 game ran on the same machine in a window, driven by `PAD_FILE` button presses (no
+physical controller): language and gamma screens, the intro movie, the title screen, the main menu, New Campaign,
+the Corinth River loading screen and the first mission's in-engine opening scene. Loading the mission stalled the
+frame for up to 22 seconds at a time (depth readbacks wait on the GPU); it then ran on. Playing the mission, sound
+on a speaker, a physical controller and performance were not checked.
 
 The native route uses Apple Clang and the toolkit's existing Metal backend with guest-shader translation, not
 Direct3D 12 or Proton. The guest runs on a 256 MiB-stack worker while the main thread services Cocoa. ARM64 builds
@@ -219,13 +223,17 @@ The build checks the lift's version, toolkit stamp, override announcements and L
 Once those inputs exist:
 
 ```sh
-python3.12 tools/build-kz2-macos.py --ffmpeg-include /path/to/lgpl-ffmpeg/include
+bash tools/runtime/ffmpeg-lgpl-macos.sh
+python3.12 tools/build-kz2-macos.py --ffmpeg-include work/ffmpeg-macos/include
 python3.12 tools/run-kz2-macos.py --disc /Volumes/PS3VOLUME --update /path/to/BCUS98116 --eboot /path/to/EBOOT.elf --seconds 60
 ```
 
 FFmpeg headers and matching libraries from an **LGPL-only build** are needed for movie/AC3 decoding, as in the
-Windows route; do not substitute a GPL-enabled FFmpeg build. Native media decoding has not been validated.
-`PS3RECOMP_FFMPEG_AVCODEC` and `PS3RECOMP_FFMPEG_AVUTIL` can select the matching dylibs explicitly at launch.
+Windows route; do not substitute a GPL-enabled FFmpeg build (Homebrew's is one). `tools/runtime/ffmpeg-lgpl-macos.sh`
+builds FFmpeg 9.0.1 with the Windows recipe's decoder set and checks `config.h` for LGPL 2.1 only; it needs the
+network once, for the source. The runner then loads `work/ffmpeg-macos/lib`. On an Apple M4 Pro the intro movie
+played with its picture and its 5.1 AC-3 sound decoded through it. `PS3RECOMP_FFMPEG_AVCODEC` and
+`PS3RECOMP_FFMPEG_AVUTIL` select other matching dylibs at launch.
 `--allow-no-ffmpeg` is an explicit developer-only build with black movies and silent AC3.
 
 The system fontset (Cyrillic, Greek and CJK text) reads `build/kz2-macos/fonts/`. Without Nix, make the two files
