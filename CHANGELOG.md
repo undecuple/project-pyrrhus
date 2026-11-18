@@ -8,6 +8,7 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 
 ### Fixed
 - **Synchronization:** preserve the recursive attribute when creating a lightweight mutex, return “busy” for a contended nonblocking lock attempt, and reject misaligned cellSync mutexes before touching their memory. Adapted from ps3recomp PR #621 by Max Leiter; covered by host regression tests without game data. No game run was performed for these changes.
+- **macOS boot stall (patch 6084):** lightweight condition variables (`sys_lwcond`) now wait and wake on every host. Their wait and signal used to compile only on Windows: elsewhere a wait returned at once without releasing its mutex, so the game's file-streaming threads deadlocked on the first read and the screen stayed black.
 
 ### Added
 - **Experimental macOS developer build:** native ARM64/Metal build script, a Cocoa run-loop bridge and portable runtime fixes. The synthetic boot passed on an Apple M4 Pro both offscreen and in a window (threads, three frames, vblank and exit). Killzone 2 itself and physical controllers were not tested; see [the Mac build instructions](docs/BUILDING.md#building-on-macos).
