@@ -1,0 +1,62 @@
+KZ2 patch 3009: lwmutex attributes / busy result and cellSyncMutex alignment.
+
+Adapted from sp00nznet/ps3recomp PR #621 by Max Leiter (MIT), commit
+5d3494a95a038e295cfa2aaf245d3f55cb2549bc, found in the local ps3recomp-up-r10
+checkout. Only the sysPrxForUser and cellSyncMutex hunks are carried; the
+existing lv2 mutex / cond hand-off implementation (6027) is kept.
+Source: https://github.com/sp00nznet/ps3recomp/pull/621
+Copyright (c) 2026 Ned Heller / sp00nznet and contributors.
+Licence: MIT (licenses/ps3recomp-LICENSE.txt).
+
+Store both protocol and recursive attributes in the guest lwmutex word.
+A contended trylock returns sign-extended CELL_EBUSY, not CELL_ETIMEDOUT.
+Reject misaligned cellSync mutex addresses before logging or atomic access.
+Keep patch 1056's striped coherence locks and the existing diagnostics.
+Host test: tools/runtime/test_sync_mutex_semantics.py (no game data or GPU).
+No Killzone 2 run was performed; this changes generic HLE contracts only.
+
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -133,3 +133,5 @@
+     vm_write32(lwm + 0x04, 0);          /* waiter */
++    /* The guest attribute word carries both input attributes (PR #621). */
++    uint32_t recursive = attr ? vm_read32(attr + 4) : 0;
+-    vm_write32(lwm + LWM_ATTR, protocol);
++    vm_write32(lwm + LWM_ATTR, protocol | recursive);
+     vm_write32(lwm + LWM_RECUR, 0);     /* recursive_count */
+@@ -342,3 +344,4 @@
+         }
+-        if (!lwm_try(sl0)) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Bu; return; } // EBUSY
++        /* A failed nonblocking attempt is EBUSY, not ETIMEDOUT (PR #621). */
++        if (!lwm_try(sl0)) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Au; return; }
+     }
+diff --git a/libs/sync/cellSync.c b/libs/sync/cellSync.c
+--- a/libs/sync/cellSync.c
++++ b/libs/sync/cellSync.c
+@@ -27,2 +27,5 @@
+ #endif
++
++/* A CellSyncMutex is one four-byte-aligned guest word (PR #621). */
++#define SYNC_MUTEX_MISALIGNED(ea) (((ea) & 3u) != 0)
+ 
+@@ -95,2 +98,4 @@
+         return CELL_SYNC_ERROR_NULL_POINTER;
++    if (SYNC_MUTEX_MISALIGNED(_ea))
++        return CELL_SYNC_ERROR_ALIGN;
+ 
+@@ -111,2 +116,4 @@
+         return CELL_SYNC_ERROR_NULL_POINTER;
++    if (SYNC_MUTEX_MISALIGNED(_ea))
++        return CELL_SYNC_ERROR_ALIGN;
+     SYNC_WATCH_LOG("LOCK", _ea, mutex);
+@@ -143,2 +150,4 @@
+         return CELL_SYNC_ERROR_NULL_POINTER;
++    if (SYNC_MUTEX_MISALIGNED(_ea))
++        return CELL_SYNC_ERROR_ALIGN;
+     SYNC_WATCH_LOG("TRYLOCK", _ea, mutex);
+@@ -166,2 +175,4 @@
+         return CELL_SYNC_ERROR_NULL_POINTER;
++    if (SYNC_MUTEX_MISALIGNED(_ea))
++        return CELL_SYNC_ERROR_ALIGN;
+     SYNC_WATCH_LOG("UNLOCK", _ea, mutex);

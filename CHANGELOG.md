@@ -6,6 +6,9 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 
 ## [Unreleased]
 
+### Fixed
+- **Synchronization:** preserve the recursive attribute when creating a lightweight mutex, return “busy” for a contended nonblocking lock attempt, and reject misaligned cellSync mutexes before touching their memory. Adapted from ps3recomp PR #621 by Max Leiter; covered by host regression tests without game data. No game run was performed for these changes.
+
 ### Added
 - **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
 

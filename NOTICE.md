@@ -13,6 +13,13 @@ where there is one). The port's own code is MIT ([LICENSE](LICENSE)).
 
 ## Absorbed upstream PRs (ps3recomp pull requests by other authors)
 
+Patch 3009 and `tools/runtime/test_sync_mutex_semantics.py` / `test_cellsync_mutex.c` are adapted from
+[ps3recomp PR #621](https://github.com/sp00nznet/ps3recomp/pull/621) by **Max Leiter**, commit
+`5d3494a95a038e295cfa2aaf245d3f55cb2549bc`, found in the local `ps3recomp-up-r10` checkout.
+Only the lwmutex attribute / busy-error and cellSyncMutex alignment changes are used, together with the focused
+tests, adapted for this port's striped coherence locks. MIT, Copyright (c) 2026 Ned Heller / sp00nznet and
+contributors; licence text: [licenses/ps3recomp-LICENSE.txt](licenses/ps3recomp-LICENSE.txt).
+
 Code or logic from these pull requests is used in our patches or, where they were merged, comes in with ps3recomp
 itself. One row per author: the pull requests first, our patch numbers (`port/patches/`) in brackets. All are MIT, as
 ps3recomp.
