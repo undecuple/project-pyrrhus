@@ -41,6 +41,12 @@ ps3recomp.
 
 ## Other ports' patches
 
+The native macOS main-run-loop/guest-worker design in `port/kz2/kz2_macos_host.cpp` and the resource guards in
+`tools/build-kz2-macos.py` are informed by Erik Martins's MIT
+[Afro Samurai port](https://github.com/erikomis/afro-samurai-recomp), `port/main.cpp` and `tools/build.sh`
+(the latter adapted there from PES 2013). They are newly implemented here; no lifted code was imported.
+Copyright and licence: [licenses/afro-samurai-recomp-LICENSE.txt](licenses/afro-samurai-recomp-LICENSE.txt).
+
 | Project | Author | Source | Licence | What was used |
 |---|---|---|---|---|
 | Project Helghast (the Killzone 3 PC port) | undecuple (the same author as this project) | [undecuple/project-helghast](https://github.com/undecuple/project-helghast) | MIT (Copyright (c) 2026 undecuple) | the runtime, SPU, RSX/D3D12 and pad patches 0001-5004 in `port/patches/` (headers carry "From KZ3 <commit>"), the split disc archive reader in patch 6034 and its test, the fail-closed GPU fence wait in patch 2157 (from KZ3 2157), the texture-unit and vertex-input reuse counters in patches 2158 and 2160 (from KZ3 2158 and 2160; off by default), the setup's on-screen stop reasons and the EBOOT page's version check (from Project Helghast PR #11), the per-input failure reasons and the setup's dump and update page messages (from Project Helghast PR #14), the first-run folder hints limited to Killzone 2's title id (from Project Helghast PR #17), the published-release check (`release_check.py` and its workflow), the disk cache stamp in patch 6035 (`port/kz2/kz2_fios_stamp.h`) and the window icon in patch 2123, the cellFont outline API in patch 6061 (from its patch 5005), the DSU (cemuhook) motion client in patch 6062 (from its patch 4028), the SPU switches in patches 7017-7020 (from its patches 1151, 1152, 1153 and 1155), the RSX command walker switches in patches 6063-6066 (from its patches 2147-2150), the renderer fixes in patches 6053-6057 (from Project Helghast's 2100, 2103 and 2127, 2133, 2119 and 9633), the per-tick message pump in `port/kz2/main.cpp`, the failed-link undo rule and the junction error 1392 wording in `tools/release/launch.py`, the ini decode order in `tools/release/install_ini.py`, the wider RPCS3 search and the user-folder redaction in `tools/release/rpcs3_locate.py` and `firstrun.py` (and their test `test_rpcs3_locate.py`), and the link-free install design (`cache_root_supported` / `link_free` in `launch.py` and `firstrun.py`; adopted, inactive until the runtime reads its cache-folder setting), native mouse look (Raw Input counts, the pointer clip, the sensitivity model; patch 6046 and `port/kz2/kz2_ppu_overrides.cpp`, from Project Helghast's patches 2069, 2097, 2099 and 2123), the lift/build/installer tooling (including the ISO 9660 reader `tools/release/iso9660.py`), the art and website generators and the AGENTS.md guide, adapted for Killzone 2, and the byte-validated shader-program memo design extended in patch 6071 (from its patch 2029), and the log-gated play controller and host tests adapted from its `tools/gameplay/play.py` |
@@ -48,6 +54,18 @@ ps3recomp.
 | Qwark's Awakening (the Ratchet & Clank PC port) | undecuple (the same author as this project) | [undecuple/qwarks-awakening](https://github.com/undecuple/qwarks-awakening) | MIT (Copyright (c) 2026 undecuple) | lv2 mutex and condition-variable rules (R&C patch 7007), adapted in [6027] |
 
 ## Libraries
+
+The experimental native Mac developer build additionally uses locally installed libraries (not bundled by these changes):
+
+| Library | Author / source | Licence | Use |
+|---|---|---|---|
+| SDL2 | SDL contributors, <https://libsdl.org/> | zlib ([text](licenses/SDL2-LICENSE.txt)) | native audio through the existing toolkit backend |
+| glslang | Khronos and contributors, <https://github.com/KhronosGroup/glslang> | BSD/MIT/Apache terms by component ([complete text](licenses/glslang-LICENSE.txt)) | existing HLSL-to-SPIR-V shader translator |
+| SPIRV-Tools | Khronos and contributors, <https://github.com/KhronosGroup/SPIRV-Tools> | Apache-2.0 ([text](licenses/SPIRV-Tools-LICENSE.txt)) | SPIR-V processing used by the native shader toolchain |
+| SPIRV-Cross | Khronos and contributors, <https://github.com/KhronosGroup/SPIRV-Cross> | Apache-2.0 and component terms ([text](licenses/SPIRV-Cross-LICENSE.txt)) | existing SPIR-V-to-MSL shader translator, linked statically by the toolkit |
+
+SDL3 also supplies native gamepads via its installed dylib; its existing zlib licence entry below applies.
+Apple's Metal, QuartzCore, Foundation, CoreFoundation and AppKit frameworks are supplied by macOS/Xcode and are not bundled.
 
 | Library | Author | Source | Licence | What was used |
 |---|---|---|---|---|

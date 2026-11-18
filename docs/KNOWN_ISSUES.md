@@ -150,7 +150,7 @@ If something does not start, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). If yo
 - The build is heavy. Each lifted source chunk can need over 1 GB of memory to compile. The build takes roughly 18
   minutes with four jobs, and the installer's first-run build makes a `kz2.exe` of about 230 MB. At least 16 GB of RAM
   is advised (8 GB works with 2 jobs; see [requirements.md](requirements.md)).
-- Builds for macOS and native Windows are untested ([BUILDING.md](BUILDING.md)).
+- The native macOS developer build passes a synthetic ARM64/Metal boot, but Killzone 2 itself, controllers and native media decoding remain untested. The native Windows source-checkout build is untested ([BUILDING.md](BUILDING.md)).
 - Cross builds from a Linux host outside our Nix shell: the toolchain fixes (#34) are checked with a test project and our own build. They are not checked on a real Fedora, Debian or Arch host.
 - **Install folder.** From 0.1.8 the game reads your game folder where it is and writes its caches under the install
   folder's `vfs` folder. Nothing is linked, so any drive that can hold the install works. With a disc ISO, a FAT32

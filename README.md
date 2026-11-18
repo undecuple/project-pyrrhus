@@ -55,6 +55,7 @@ One row per setup. *Verified* means we ran it on that setup. *Implemented* means
 | Platform | How it runs | Renderer | State | Tested on |
 |---|---|---|---|---|
 | Windows 11 | native exe | Direct3D 12 | players report playing (issue #13); not run by us | a player's laptop: RTX 4070 Laptop GPU (21-28 fps in the first part of the first level, their report) |
+| macOS (Apple silicon, experimental developer build) | native ARM64 | Metal | synthetic boot only: 3 frames, threads, vblank and exit; Killzone 2 untested | Apple M4 Pro; [build instructions](docs/BUILDING.md#building-on-macos) |
 | Windows 10 | native exe, in a virtual machine | Direct3D 12 | installer, first-run build and uninstall verified; the game starts and stops at its graphics device (no GPU there) | 6 cores, 8 GB, no GPU, 2026-10-27 and 2026-10-28 |
 | Linux | the Windows exe under Proton | Direct3D 12 | verified: the first level loads and plays in our scripted runs, about 23 fps over one 330 s run (2026-10-22) and a median of 32.6 fps in short turn-and-walk windows (2026-10-29), against the PS3's 30; hand play is not measured | GE-Proton11-7, i7-12700KF, RTX 4060 |
 

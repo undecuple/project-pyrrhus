@@ -2002,6 +2002,16 @@ static void kz2_mouse_dump(const char* why, uint32_t E, double t)
     fprintf(stderr, "%s\n", line);
 }
 
+static bool kz2_anchor_exists(const char* path)
+{
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat info;
+    return stat(path, &info) == 0;
+#endif
+}
+
 static void kz2_mouse_pre(ppu_context* ctx)
 {
     static int s_init, s_nev, s_send, s_log, s_dump;
@@ -2029,7 +2039,7 @@ static void kz2_mouse_pre(ppu_context* ctx)
     static double s_anchor_next;
     if (s_anchor && *s_anchor && now >= s_anchor_next) {
         s_anchor_next = now + 0.5;
-        if (GetFileAttributesA(s_anchor) != INVALID_FILE_ATTRIBUTES) {
+        if (kz2_anchor_exists(s_anchor)) {
             s_t0 = now; s_anchor = nullptr;
             fprintf(stderr, "[mouse] script clock starts (anchor found)\n");
             if (kz2_mouse_env_on("KZ2_MOUSE_DUMP")) kz2_mouse_dump("start", vm_read32((uint32_t)ctx->gpr[3] + 0x10), 0.0);
@@ -2136,6 +2146,7 @@ static void kz2_mouse_pre(ppu_context* ctx)
  * Test input KZ2_KEY_SCRIPT="T:KEY:SEC ..." (KEY = Mouse1, Mouse2, a letter or 0xVK): SendInput presses KEY for SEC
  * seconds, T seconds after the first look update or after KZ2_MOUSE_ANCHOR appears (the mouse script's clock). */
 extern "C" void pad_kb_set_roles(const unsigned short out[16], unsigned valid_ms);   /* cellPad.c (patch 6050) */
+#ifdef _WIN32
 static void kz2_key_send(unsigned vk, int down)
 {
     INPUT in; memset(&in, 0, sizeof in);
@@ -2148,6 +2159,7 @@ static void kz2_key_send(unsigned vk, int down)
     }
     SendInput(1, &in, sizeof in);
 }
+#endif
 static void kz2_keys_tick(void)
 {
     const uint32_t prof = vm_read32(0x011B0540u + 0x240u);
@@ -2166,6 +2178,7 @@ static void kz2_keys_tick(void)
         }
         pad_kb_set_roles(out, 300);
     }
+#ifdef _WIN32
     static int s_init, s_n; static double s_t0;
     static struct { double t, sec; unsigned vk; int state; } s_ev[16];
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -2190,7 +2203,7 @@ static void kz2_keys_tick(void)
     if (!s_n) return;
     static const char* s_anchor = getenv("KZ2_MOUSE_ANCHOR");
     if (s_anchor && *s_anchor) {
-        if (GetFileAttributesA(s_anchor) == INVALID_FILE_ATTRIBUTES) return;
+        if (!kz2_anchor_exists(s_anchor)) return;
         s_anchor = nullptr; s_t0 = now;
     }
     const double t = now - s_t0;
@@ -2203,6 +2216,7 @@ static void kz2_keys_tick(void)
             fprintf(stderr, "[keys] test t=%.2f: 0x%02X up\n", t, s_ev[i].vk); fflush(stderr);
         }
     }
+#endif
 }
 [[maybe_unused]] static void kz2_update_look(ppu_context* ctx, void (*lifted)(ppu_context*))
 {
@@ -2250,7 +2264,9 @@ void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifte
 #include "kz2_motion.h"
 extern "C" int  pad_motion_port(unsigned port, unsigned char* rx);   /* cellPad.c (patch 6049) */
 extern "C" void pad_motion_set_mode(int mode);
+#ifdef _WIN32
 extern "C" void pad_motion_tilt_note(void);   /* cellPad.c (patch 6060): the tilt keys act while this is fresh */
+#endif
 extern "C" void pad_dsu_set_port(unsigned port);   /* cellPad.c (patch 6062): DSU motion client, 0 = off */
 static int kz2_motion_log_on(void)
 {
@@ -2295,7 +2311,9 @@ extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
     unsigned char rx = 128;
     const int live = pad_motion_port(0, &rx);
     if (!kz2_motion_feed(kz2_gameplay_get()->motion, live)) return;
+#ifdef _WIN32
     pad_motion_tilt_note();   /* a valve or charge reads the tilt now (keyboard tilt keys, patch 6060) */
+#endif
     const float s = kz2_motion_unit(rx), deg = kz2_motion_deg(s);
     float v[3];
     kz2_motion_vec(deg, v);
