@@ -228,6 +228,21 @@ Windows route; do not substitute a GPL-enabled FFmpeg build. Native media decodi
 `PS3RECOMP_FFMPEG_AVCODEC` and `PS3RECOMP_FFMPEG_AVUTIL` can select the matching dylibs explicitly at launch.
 `--allow-no-ffmpeg` is an explicit developer-only build with black movies and silent AC3.
 
+The system fontset (Cyrillic, Greek and CJK text) reads `build/kz2-macos/fonts/`. Without Nix, make the two files
+with the release scripts from the pinned upstream sources (both scripts refuse a source whose SHA-256 differs) and
+fontTools 4.63.0 in a throwaway virtual environment:
+
+```sh
+python3.12 -m venv /tmp/ft && /tmp/ft/bin/pip install fonttools==4.63.0
+curl -fLo /tmp/NotoSans.ttf 'https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/unhinted/variable-ttf/NotoSans%5Bwdth%2Cwght%5D.ttf'
+curl -fLo /tmp/NotoSansCJK-VF.otf.ttc 'https://github.com/notofonts/noto-cjk/raw/Sans2.004/Sans/Variable/OTC/NotoSansCJK-VF.otf.ttc'
+mkdir -p build/kz2-macos/fonts
+/tmp/ft/bin/python -B tools/runtime/mkfont_noto.py --src /tmp/NotoSans.ttf build/kz2-macos/fonts/NotoSans-Regular.ttf
+/tmp/ft/bin/python -B tools/runtime/mkfont_cjk.py --src /tmp/NotoSansCJK-VF.otf.ttc build/kz2-macos/fonts/NotoSansCJK-Regular.ttc
+```
+
+The CJK output matches the release's pinned SHA-256. A run's log should show `2 font file(s) in the chain`.
+
 The bounded native runner uses the mounted disc in place, never copying the whole ISO. It verifies the inputs,
 blocks network access and writes only under `work/` and `build/`. Saves/caches are isolated from RPCS3's data.
 `--skip-intro` is an opt-in diagnostic for one run; `--headless` selects offscreen Metal. Each run has its own
