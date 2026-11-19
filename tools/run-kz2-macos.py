@@ -66,6 +66,12 @@ def main():
     # report). Synchronous builds show everything (the owner confirmed the incomplete
     # menu with async on); an explicit PS3RECOMP_METAL_ASYNC_PSO value wins.
     env.setdefault('PS3RECOMP_METAL_ASYNC_PSO', '0')
+    # Patches 2162/2163 (depth bounds, depth clamp) break this title's rendering: the owner
+    # bisected menu text, in-game text and floor textures all to them (2026-11-19, run
+    # 20261119-124314: everything correct with both off, everything broken with both on).
+    # Off until they are fixed; explicit PS3RECOMP_ENG_DEPTH_BOUNDS/_DEPTH_CLAMP values win.
+    env.setdefault('PS3RECOMP_ENG_DEPTH_BOUNDS', '0')
+    env.setdefault('PS3RECOMP_ENG_DEPTH_CLAMP', '0')
     # The LGPL-only FFmpeg built into work/ffmpeg-macos (docs/BUILDING.md); an explicit environment choice wins.
     ffmpeg = work / 'ffmpeg-macos/lib'
     for name, lib in (('PS3RECOMP_FFMPEG_AVUTIL', 'libavutil.61.dylib'),
