@@ -61,9 +61,11 @@ def main():
                PS3RECOMP_METAL_HEADLESS='1' if args.headless else '0',
                KZ2_SKIP_INTRO='1' if args.skip_intro else '0',
                KZ2_TEST_CLOSE=str(args.seconds - 5), KZ2_NO_ERROR_DIALOG='1')
-    # Patch 2167's background builds now build a still-missing pipeline on re-request, so
-    # content drawn once (menu text) is not lost to the first drop; async stays the default.
-    # An explicit PS3RECOMP_METAL_ASYNC_PSO value (including =0) wins.
+    # Patch 2167's background builds still lose content drawn only during a pending
+    # build's drop window: menu boxes, and now gameplay elements too (the owner's
+    # report). Synchronous builds show everything (the owner confirmed the incomplete
+    # menu with async on); an explicit PS3RECOMP_METAL_ASYNC_PSO value wins.
+    env.setdefault('PS3RECOMP_METAL_ASYNC_PSO', '0')
     # The LGPL-only FFmpeg built into work/ffmpeg-macos (docs/BUILDING.md); an explicit environment choice wins.
     ffmpeg = work / 'ffmpeg-macos/lib'
     for name, lib in (('PS3RECOMP_FFMPEG_AVUTIL', 'libavutil.61.dylib'),

@@ -1,0 +1,44 @@
+KZ2 patch 6087: the frame thread sleeps on POSIX hosts.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+cellGcm_walker_wait was a no-op everywhere but Windows -- (void)ms; return 0; -- so
+on the Mac route the frame thread spun at the outer loop's full rate: ~8 kHz drain
+passes, ~35k message pumps a second (each a dispatch_sync to the main queue; that
+was the dominant stack of every walker sample), a busy core and main-queue
+contention, all for a loop whose design cadence is one pass per 4 ms. Sleep like
+the Windows build does. The acquire fast path (patch 6082's label re-check) needs
+no event; a park ends within the sleep exactly as the Windows build's did before
+patch 6038 gave it one.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -15,6 +15,9 @@
+ #include "gcm_fifo_word.h"   /* KZ2 patch 6026: old- and new-form JUMP decode */
+ #include "cellGcmSys.h"
+ #include "../../runtime/platform/win32_compat.h"
++#ifndef _WIN32
++#include <unistd.h>             /* KZ2 patch 6087: the frame thread's POSIX sleep */
++#endif
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_write32 (translate + byte-swap, OOB-safe) */
+ #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
+ #include "../../runtime/spu/spu_coherency.h" /* the blit row copy's reservation bookkeeping */
+@@ -1237,7 +1240,15 @@
+     }
+     return WaitForSingleObject(s_walker_wake, ms) == WAIT_OBJECT_0;
+ #else
+-    (void)ms;
++    /* The POSIX hosts slept not at all here: the frame thread spun at the
++     * outer loop's full rate (~8 kHz passes, ~35k message pumps a second),
++     * burning a whole core and contending the main queue for nothing. Sleep
++     * like the Windows build does; the acquire fast path needs no event, and
++     * a park ends within the sleep, as the Windows build's did before patch
++     * 6038 gave it an event. */
++    const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
++    if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
++    if (ms) usleep(ms * 1000u);
+     return 0;
+ #endif
+ }

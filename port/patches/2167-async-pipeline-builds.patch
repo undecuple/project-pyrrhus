@@ -62,22 +62,26 @@ diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -3172,11 +3172,34 @@
- }
+@@ -3194,10 +3194,38 @@
  
  /* ---- lifecycle ----------------------------------------------------------- */
-+
+ 
 +/* Patch 2167: the async pipeline-build state. Declared here, before eng_init
 + * uses the queue, because the dispatcher that creates the builds lives with
 + * the pipeline section below. */
 +static pthread_mutex_t s_eng_build_lock = PTHREAD_MUTEX_INITIALIZER;
 +static dispatch_queue_t s_eng_build_queue;
-+enum { ENG_ASYNC_MAX = 4096 };
++/* The translators and their scratch buffers are not reentrant (rsx_live_draw.c's
++ * prewarm solved this with a lock of its own), so the builds parallelize only
++ * from newRenderPipelineState on; four of those overlap usefully. */
++static pthread_mutex_t s_eng_translate_lock = PTHREAD_MUTEX_INITIALIZER;
++enum { ENG_ASYNC_MAX = 4096, ENG_ASYNC_WORKERS = 4 };
 +typedef struct {
 +    u64 key;
 +    u32 result;                 /* 0 while in flight, the handle once done */
 +    int done;
 +    int inline_building;        /* a retry built it on the walker; the worker skips */
++    uint64_t queued_us;         /* ps3_ft_now() at insert, for the retry age gate */
 +    char* vs_hlsl;              /* the worker's own copies; freed on its way out */
 +    char* ps_hlsl;
 +    rsx_be_render_state rs;
@@ -88,26 +92,51 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +} eng_async_build;
 +static eng_async_build* s_eng_builds[ENG_ASYNC_MAX];
 +static u32 s_eng_build_count;
- 
++
  static int eng_init(void* user, u32 width, u32 height)
  {
      (void)user; (void)width; (void)height;
      s_eng_encoding_failed = 0;
-+    if (!s_eng_build_queue) s_eng_build_queue = dispatch_queue_create("kz2.pso.build", DISPATCH_QUEUE_SERIAL);   /* patch 2167 */
++    if (!s_eng_build_queue) s_eng_build_queue = dispatch_queue_create("kz2.pso.build", DISPATCH_QUEUE_CONCURRENT);   /* patch 2167 */
      if (!s_dev) return -1;
      NSError* err = nil;
      s_eng_helper_lib = [s_dev newLibraryWithSource:kEngHelperMSL options:nil error:&err];
-@@ -3205,6 +3228,9 @@
+@@ -3226,6 +3254,10 @@
  static void eng_shutdown(void* user)
  {
      (void)user;
-+    /* Patch 2167: let the build worker finish before the tables it fills
-+     * (and reads from) are cleared below. */
-+    if (s_eng_build_queue) dispatch_sync(s_eng_build_queue, ^{});
++    /* Patch 2167: let the build workers finish before the tables they fill
++     * (and read from) are cleared below. A barrier waits out the concurrent
++     * queue's in-flight blocks. */
++    if (s_eng_build_queue) dispatch_barrier_sync(s_eng_build_queue, ^{});
      for (u32 i = 0; i < s_eng_obj_count; i++) s_eng_obj[i] = nil;
      for (u32 i = 0; i < s_eng_pipe_count; i++) {
          s_eng_pipe[i].pso = nil;
-@@ -3524,6 +3550,44 @@
+@@ -3522,9 +3554,17 @@
+                                     const char* what)
+ {
+     const u64 hash = fnv1a64(hlsl, (u32)strlen(hlsl), 1469598103934665603ull);
++    /* Patch 2167: the build workers call this concurrently; the translators
++     * and their scratch buffers are not reentrant, so one builder at a time.
++     * On the walker's own path the lock is uncontended. */
++    pthread_mutex_lock(&s_eng_translate_lock);
+     for (u32 i = 0; i < s_eng_func_count; i++)
+-        if (s_eng_func[i].hash == hash) return s_eng_func[i].fn;
+-    if (s_eng_func_count >= ENG_MAX_FUNCS) return nil;
++        if (s_eng_func[i].hash == hash) {
++            const id<MTLFunction> hit = s_eng_func[i].fn;
++            pthread_mutex_unlock(&s_eng_translate_lock);
++            return hit;
++        }
++    if (s_eng_func_count >= ENG_MAX_FUNCS) { pthread_mutex_unlock(&s_eng_translate_lock); return nil; }
+ 
+     id<MTLFunction> fn = nil;
+     char name[64];
+@@ -3542,14 +3582,184 @@
+     s_eng_func[s_eng_func_count].hash = hash;
+     s_eng_func[s_eng_func_count].fn   = fn;
+     s_eng_func_count++;
++    pthread_mutex_unlock(&s_eng_translate_lock);
      return fn;
  }
  
@@ -127,7 +156,11 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +{
 +    static int on = -1;
 +    if (on < 0) { const char* e = getenv("PS3RECOMP_METAL_ASYNC_PSO");
-+                  on = (e && e[0] == '0' && !e[1]) ? 0 : 1; }
++                  /* Off by default until a pending build can draw with something
++                   * instead of dropping: content drawn only during the drop window
++                   * (menu boxes, gameplay elements) never came back. The retry of
++                   * 94dcfc6 recovers re-drawn content, not once-drawn content. */
++                  on = (e && e[0] == '1') ? 1 : 0; }
 +    return on && s_eng_build_queue;
 +}
 +
@@ -152,10 +185,13 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
  static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_hlsl,
                                 const rsx_be_render_state* rs,
                                 const rsx_vertex_layout_plan* layout,
-@@ -3534,6 +3598,113 @@
-     if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
-     if (!rt_count) rt_count = 1;
-     if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
+                                u32 vertex_stride, rsx_be_format rt_fmt,
+                                u32 rt_count)
++{
++    (void)user;
++    if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
++    if (!rt_count) rt_count = 1;
++    if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
 +    if (!eng_async_pso_on())
 +        return eng_pipeline_create_sync(user, vs_hlsl, ps_hlsl, rs, layout,
 +                                        vertex_stride, rt_fmt, rt_count);
@@ -170,13 +206,25 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +            return result;
 +        }
 +        if (!e->inline_building) {
-+            /* A re-request of a pipeline whose first draw was dropped: the
-+             * content that needs it is on screen NOW, and the worker reaches
-+             * this entry only after everything queued before it. Build it
-+             * here, once -- this is the R2 SYNC_HIT lesson, and it is what
-+             * keeps static content (menu text) from being drawn only into
-+             * the drop window. The worker skips the duplicate when it sees
-+             * the entry finished. */
++            /* A re-request of a pipeline whose first draw was dropped. The
++             * worker clears the ordinary bursts (four builds at a time), so
++             * inline building is reserved for entries it has still not
++             * reached after ENG_ASYNC_RETRY_S -- content drawn rarely
++             * (static menu text) would otherwise miss its pipeline for as
++             * long as the queue's backlog, because the game stopped drawing
++             * by the time the build landed. This is the R2 SYNC_HIT lesson;
++             * a rate gate bounds the walker's exposure to one build at a
++             * time. */
++            {
++                static uint64_t s_last_inline_us;
++                const uint64_t now = ps3_ft_now();
++                if (now - e->queued_us < 5000000ull ||   /* young: the worker has it */
++                    now - s_last_inline_us < 100000ull) {  /* one at a time */
++                    pthread_mutex_unlock(&s_eng_build_lock);
++                    return 0;
++                }
++                s_last_inline_us = now;
++            }
 +            e->inline_building = 1;
 +            pthread_mutex_unlock(&s_eng_build_lock);
 +            const u32 handle = eng_pipeline_create_sync(NULL, e->vs_hlsl, e->ps_hlsl,
@@ -208,6 +256,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +        return 0;
 +    }
 +    b->key = key;
++    b->queued_us = ps3_ft_now();
 +    b->vs_hlsl = vs_copy;
 +    b->ps_hlsl = ps_copy;
 +    b->rs = *rs;
@@ -218,6 +267,11 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +    s_eng_builds[s_eng_build_count++] = b;
 +    pthread_mutex_unlock(&s_eng_build_lock);
 +    dispatch_async(s_eng_build_queue, ^{
++        /* Patch 2167: up to four builds at a time; the translation itself
++         * serializes in eng_function's lock, the pipeline creation overlaps. */
++        static dispatch_semaphore_t s_build_slots;
++        if (!s_build_slots) s_build_slots = dispatch_semaphore_create(ENG_ASYNC_WORKERS);
++        dispatch_semaphore_wait(s_build_slots, DISPATCH_TIME_FOREVER);
 +        /* A retry may build this entry on the walker (inline_building); wait
 +         * for that and skip the duplicate. The normal path (no retry) falls
 +         * straight through to the build. */
@@ -229,6 +283,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +            if (done) {
 +                free(b->vs_hlsl); b->vs_hlsl = NULL;
 +                free(b->ps_hlsl); b->ps_hlsl = NULL;
++                dispatch_semaphore_signal(s_build_slots);
 +                return;
 +            }
 +            if (!inline_bld) break;
@@ -237,6 +292,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +        const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
 +                                                    &b->rs, &b->layout,
 +                                                    b->vertex_stride, b->rt_fmt, b->rt_count);
++        dispatch_semaphore_signal(s_build_slots);
 +        pthread_mutex_lock(&s_eng_build_lock);
 +        b->result = handle;
 +        b->done = 1;
@@ -258,11 +314,6 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +                                    const rsx_vertex_layout_plan* layout,
 +                                    u32 vertex_stride, rsx_be_format rt_fmt,
 +                                    u32 rt_count)
-+{
-+    (void)user;
-+    if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
-+    if (!rt_count) rt_count = 1;
-+    if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
-     if (s_eng_pipe_count >= ENG_MAX_PIPES) return 0;
-     id<MTLFunction> vs = eng_function(vs_hlsl, RSX_SHADER_STAGE_VERTEX, "vp");
-     if (!vs) return 0;
+ {
+     (void)user;
+     if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
