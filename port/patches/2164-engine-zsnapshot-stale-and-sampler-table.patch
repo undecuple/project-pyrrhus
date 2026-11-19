@@ -1,0 +1,65 @@
+KZ2 patch 2164: draw engine depth snapshot goes stale on a depth write; Metal sampler table 4096.
+
+Written for the Pyrrhus native Mac lighting work; both rules follow the author's Resistance 3
+and inFAMOUS 2 macOS ports (MIT, Erik Martins). No game code or RPCS3 code used.
+- rsx_draw_engine.c: eng_zdepth_wrote clears snapshot_valid. Only a clear did before, so a
+  depth target read as a texture, drawn into again and read again in one frame (a shadow map
+  filled cascade by cascade) kept returning the first copy.
+- rsx_metal_backend.m: ENG_MAX_SAMPLERS 256 -> 4096 (Resistance 3 8934068). A full table
+  returned -1 in silence and every later sampler combination drew with the default (linear,
+  clamp, no mips), so light maps and shadow lookups sampled wrong. One stderr line when the
+  count passes 256 (the old size), at 75 % and when full.
+
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -1597,6 +1597,11 @@
+     eng_zdepth* z = &g.zdepths[slot];
+     z->depth_serial = ++g.write_serial;
+     z->guest_dirty = 1;
++    /* KZ2 patch 2164: a depth write makes the snapshot stale. Only a clear invalidated it before, so a depth target
++     * read as a texture, drawn into again and read again in the same frame (a shadow map filled cascade by cascade)
++     * kept returning the first copy. eng_zdepth_snapshot takes a new one on the next read. As the author's
++     * Resistance 3 and inFAMOUS 2 ports do (MIT, Erik Martins). */
++    z->snapshot_valid = 0;
+     z->zfmt = sf->depth_format;
+     z->pitch = sf->zeta_pitch;
+     z->used_w = sf->clip_w ? sf->clip_w : g.width;
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2591,7 +2591,11 @@
+ #define ENG_MAX_RECORDS  8192
+ #define ENG_MAX_VIEWS    256
+ #define ENG_MAX_FUNCS    4096
+-#define ENG_MAX_SAMPLERS 256
++/* KZ2 patch 2164: 256 -> 4096. The key holds the filters, the three wraps, the border class and min/max LOD to
++ * 1/256, so a long session meets far more than 256 combinations; a full table returned -1 in silence and every later
++ * combination drew with the default sampler (linear, clamp, no mips): light maps and shadow lookups sampled wrong.
++ * As the author's Resistance 3 port (8934068, MIT, Erik Martins). One line at 75 % and one when full. */
++#define ENG_MAX_SAMPLERS 4096
+ #define ENG_ALIGN        256u
+ /* One frame's staging. Past it the backend submits and waits rather than
+  * dropping the rest of the frame: dropping "discarded 181/184 sampled a010
+@@ -3620,7 +3624,20 @@
+                   | ((u64)(d->border & 3u) << 56);
+     for (u32 i = 0; i < s_eng_samp_count; i++)
+         if (s_eng_samp[i].key == key) return (int)i;
+-    if (s_eng_samp_count >= ENG_MAX_SAMPLERS) return -1;
++    if (s_eng_samp_count >= ENG_MAX_SAMPLERS) {
++        static int said_full;
++        if (!said_full) { said_full = 1;
++            fprintf(stderr, "[RSX metal] sampler table full (%u): later sampler states fall back to the default\n",
++                    (unsigned)ENG_MAX_SAMPLERS); }
++        return -1;
++    }
++    if (s_eng_samp_count == 256u)
++        fprintf(stderr, "[RSX metal] sampler table passed 256, the size before patch 2164\n");
++    if (s_eng_samp_count == ENG_MAX_SAMPLERS * 3u / 4u) {
++        static int said_most;
++        if (!said_most) { said_most = 1;
++            fprintf(stderr, "[RSX metal] sampler table at %u of %u\n", (unsigned)s_eng_samp_count, (unsigned)ENG_MAX_SAMPLERS); }
++    }
+     MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
+     sd.minFilter = d->min_linear ? MTLSamplerMinMagFilterLinear
+                                  : MTLSamplerMinMagFilterNearest;

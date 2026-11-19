@@ -138,6 +138,10 @@ static uint32_t kz2_post_clear_mask(void)
         int v = 0;
         if (!(mb && atoi(mb) != 0)) v |= 0x1;
         if (dof && *dof ? atoi(dof) == 0 : !dof_default) v |= 0x2;
+        /* KZ2_POST_CLEAR=<mask> (diagnostic): clear further effect bits too (0x04/0x10 bloom and ILR/vignette, 0x08 grain),
+         * to find which post stage misdraws on a renderer. */
+        const char* pc = getenv("KZ2_POST_CLEAR");
+        if (pc && *pc) v |= (int)(strtoul(pc, NULL, 0) & 0x1Fu);
         m = v;
     }
     return (uint32_t)m;

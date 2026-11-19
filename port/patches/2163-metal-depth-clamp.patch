@@ -1,0 +1,320 @@
+KZ2 patch 2163: honour SET_ZMIN_MAX_CONTROL's depth clamp in the draw engine (Metal).
+
+Adapted from ps3recomp commit 53650c7d by Erik Martins (erikomis), MIT, in the local
+ps3recomp-up-r10 fork; the test target's CMake block was re-placed by hand after 2162's.
+RPCS3 is cited in comments as a behaviour reference only; no RPCS3 code.
+The clamp bit of SET_ZMIN_MAX_CONTROL goes into the pipeline key and is applied with
+setDepthClipMode, so shadow casters drawn with clipping off and clamping on are pressed onto
+the near plane instead of cut ("pancaking"); without it shadows from casters between the
+light and the near cascade vanish. The D3D12 path already did this (patch 2068).
+PS3RECOMP_ENG_DEPTH_CLAMP=0 restores the old behaviour. Host test:
+tools/runtime/test_metal_lighting.py.
+
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -184,6 +184,12 @@
+      * clear consumers, mirroring COLOR_MASK/FRONT_FACE above. */
+     rsx->regs[0x1D8C >> 2] = RSX_DSP_ZSTENCIL_CLEAR_RESET;
+ 
++    /* NV40 reset ZMIN_MAX_CONTROL (0x1D78) is 1: clip at the near and far
++     * planes, no depth clamp (RPCS3 rsx_methods.cpp; the GCM default of
++     * cellGcmSetZMinMaxControl(TRUE, FALSE, FALSE)). Seeded so a raw 0 means
++     * a title that turned clipping off. */
++    rsx->regs[0x1D78 >> 2] = 0x00000001u;
++
+     /* Execution methods */
+     mark_class(rsx, M_VERTEX_BEGIN_END,  1, RSX_DSP_CLASS_EXEC);
+     mark_class(rsx, M_VB_VERTEX_BATCH,   1, RSX_DSP_CLASS_EXEC);
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -95,6 +95,7 @@
+ #define M_POLY_OFFSET_FILL    0x0A68
+ #define M_POLY_OFFSET_FACTOR  0x0A78
+ #define M_POLY_OFFSET_BIAS    0x0A7C
++#define M_ZMIN_MAX_CONTROL    0x1D78
+ 
+ /* ---- module state -------------------------------------------------------- */
+ 
+@@ -316,6 +317,18 @@
+ }
+ 
+ /* ---- render state -------------------------------------------------------- */
++
++/* PS3RECOMP_ENG_DEPTH_CLAMP=0: always clip at the near and far planes, as
++ * before SET_ZMIN_MAX_CONTROL was honoured. */
++static int eng_depth_clamp_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("PS3RECOMP_ENG_DEPTH_CLAMP");
++        on = !(e && *e && atoi(e) == 0);
++    }
++    return on;
++}
+ 
+ void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
+                                          rsx_be_render_state* rs)
+@@ -360,6 +373,17 @@
+     rs->bs_zfail     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZFAIL);
+     rs->bs_zpass     = rsx_dsp_reg(rsx, M_BACK_STENCIL_OP_ZPASS);
+     rs->depth_bounds_test = rsx_dsp_reg(rsx, M_DEPTH_BOUNDS_ENABLE) & 1;
++    /* SET_ZMIN_MAX_CONTROL (cellGcmSetZMinMaxControl): bits 0-3 clip at the
++     * near and far planes, 4-7 clamp the depth, 8-11 clip ignoring W; reset
++     * value 1 (rsx_dispatch_init). As RPCS3's Vulkan renderer: clamp when the
++     * clamp is on or near/far clipping is off. Shadow-map passes draw their
++     * casters this way ("pancaking"): a caster between the light and the
++     * cascade's near plane lands on depth 0 instead of being cut away, so
++     * clipped, the shadows of tall objects vanish from the near cascade. */
++    {
++        const u32 z = rsx_dsp_reg(rsx, M_ZMIN_MAX_CONTROL);
++        rs->depth_clamp = eng_depth_clamp_on() && ((z & 0xF0u) != 0 || (z & 0x0Fu) == 0);
++    }
+ }
+ 
+ u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
+@@ -402,6 +426,7 @@
+     ENG_HASH_FIELD(bs_zfail);
+     ENG_HASH_FIELD(bs_zpass);
+     ENG_HASH_FIELD(depth_bounds_test);
++    ENG_HASH_FIELD(depth_clamp);
+ #undef ENG_HASH_FIELD
+     return hash;
+ }
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -94,6 +94,10 @@
+     u32 rt_fp16;                    /* the target is an FP16 HDR surface */
+     u32 stencil_enable, stencil_two_sided;
+     u32 depth_bounds_test;          /* SET_DEPTH_BOUNDS_TEST_ENABLE */
++    /* 1: clamp the depth to [0, 1] instead of clipping at the near and far
++     * planes (SET_ZMIN_MAX_CONTROL 0x1D78: clamp set, or near/far clipping
++     * off). A backend without depth clamping draws it clipped. */
++    u32 depth_clamp;
+     u32 s_func, s_func_mask, s_write_mask, s_fail, s_zfail, s_zpass;
+     u32 bs_func, bs_fail, bs_zfail, bs_zpass;
+ } rsx_be_render_state;
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2615,6 +2615,7 @@
+     id<MTLDepthStencilState>   ds;
+     MTLCullMode cull;
+     MTLWinding  winding;
++    MTLDepthClipMode clip;      /* rs->depth_clamp: encoder state, set per draw */
+ } EngPipeline;
+ static EngPipeline s_eng_pipe[ENG_MAX_PIPES];
+ static u32 s_eng_pipe_count;
+@@ -3570,6 +3571,7 @@
+     s_eng_pipe[slot].winding = (rs->front_face == 0x0901u)
+                                    ? MTLWindingCounterClockwise
+                                    : MTLWindingClockwise;
++    s_eng_pipe[slot].clip = rs->depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip;
+     return slot + 1;
+ }
+ 
+@@ -3830,6 +3832,7 @@
+     [enc setDepthStencilState:p->ds];
+     [enc setCullMode:p->cull];
+     [enc setFrontFacingWinding:p->winding];
++    [enc setDepthClipMode:p->clip];
+     [enc setStencilReferenceValue:r->stencil_ref];
+     [enc setDepthBias:r->depth_bias slopeScale:r->depth_slope clamp:0.0f];
+     MTLViewport vp = { r->vp[0], r->vp[1], r->vp[2], r->vp[3], 0.0, 1.0 };
+diff --git a/libs/video/rsx_vulkan_backend.c b/libs/video/rsx_vulkan_backend.c
+--- a/libs/video/rsx_vulkan_backend.c
++++ b/libs/video/rsx_vulkan_backend.c
+@@ -214,6 +214,7 @@
+     int              eng_active;      /* the register-file engine drives us */
+     int              bc_ok;           /* textureCompressionBC enabled       */
+     int              depth_bounds_ok; /* depthBounds enabled                */
++    int              depth_clamp_ok;  /* depthClamp enabled                 */
+     int              indep_blend_ok;  /* independentBlend: per-target MRT state */
+     u32              max_dim;         /* maxImageDimension2D of the device  */
+     int              windowed;
+@@ -3119,6 +3120,7 @@
+      * screen the same one D3D's viewport produces. */
+     VkPipelineRasterizationStateCreateInfo ras = {
+         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
++        .depthClampEnable = (rs->depth_clamp && s_vk.depth_clamp_ok) ? VK_TRUE : VK_FALSE,
+         .polygonMode = VK_POLYGON_MODE_FILL,
+         .cullMode = !rs->cull_enable ? VK_CULL_MODE_NONE
+                   : (rs->cull_face == 0x0404u || rs->cull_face == 0x0408u) ? VK_CULL_MODE_FRONT_BIT
+@@ -3871,6 +3873,10 @@
+      * Vulkan; without it the test stays off, as before. */
+     want.depthBounds = have.depthBounds;
+     s_vk.depth_bounds_ok = have.depthBounds ? 1 : 0;
++    /* SET_ZMIN_MAX_CONTROL's depth clamp (rs->depth_clamp). Optional too;
++     * without it such draws are clipped, as before. */
++    want.depthClamp = have.depthClamp;
++    s_vk.depth_clamp_ok = have.depthClamp ? 1 : 0;
+     /* Per-target colour mask and blend enable (an MRT set's targets B..D
+      * have their own); without it every target takes target A's. */
+     want.independentBlend = have.independentBlend;
+diff --git a/libs/video/tests/test_metal_depth_clamp.m b/libs/video/tests/test_metal_depth_clamp.m
+new file mode 100644
+--- /dev/null
++++ b/libs/video/tests/test_metal_depth_clamp.m
+@@ -0,0 +1,128 @@
++/* SET_ZMIN_MAX_CONTROL's depth clamp through the real draw engine and the
++ * Metal backend, on the GPU: a full-screen triangle at clip-space z -0.5, in
++ * front of the near plane, drawn into a Z24S8 zeta cleared to 1.0, then the
++ * depth it left read back. No title data.
++ *
++ *   - never written (reset value 1, rsx_dispatch_init) or 0x1: clipped, the
++ *     clear's 1.0 stays;
++ *   - 0x10 (clipping off, clamp on -- how shadow-map passes draw casters),
++ *     0x11 (clamp on) and 0x0 (clipping off): clamped to 0.0;
++ *   - PS3RECOMP_ENG_DEPTH_CLAMP=0 (macos.yml's second run): 1.0 in every
++ *     case.
++ *
++ * Built by CMake (build/test_metal_depth_clamp) only where glslang and
++ * spirv-cross were found, like test_metal_poly_offset.
++ */
++#include "rsx_metal_backend.m"
++#define eng_texture_upload test_engine_texture_upload
++#define eng_present test_engine_present
++#include "rsx_draw_engine.c"
++#undef eng_texture_upload
++#undef eng_present
++#include "rsx_test_programs.h"
++#include <math.h>
++
++u8* vm_base; u32 ppu_vm_size;
++u32 cellGcmResolveLocated(int local, u32 offset) { (void)local; return offset; }
++u32 cellGcmResolveIO(u32 offset) { return offset < ppu_vm_size ? offset : 0; }
++void cellGcm_replay_display_buffers_to_engine(void) {}
++float cellAvconfExt_display_gamma(void) { return 1.0f; }
++/* The backend's own (non-engine) draw path, which this test never takes. */
++u32 cellGcmResolveOffset(u32 offset) { return offset; }
++int cellGcmOffsetIsDisplay(u32 offset) { (void)offset; return 0; }
++void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
++{ (void)st; (void)idx; (void)vi; out[0] = out[1] = out[2] = 0.0f; out[3] = 1.0f; }
++
++static unsigned checks, failures;
++#define CHECK(x, ...) do { checks++; if (x) { printf("[PASS] " __VA_ARGS__); printf("\n"); } \
++                           else { failures++; printf("[FAIL] " __VA_ARGS__); printf("\n"); } } while (0)
++
++static void method(u32 a, u32 v) { rsx_draw_engine_method(a, v); }
++static void be_float(u8* p, float f) { u32 v; memcpy(&v, &f, 4); p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
++static u32 fbits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
++
++/* The depth the draw left at the centre of a 64x64 target; zmm < 0 leaves
++ * ZMIN_MAX_CONTROL unwritten. */
++static float draw_depth(int zmm)
++{
++    if (rsx_draw_engine_init(64, 64) != 0) { CHECK(0, "engine init"); return -1.0f; }
++    method(0x0194, 0xFEED0000);                 /* CONTEXT_DMA_COLOR_A: local */
++    method(0x0198, 0xFEED0000);                 /* CONTEXT_DMA_ZETA: local */
++    method(0x0210, 0x40000);                    /* COLOR_A_OFFSET */
++    method(0x020C, 64 * 4);                     /* COLOR_A_PITCH */
++    method(0x0214, 0x80000);                    /* ZETA_OFFSET */
++    method(0x022C, 64 * 4);                     /* ZETA_PITCH */
++    method(0x0200, 64u << 16);
++    method(0x0204, 64u << 16);
++    method(0x0208, 8u | (2u << 5) | (1u << 8)); /* A8R8G8B8, Z24S8, linear */
++    /* position, colour, texcoord: float32 x4, stride 48, in main memory */
++    method(0x1740, 2u | (4u << 4) | (48u << 8)); method(0x1680, 0x80010000);
++    method(0x1744, 2u | (4u << 4) | (48u << 8)); method(0x1684, 0x80010010);
++    method(0x1760, 2u | (4u << 4) | (48u << 8)); method(0x16A0, 0x80010020);
++    const float v[36] = { -1, -1, -.5f, 1,  .25f, .5f, .75f, 1,  0, 0, 0, 1,
++                           3, -1, -.5f, 1,  .25f, .5f, .75f, 1,  0, 0, 0, 1,
++                          -1,  3, -.5f, 1,  .25f, .5f, .75f, 1,  0, 0, 0, 1 };
++    for (u32 i = 0; i < 36; i++) be_float(vm_base + 0x10000 + i * 4, v[i]);
++    u8 vp[48];
++    rsx_test_vp_mov_out(vp, 0, RSX_TEST_VP_SWZ_IDENT, 0, 0);
++    rsx_test_vp_mov_out(vp + 16, 1, RSX_TEST_VP_SWZ_IDENT, 1, 0);
++    rsx_test_vp_mov_out(vp + 32, 8, RSX_TEST_VP_SWZ_IDENT, 7, 1);
++    method(0x1E9C, 0);
++    for (u32 i = 0; i < 12; i++) { u32 w; memcpy(&w, vp + i * 4, 4); method(0x0B80 + i * 4, w); }
++    method(0x1EA0, 0);
++    rsx_test_fp_mov_r0_col0(vm_base + 0x60000, RSX_TEST_FP_SWZ_IDENT);
++    method(0x08E4, 0x60002);
++    method(0x1D60, 64);
++    method(0x0A6C, 0x207);                      /* DEPTH_FUNC ALWAYS */
++    method(0x0A70, 1);                          /* DEPTH_MASK */
++    method(0x0A74, 1);                          /* DEPTH_TEST_ENABLE */
++    method(0x1D8C, 0xFFFFFF00u);                /* depth 1.0 */
++    method(0x1D94, 0x03);                       /* clear depth and stencil */
++    if (zmm >= 0) method(0x1D78, (u32)zmm);     /* SET_ZMIN_MAX_CONTROL */
++    method(0x1808, RSX_PRIMITIVE_TRIANGLES); method(0x1814, 2u << 24); method(0x1808, 0);
++
++    s_engine_backend.submit_and_wait(NULL, 0);
++    float z[64 * 64];
++    const u32 ds = eng_depth_snapshot(NULL, g.zdepths[0].handle, 64, 64);
++    s_engine_backend.submit_and_wait(NULL, 0);
++    float out = -1.0f;
++    if (ds) {
++        [eng_obj(ds) getBytes:z bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
++        out = z[32 * 64 + 32];
++        eng_obj_release(NULL, ds);
++    }
++    CHECK(ds != 0, "depth snapshot of the zeta");
++    rsx_draw_engine_shutdown();
++    return out;
++}
++
++int main(void)
++{
++    @autoreleasepool {
++        s_dev = MTLCreateSystemDefaultDevice();
++        if (!s_dev) { puts("no Metal device: skipped"); return 0; }
++        s_queue = [s_dev newCommandQueue];
++        s_headless = 1; s_guest_shaders = 1;
++        vm_base = calloc(1, 1u << 20); ppu_vm_size = 1u << 20;
++        rsx_draw_engine_set_backend(&s_engine_backend);
++
++        const char* e = getenv("PS3RECOMP_ENG_DEPTH_CLAMP");
++        const int on = !(e && *e && atoi(e) == 0);
++        const float clamped = on ? 0.0f : 1.0f;
++        const float reset = draw_depth(-1);
++        const float clip  = draw_depth(0x01);
++        const float c10   = draw_depth(0x10);
++        const float c11   = draw_depth(0x11);
++        const float c00   = draw_depth(0x00);
++        CHECK(reset == 1.0f, "ZMIN_MAX_CONTROL never written: clipped, depth %.9f", reset);
++        CHECK(clip == 1.0f, "0x1 (clip): depth %.9f", clip);
++        CHECK(c10 == clamped, "0x10 (no clip, clamp): depth %.9f, want %.1f", c10, clamped);
++        CHECK(c11 == clamped, "0x11 (clip and clamp): depth %.9f, want %.1f", c11, clamped);
++        CHECK(c00 == clamped, "0x0 (no clip): depth %.9f, want %.1f", c00, clamped);
++
++        rsx_draw_engine_set_backend(NULL);
++        free(vm_base);
++    }
++    printf("%u checks, %u failed (depth clamp %s)\n", checks, failures, getenv("PS3RECOMP_ENG_DEPTH_CLAMP") ? "off" : "on");
++    return failures ? 1 : 0;
++}
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -601,6 +601,28 @@
+                 ps3recomp_msl_translation
+                 "-framework Metal" "-framework QuartzCore" "-framework AppKit")
+             target_link_options(test_metal_depth_bounds PRIVATE "-Wl,-dead_strip")
++
++            # SET_ZMIN_MAX_CONTROL's depth clamp, the same way.
++            add_executable(test_metal_depth_clamp
++                libs/video/tests/test_metal_depth_clamp.m
++                libs/video/rsx_shader_msl.cpp
++                libs/video/rsx_dispatch.c
++                libs/video/rsx_vertex_compact.c
++                libs/video/rsx_texture_layout.c
++                libs/video/rsx_vp_decompiler.c
++                libs/video/rsx_fp_decompiler.c
++            )
++            set_source_files_properties(
++                "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests/test_metal_depth_clamp.m"
++                PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
++            target_include_directories(test_metal_depth_clamp PRIVATE
++                "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
++                "${CMAKE_CURRENT_SOURCE_DIR}/include"
++            )
++            target_link_libraries(test_metal_depth_clamp PRIVATE
++                ps3recomp_msl_translation
++                "-framework Metal" "-framework QuartzCore" "-framework AppKit")
++            target_link_options(test_metal_depth_clamp PRIVATE "-Wl,-dead_strip")
+         endif()
+     endif()
+ 
