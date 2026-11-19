@@ -120,16 +120,24 @@ static int kz2_poststage_should_log(uint32_t* count)
  * vector pass @0x544D18 and the mask-1 SPU jobs HBlur, Upsample, MotionBlur), 2 = depth of field (DoF GPU passes,
  * DepthOfField/DepthToFuzzy jobs), 0x14 bloom, 8 grain, 0x10 ILR/vignette. The field's owner rewrites it, so the bits
  * are cleared at every Render entry. Motion blur is off by default (it doubles moving images at a few frames per
- * second): KZ2_MOTION_BLUR=1 keeps it. Depth of field stays on: KZ2_DOF=0 switches it off (speed option). */
+ * second): KZ2_MOTION_BLUR=1 keeps it. Depth of field stays on: KZ2_DOF=0 switches it off (speed option).
+ * Native macOS on ARM64 has no x86 native post jobs, and the lifted DepthOfField path there draws the whole picture as
+ * horizontal smears (first mission, Apple M4 Pro; clean with KZ2_DOF=0). Until that is found, depth of field starts off
+ * on Apple ARM64; KZ2_DOF=1 turns it back on for testing. */
 static uint32_t kz2_post_clear_mask(void)
 {
     static int m = -1;
     if (m < 0) {
         const char* mb = getenv("KZ2_MOTION_BLUR");
         const char* dof = getenv("KZ2_DOF");
+#if defined(__APPLE__) && defined(__aarch64__)
+        const int dof_default = 0;
+#else
+        const int dof_default = 1;
+#endif
         int v = 0;
         if (!(mb && atoi(mb) != 0)) v |= 0x1;
-        if (dof && *dof && atoi(dof) == 0) v |= 0x2;
+        if (dof && *dof ? atoi(dof) == 0 : !dof_default) v |= 0x2;
         m = v;
     }
     return (uint32_t)m;
