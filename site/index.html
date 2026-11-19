@@ -4,56 +4,77 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'none'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self'">
 <title>Project Pyrrhus (work in progress)</title>
 <meta name="description" content="Project Pyrrhus. Killzone 2: Unofficial PC Port (static recompilation): a fan-made native PC port of Killzone 2 (PS3). Bring your own copy of the game.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&amp;display=swap">
 <link rel="stylesheet" href="style.css">
+<script src="site.js"></script>
 </head>
 <body>
-<header id="top" class="box">
-<div class="logo"><img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC"><span class="sticker">Work in progress</span></div>
-<ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li></ul>
-<nav class="tabs"><a class="on" href="#top">Home</a><a href="#shots">Screens</a><a href="#status">Status</a><a href="#news">News</a><a href="#requirements">Requirements</a><a href="#install">Install</a><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a><a class="cta-box" href="#install"><b><!-- version -->v0.1.13<!-- /version --></b>pre-release download</a></nav>
-<div class="intro">
-<h1>Project Pyrrhus<span>Killzone 2: Unofficial PC Port (static recompilation)</span></h1>
+<a class="skip" href="#panel">Skip to the content</a>
+<div id="app">
+<header id="head">
+<div class="logo"><span class="emblem" aria-hidden="true"><svg viewBox="0 0 64 40" focusable="false"><polygon class="e1" points="10,0 34,0 24,40 0,40"/><polygon class="e2" points="40,0 64,0 54,40 30,40"/></svg></span><div class="wm"><p class="tag">Killzone 2 PC port</p><h1>Project<span>Pyrrhus</span></h1></div><span class="sticker">Work in progress</span></div>
+<ul class="util"><li><a href="https://github.com/undecuple/project-pyrrhus">GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a></li><li><a class="plainlink" href="plain.html">Plain page</a></li></ul>
+<a class="cta-box" href="#install"><b><!-- version -->v0.1.13<!-- /version --></b>pre-release download</a>
+</header>
+<div class="frontend">
+<nav id="menu" aria-label="Sections">
+<ol>
+<li><a href="#top" data-detail="Killzone 2: Unofficial PC Port (static recompilation)"><span class="mi-n">01</span><span class="mi-l">Home</span></a></li>
+<li><a href="#shots" data-detail="6 screenshots of the port running the developer&#x27;s own copy of the game."><span class="mi-n">02</span><span class="mi-l">Screens</span></a></li>
+<li><a href="#status" data-detail="Status: Partly playable. 18 game features and 21 port rows, from the project&#x27;s records."><span class="mi-n">03</span><span class="mi-l">Status</span></a></li>
+<li><a href="#news" data-detail="The newest release notes, newest first."><span class="mi-n">04</span><span class="mi-l">News</span></a></li>
+<li><a href="#progress" data-detail="The newest changelog items and the objectives still open."><span class="mi-n">05</span><span class="mi-l">Progress</span></a></li>
+<li><a href="#install" data-detail="The installer or the portable zip, built on your PC from your own copy."><span class="mi-n">06</span><span class="mi-l">Install</span></a></li>
+<li><a href="#requirements" data-detail="What you need from your own copy, and the hardware figures (estimates)."><span class="mi-n">07</span><span class="mi-l">Requirements</span></a></li>
+<li><a href="#about" data-detail="Built on ps3recomp: PPU and SPU code lifted to C, the RSX command stream replayed on Direct3D 12."><span class="mi-n">08</span><span class="mi-l">About</span></a></li>
+<li><a href="#channels" data-detail="Source, releases, bug reports and the Discord server."><span class="mi-n">09</span><span class="mi-l">Channels</span></a></li>
+<li><a href="#legal" data-detail="No game content is distributed. The port&#x27;s own code is MIT."><span class="mi-n">10</span><span class="mi-l">Legal</span></a></li>
+</ol>
+<div id="detail" class="detail" aria-live="polite"></div>
+</nav>
+<main id="panel" tabindex="-1">
+<section id="top" class="sec" aria-labelledby="h-top">
+<h2 id="h-top">Home</h2>
+<p class="lede">Killzone 2: Unofficial PC Port (static recompilation)</p>
+<img class="banner" src="../assets/banner.png" srcset="../assets/banner@2x.png 2x" width="1280" height="320" alt="Project Pyrrhus: Killzone 2 PC">
 <p class="lead">A native Windows x64 port of the 2009 PS3 game, made by static recompilation: the game's PowerPC and SPU code is translated to C ahead of time and compiled into a PC program; graphics go through Direct3D 12. No emulator runs at play time.</p>
 <p class="headline">Status: <strong>Partly playable</strong></p>
 <p class="note">You need your own copy of the game. This project ships no game code, data, assets or keys.</p>
 <p class="btns"><a class="btn" href="#status">See the status</a><a class="btn alt" href="https://github.com/undecuple/project-pyrrhus">Source on GitHub</a></p>
-</div>
-</header>
-<div class="page wrap">
-<section id="shots" class="gallery-pod">
-<h2>Screens</h2>
-<div class="gallery">
-<figure class="tile lead-tile"><div class="hudbar"><span class="rd">2026.10.28</span><span class="sl" aria-hidden="true">//</span><span class="lv">Corinth River, in play</span><span class="sticker new">Newest</span></div><a href="../docs/screenshots/20261028_kz2-corinth-river-in-play.png"><img src="../docs/screenshots/20261028_kz2-corinth-river-in-play.png" alt="First person in the first level with the weapon, crosshair and ammo counter, played through a scripted pad run" loading="lazy"></a><figcaption>First person in the first level with the weapon, crosshair and ammo counter, played through a scripted pad run.</figcaption></figure>
-<figure class="tile"><div class="hudbar"><span class="rd">2026.10.28</span><span class="sl" aria-hidden="true">//</span><span class="lv">Main menu</span></div><a href="../docs/screenshots/20261028_kz2-main-menu.png"><img src="../docs/screenshots/20261028_kz2-main-menu.png" alt="The game&#x27;s own menu pages, read from its archive and drawn by the port" loading="lazy"></a><figcaption>The game&#x27;s own menu pages, read from its archive and drawn by the port.</figcaption></figure>
-<figure class="tile"><div class="hudbar"><span class="rd">2026.10.20</span><span class="sl" aria-hidden="true">//</span><span class="lv">Corinth River walkway</span></div><a href="../docs/screenshots/20261020_kz2-corinth-river-walkway.png"><img src="../docs/screenshots/20261020_kz2-corinth-river-walkway.png" alt="A lit walkway in the first level at the end of a long unattended run, characters lit again" loading="lazy"></a><figcaption>A lit walkway in the first level at the end of a long unattended run, characters lit again.</figcaption></figure>
-<figure class="tile"><div class="hudbar"><span class="rd">2026.10.20</span><span class="sl" aria-hidden="true">//</span><span class="lv">The opening briefing</span></div><a href="../docs/screenshots/20261020_kz2-corinth-river-briefing.png"><img src="../docs/screenshots/20261020_kz2-corinth-river-briefing.png" alt="The first level&#x27;s opening: the view through the window during the briefing, with subtitles" loading="lazy"></a><figcaption>The first level&#x27;s opening: the view through the window during the briefing, with subtitles.</figcaption></figure>
-<figure class="tile"><div class="hudbar"><span class="rd">2026.10.19</span><span class="sl" aria-hidden="true">//</span><span class="lv">First picture</span></div><a href="../docs/screenshots/20261019_kz2-first-level-first-picture.png"><img src="../docs/screenshots/20261019_kz2-first-level-first-picture.png" alt="The first level&#x27;s first recognisable picture, before the fixes to its antialiased surfaces" loading="lazy"></a><figcaption>The first level&#x27;s first recognisable picture, before the fixes to its antialiased surfaces.</figcaption></figure>
-<figure class="tile"><div class="hudbar"><span class="rd">2026.10.13</span><span class="sl" aria-hidden="true">//</span><span class="lv">Loading Corinth River</span></div><a href="../docs/screenshots/20261013_kz2-loading-corinth-river.png"><img src="../docs/screenshots/20261013_kz2-loading-corinth-river.png" alt="A scripted pad run from the main menu to the first level&#x27;s loading screen" loading="lazy"></a><figcaption>A scripted pad run from the main menu to the first level&#x27;s loading screen.</figcaption></figure>
+</section>
+<section id="shots" class="sec" aria-labelledby="h-shots">
+<h2 id="h-shots">Screens</h2>
+<p class="lede">6 screenshots of the port running the developer&#x27;s own copy of the game.</p>
+<div class="gallery" data-group="screens">
+<figure class="tile" id="shot-1"><a class="shot" href="../docs/screenshots/20261028_kz2-corinth-river-in-play.png" data-title="Corinth River, in play" data-caption="First person in the first level with the weapon, crosshair and ammo counter, played through a scripted pad run"><img src="../docs/screenshots/20261028_kz2-corinth-river-in-play.png" alt="First person in the first level with the weapon, crosshair and ammo counter, played through a scripted pad run" loading="lazy"></a><figcaption><span class="rd">2026.10.28</span> <b>Corinth River, in play</b><span class="sticker new">Newest</span> First person in the first level with the weapon, crosshair and ammo counter, played through a scripted pad run.</figcaption></figure>
+<figure class="tile" id="shot-2"><a class="shot" href="../docs/screenshots/20261028_kz2-main-menu.png" data-title="Main menu" data-caption="The game&#x27;s own menu pages, read from its archive and drawn by the port"><img src="../docs/screenshots/20261028_kz2-main-menu.png" alt="The game&#x27;s own menu pages, read from its archive and drawn by the port" loading="lazy"></a><figcaption><span class="rd">2026.10.28</span> <b>Main menu</b> The game&#x27;s own menu pages, read from its archive and drawn by the port.</figcaption></figure>
+<figure class="tile" id="shot-3"><a class="shot" href="../docs/screenshots/20261020_kz2-corinth-river-walkway.png" data-title="Corinth River walkway" data-caption="A lit walkway in the first level at the end of a long unattended run, characters lit again"><img src="../docs/screenshots/20261020_kz2-corinth-river-walkway.png" alt="A lit walkway in the first level at the end of a long unattended run, characters lit again" loading="lazy"></a><figcaption><span class="rd">2026.10.20</span> <b>Corinth River walkway</b> A lit walkway in the first level at the end of a long unattended run, characters lit again.</figcaption></figure>
+<figure class="tile" id="shot-4"><a class="shot" href="../docs/screenshots/20261020_kz2-corinth-river-briefing.png" data-title="The opening briefing" data-caption="The first level&#x27;s opening: the view through the window during the briefing, with subtitles"><img src="../docs/screenshots/20261020_kz2-corinth-river-briefing.png" alt="The first level&#x27;s opening: the view through the window during the briefing, with subtitles" loading="lazy"></a><figcaption><span class="rd">2026.10.20</span> <b>The opening briefing</b> The first level&#x27;s opening: the view through the window during the briefing, with subtitles.</figcaption></figure>
+<figure class="tile" id="shot-5"><a class="shot" href="../docs/screenshots/20261019_kz2-first-level-first-picture.png" data-title="First picture" data-caption="The first level&#x27;s first recognisable picture, before the fixes to its antialiased surfaces"><img src="../docs/screenshots/20261019_kz2-first-level-first-picture.png" alt="The first level&#x27;s first recognisable picture, before the fixes to its antialiased surfaces" loading="lazy"></a><figcaption><span class="rd">2026.10.19</span> <b>First picture</b> The first level&#x27;s first recognisable picture, before the fixes to its antialiased surfaces.</figcaption></figure>
+<figure class="tile" id="shot-6"><a class="shot" href="../docs/screenshots/20261013_kz2-loading-corinth-river.png" data-title="Loading Corinth River" data-caption="A scripted pad run from the main menu to the first level&#x27;s loading screen"><img src="../docs/screenshots/20261013_kz2-loading-corinth-river.png" alt="A scripted pad run from the main menu to the first level&#x27;s loading screen" loading="lazy"></a><figcaption><span class="rd">2026.10.13</span> <b>Loading Corinth River</b> A scripted pad run from the main menu to the first level&#x27;s loading screen.</figcaption></figure>
 </div>
 <p class="small">Screenshots of the port running the developer's own copy of the game, kept to document progress; the game content in them belongs to Sony Interactive Entertainment and Guerrilla Games. Every screenshot, with its frame rate and build: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/SCREENSHOTS.md">SCREENSHOTS.md</a>.</p>
 </section>
-<p class="divider" aria-hidden="true"><span>Field reports</span></p>
-<div class="cols">
-<main class="main">
-<article id="status" class="news">
-<h2>Status: Partly playable</h2>
+<section id="status" class="sec" aria-labelledby="h-status">
+<h2 id="h-status">Status</h2>
+<p class="lede">Status: Partly playable. 18 game features and 21 port rows, from the project&#x27;s records.</p>
+<h3>Status: Partly playable</h3>
 <p class="meta">generated from the project's records · 18 game features · 21 port rows</p>
 <p>The same data as <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">FEATURES.md</a>, where every row has its evidence. <em>Works</em> is claimed only with a recorded result.</p>
 <ul class="portal">
-<li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>PPU lift of the EBOOT</b><span class="blurb">static recompilation of all PPU code</span></div><span class="st st-ok">Works</span></li>
-<li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>Boots under Proton to the first screen</b><span class="blurb">loader, PPU start, SPURS, GCM init, first flip</span></div><span class="st st-ok">Works</span></li>
-<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>Title screen and main menu</b><span class="blurb">language select, main menu, New Campaign and difficulty</span></div><span class="st st-part">Partial</span></li>
-<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>Mission 1 loads and runs</b></div><span class="st st-part">Partial</span></li>
-<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>In-level play (move, aim, fire, cover)</b><span class="blurb">gamepad</span></div><span class="st st-part">Partial</span></li>
-<li class="row"><span class="thumb tb-no" aria-hidden="true">NO</span><div class="rt"><b>Full campaign start to finish</b><span class="blurb">all missions, checkpoints, cutscenes</span></div><span class="st st-no">Not yet</span></li>
+<li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>PPU lift of the EBOOT</b><span class="blurb">static recompilation of all PPU code</span></div><div class="stats"><span class="st st-ok">Works</span></div></li>
+<li class="row"><span class="thumb tb-ok" aria-hidden="true">OK</span><div class="rt"><b>Boots under Proton to the first screen</b><span class="blurb">loader, PPU start, SPURS, GCM init, first flip</span></div><div class="stats"><span class="st st-ok">Works</span></div></li>
+<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>Title screen and main menu</b><span class="blurb">language select, main menu, New Campaign and difficulty</span></div><div class="stats"><span class="st st-part">Partial</span></div></li>
+<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>Mission 1 loads and runs</b></div><div class="stats"><span class="st st-part">Partial</span></div></li>
+<li class="row"><span class="thumb tb-part" aria-hidden="true">PART</span><div class="rt"><b>In-level play (move, aim, fire, cover)</b><span class="blurb">gamepad</span></div><div class="stats"><span class="st st-part">Partial</span></div></li>
+<li class="row"><span class="thumb tb-no" aria-hidden="true">NO</span><div class="rt"><b>Full campaign start to finish</b><span class="blurb">all missions, checkpoints, cutscenes</span></div><div class="stats"><span class="st st-no">Not yet</span></div></li>
 </ul>
-<h3>The PS3 game, feature by feature</h3>
+<h4>The PS3 game, feature by feature</h4>
 <ul class="meters">
 <li class="m-ok"><span class="ml">Works</span><span class="bar" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><b>0</b></li>
 <li class="m-part"><span class="ml">Partial</span><span class="bar" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><b>11</b></li>
@@ -108,7 +129,7 @@
 <tr><td>Language selection and subtitles</td><td>language page, briefing subtitles</td><td><span class="st st-part">Partial</span></td></tr>
 </tbody></table></div>
 </details>
-<h3>Port work and additions</h3>
+<h4>Port work and additions</h4>
 <p>5 works, 12 partial, 4 in progress, 0 not yet. Changes to how the game plays stay optional.</p>
 <details><summary>All port rows</summary>
 <div class="tw"><table>
@@ -138,57 +159,54 @@
 </tbody></table></div>
 </details>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">Every feature, with evidence<span aria-hidden="true"> &gt;</span></a></p>
-</article>
-<div id="news">
-<article class="news rel">
-<h2>v0.1.13</h2>
+</section>
+<section id="news" class="sec" aria-labelledby="h-news">
+<h2 id="h-news">News</h2>
+<p class="lede">The newest release notes, newest first.</p>
+<article class="rel">
+<h3>v0.1.13</h3>
 <p class="meta">13 Nov 2026 · pre-release</p>
 <ul class="rlist">
-<li><span class="sec">Added</span><strong>Online:</strong> an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a community server you add yourself, one at a time. Killzone 2 does not play online yet; the choice is kept for later updates.</li>
-<li><span class="sec">Changed</span><strong>Performance:</strong> in busy scenes the renderer spends less time checking textures: it now asks Windows which memory pages were written instead of re-reading every texture each frame. In the busiest views of our scripted Corinth Sands runs under Proton the slowest frames got about 2.8 ms faster; average fps did not change measurably. <code>LD_TEX_WW=0</code> turns it off.</li>
-<li><span class="sec">Fixed</span><strong>Setup and launcher:</strong> when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.</li>
-<li><span class="sec">Fixed</span><strong>Setup and launcher:</strong> a native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked. Contributed by @Tzeentchnet (#69).</li>
+<li><span class="kind">Added</span><strong>Online:</strong> an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a community server you add yourself, one at a time. Killzone 2 does not play online yet; the choice is kept for later updates.</li>
+<li><span class="kind">Changed</span><strong>Performance:</strong> in busy scenes the renderer spends less time checking textures: it now asks Windows which memory pages were written instead of re-reading every texture each frame. In the busiest views of our scripted Corinth Sands runs under Proton the slowest frames got about 2.8 ms faster; average fps did not change measurably. <code>LD_TEX_WW=0</code> turns it off.</li>
+<li><span class="kind">Fixed</span><strong>Setup and launcher:</strong> when RPCS3 lists Killzone 2 as a decrypted .iso disc image, setup now reads that file, the same way it does when you pick the .iso yourself, instead of saying it is not a folder (reported by u/NoReplacement5381 on Reddit). An encrypted .iso is still refused. When no decrypted EBOOT.elf is found, the message now says so once instead of twice.</li>
+<li><span class="kind">Fixed</span><strong>Setup and launcher:</strong> a native Windows first-run build no longer rejects its freshly generated Lua unwind continuations when Python writes the lifted sources with CRLF line endings. The generation receipt now hashes the source bytes that were actually written; the focused test and all 38 release-tool Python tests pass on Windows 11 with Python 3.12.10. A patched v0.1.12 portable payload then completed all seven first-run steps in about 11 minutes, passed the final build check and started through the packaged launcher. No screenshot was taken, so the picture was not checked. Contributed by @Tzeentchnet (#69).</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.12</h2>
+<article class="rel">
+<h3>v0.1.12</h3>
 <p class="meta">10 Nov 2026 · pre-release</p>
 <ul class="rlist">
-<li><span class="sec">Changed</span>Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that pads the file differently is still accepted. The messages name only what is wrong and the EBOOT the port needs (title id, version, region). A 1.29-sized EBOOT whose contents differ (patched or damaged) gets a warning saying so. Checked with the real EBOOTs and in the setup wizard under Proton.</li>
-<li><span class="sec">Fixed</span>The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted EBOOT was only caught at the first build step. It is packed again, and the page now gives the same verdict as the first-run check; in the wizard under Proton it answers in under a second.</li>
-<li><span class="sec">Fixed</span>When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This may be the cause of the quit in #49: the reported log matches the forced error line for line, but the error there has not been reproduced yet and which script raises it is not known; the game&#x27;s log now records a script&#x27;s own error message, so a log from the moment it happens can name it.</li>
+<li><span class="kind">Changed</span>Your EBOOT is now recognised by its SHA-256, else by its program segments, so a correct 1.29 EBOOT made by a tool that pads the file differently is still accepted. The messages name only what is wrong and the EBOOT the port needs (title id, version, region). A 1.29-sized EBOOT whose contents differ (patched or damaged) gets a warning saying so. Checked with the real EBOOTs and in the setup wizard under Proton.</li>
+<li><span class="kind">Fixed</span>The setup&#x27;s EBOOT page check could not run since 0.1.11 (a file it needs was not packed with it), so a still-encrypted EBOOT was only caught at the first build step. It is packed again, and the page now gives the same verdict as the first-run check; in the wizard under Proton it answers in under a second.</li>
+<li><span class="kind">Fixed</span>When one of the game&#x27;s scripts hits an error the game is built to recover from, it now recovers as on the PS3 instead of quitting (checked with a forced error). This may be the cause of the quit in #49: the reported log matches the forced error line for line, but the error there has not been reproduced yet and which script raises it is not known; the game&#x27;s log now records a script&#x27;s own error message, so a log from the moment it happens can name it.</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.12">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
-<article class="news rel">
-<h2>v0.1.11</h2>
+<article class="rel">
+<h3>v0.1.11</h3>
 <p class="meta">5 Nov 2026 · pre-release</p>
 <ul class="rlist">
-<li><span class="sec">Added</span>The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with the 1.29 update of its own region. The code is the same (the 1.29 EBOOT is identical in all four regions), the disc data differs, and no one has played them through yet. The first-run check says &quot;untested&quot; and goes on (#48).</li>
-<li><span class="sec">Added</span><code>aim_assist_strength</code> in <code>gameplay.ini</code> (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and pull.</li>
-<li><span class="sec">Changed</span>The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names the disc&#x27;s and the update&#x27;s ids and warns when they differ.</li>
-<li><span class="sec">Changed</span>Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</li>
-<li><span class="sec">Changed</span>A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game archive belongs to another region&#x27;s disc fails the archive check (A1).</li>
-<li><span class="sec">Changed</span>&quot;Use my RPCS3 install&quot; finds any of the four discs and always pairs it with the update of its own id.</li>
-<li><span class="sec">Changed</span>With a controller and <code>aim_assist = off</code>, the game&#x27;s own stick smoothing stays; only the target help is removed. Mouse look is unchanged.</li>
-<li><span class="sec">Fixed</span>Japanese, Korean and Chinese text is no longer blank: the game&#x27;s system font now includes Noto Sans CJK (OFL), cut to the characters the game uses, with the Japanese, Korean, Simplified, Traditional and Hong Kong letterforms chosen by the game&#x27;s language (the PS3 drew all Han characters in Japanese style).</li>
-<li><span class="sec">Fixed</span>A crash with a stack overflow (0xC00000FD) when the game stopped itself after an internal error: the game now closes with a message and a log line instead (#49). The error that started it is not found yet; the log now records it.</li>
+<li><span class="kind">Added</span>The European (BCES00081), Asian (BCAS20066) and Japanese (BCJS30032) discs are accepted as untested support, each with the 1.29 update of its own region. The code is the same (the 1.29 EBOOT is identical in all four regions), the disc data differs, and no one has played them through yet. The first-run check says &quot;untested&quot; and goes on (#48).</li>
+<li><span class="kind">Added</span><code>aim_assist_strength</code> in <code>gameplay.ini</code> (0 to 4, default 1 = the game&#x27;s own strength) scales the aim assist&#x27;s slowdown and pull.</li>
+<li><span class="kind">Changed</span>The European, Asian and Japanese discs use their own title id for the update folder, saves and trophies; the log names the disc&#x27;s and the update&#x27;s ids and warns when they differ.</li>
+<li><span class="kind">Changed</span>Trophies are read from the running region&#x27;s update when several regions&#x27; updates are installed.</li>
+<li><span class="kind">Changed</span>A disc of one region with another region&#x27;s update is refused, and the message names both regions; a dump whose game archive belongs to another region&#x27;s disc fails the archive check (A1).</li>
+<li><span class="kind">Changed</span>&quot;Use my RPCS3 install&quot; finds any of the four discs and always pairs it with the update of its own id.</li>
+<li><span class="kind">Changed</span>With a controller and <code>aim_assist = off</code>, the game&#x27;s own stick smoothing stays; only the target help is removed. Mouse look is unchanged.</li>
+<li><span class="kind">Fixed</span>Japanese, Korean and Chinese text is no longer blank: the game&#x27;s system font now includes Noto Sans CJK (OFL), cut to the characters the game uses, with the Japanese, Korean, Simplified, Traditional and Hong Kong letterforms chosen by the game&#x27;s language (the PS3 drew all Han characters in Japanese style).</li>
+<li><span class="kind">Fixed</span>A crash with a stack overflow (0xC00000FD) when the game stopped itself after an internal error: the game now closes with a message and a log line instead (#49). The error that started it is not found yet; the log now records it.</li>
 </ul>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.11">Release page<span aria-hidden="true"> &gt;</span></a></p>
 </article>
 <p class="more"><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">The whole changelog<span aria-hidden="true"> &gt;</span></a></p>
-</div>
-<article id="about" class="news">
-<h2>About the port</h2>
-<p class="meta">how it works</p>
-<p>The port is built on <a href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a> (MIT): the PPU code and the game's SPU programs are lifted to C, the PS3 system libraries the game calls are reimplemented, and the game's RSX command stream is replayed on Direct3D 12. The game's archive is read in place from your dump. It is tested on Windows x64 under Proton.</p>
-<p>It follows <a href="https://github.com/undecuple/project-helghast">Project Helghast</a>, the same method applied to Killzone 3, and reuses its general runtime work. More in the <a href="https://github.com/undecuple/project-pyrrhus#readme">README</a>.</p>
-</article>
-<p class="divider" aria-hidden="true"><span>Progress</span></p>
-<div class="notes2">
+</section>
+<section id="progress" class="sec" aria-labelledby="h-progress">
+<h2 id="h-progress">Progress</h2>
+<p class="lede">The newest changelog items and the objectives still open.</p>
 <section id="changelog" class="promo term">
-<h2>Changelog</h2>
+<h3>Changelog</h3>
 <ul class="clog">
 <li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Online:** an Online settings window (Start menu &gt; Online settings) to choose Off, a compatible server, or a...</span></li>
 <li><time datetime="2026-11-13">11-13</time><span><b>0.1.13</b> **Performance:** in busy scenes the renderer spends less time checking textures: it now asks Windows which memory...</span></li>
@@ -202,7 +220,7 @@
 <p class="small">Newest first; the full list: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p>
 </section>
 <section id="todo" class="promo obj">
-<h2>Objectives</h2>
+<h3>Objectives</h3>
 <ul class="todo">
 <li class="o-no"><span class="box" aria-hidden="true"></span>Full campaign start to finish <em>(not yet)</em></li>
 <li class="o-no"><span class="box" aria-hidden="true"></span>Surround sound (5.1 / 7.1 output) <em>(not yet)</em></li>
@@ -212,23 +230,10 @@
 </ul>
 <p class="small">The next game features still open; all of them: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">FEATURES.md</a>.</p>
 </section>
-</div>
-</main>
-<aside class="side">
-<a class="promo pic" href="#install"><img src="../docs/screenshots/20261028_kz2-main-menu.png" alt="" loading="lazy"><span class="pt">Your own copy</span><span class="pb">How to install</span></a>
-<section class="promo">
-<h2>At a glance</h2>
-<p class="headline">Status: <strong>Partly playable</strong></p>
-<ul class="glance">
-<li><span class="st st-ok">Works</span> <b>0</b></li>
-<li><span class="st st-part">Partial</span> <b>11</b></li>
-<li><span class="st st-prog">In progress</span> <b>2</b></li>
-<li><span class="st st-no">Not yet</span> <b>5</b></li>
-</ul>
-<p class="small"><a href="#status">Full status</a></p>
 </section>
-<section id="install" class="promo">
-<h2>Install</h2>
+<section id="install" class="sec" aria-labelledby="h-install">
+<h2 id="h-install">Install</h2>
+<p class="lede">The installer or the portable zip, built on your PC from your own copy.</p>
 <div class="dl">
 <p class="ver"><!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13">v0.1.13</a><!-- /version --> <span>pre-release</span></p>
 <p class="small">13 Nov 2026 · partly playable · Windows x64</p>
@@ -237,13 +242,14 @@
 </div>
 <p>The installer and the portable zip check your own disc dump, the 1.29 update and the decrypted EBOOT, then translate and build the game's code on your machine with a bundled compiler, with one progress bar and a full install log. Nothing of the game is shipped or downloaded; a dump folder is read where it is, and the files of a decrypted .iso are copied once into the install folder. What each input must contain: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a>.</p>
 <p>Or build the port from source: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/BUILDING.md">building</a>.</p>
-<h3>What goes online</h3>
+<h4>What goes online</h4>
 <p>Nothing unless you ask. The port starts no connection of its own; the version check and update download are off until you turn them on, and the optional DSU motion setting talks only to 127.0.0.1 on your own computer. Online multiplayer, if it comes, will only use a self-hosted server you choose. See <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/PRIVACY.md">What goes online</a>.</p>
-<p class="small">Viewing this website loads the Rajdhani font from Google Fonts, which sees your visit; the repository, installer and game do not.</p>
+<p class="small">Viewing the main page loads the Rajdhani font from Google Fonts, which sees your visit; the repository, installer and game do not. The plain page loads no fonts.</p>
 </section>
-<section id="requirements" class="promo">
-<h2>Requirements</h2>
-<h3>What you need</h3>
+<section id="requirements" class="sec" aria-labelledby="h-requirements">
+<h2 id="h-requirements">Requirements</h2>
+<p class="lede">What you need from your own copy, and the hardware figures (estimates).</p>
+<h4>What you need</h4>
 <div class="tw"><table>
 <thead><tr><th>Item</th><th>Required</th><th>Details</th></tr></thead>
 <tbody>
@@ -253,7 +259,7 @@
 <tr><td><strong>Update 1.29</strong></td><td>yes</td><td>The game&#x27;s last update, from your own console or copy.</td></tr>
 <tr><td><strong>Decrypted EBOOT</strong></td><td>yes</td><td>The game&#x27;s main program (EBOOT.elf), decrypted, made from your own copy. This project ships no decryption tools or instructions.</td></tr>
 </tbody></table></div>
-<h3>Hardware to play</h3>
+<h4>Hardware to play</h4>
 <div class="tw"><table>
 <thead><tr><th></th><th>Minimum (estimate)</th><th>Recommended (estimate)</th></tr></thead>
 <tbody>
@@ -266,25 +272,39 @@
 </tbody></table></div>
 <p class="small">Details: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/requirements.md">requirements.md</a>. Hardware figures are estimates, provisional until the game runs at full speed; hand play is not measured.</p>
 </section>
-<section id="channels" class="promo">
-<h2>Official channels</h2>
+<section id="about" class="sec" aria-labelledby="h-about">
+<h2 id="h-about">About</h2>
+<p class="lede">Built on ps3recomp: PPU and SPU code lifted to C, the RSX command stream replayed on Direct3D 12.</p>
+<p class="meta">how it works</p>
+<p>The port is built on <a href="https://github.com/sp00nznet/ps3recomp">ps3recomp</a> (MIT): the PPU code and the game's SPU programs are lifted to C, the PS3 system libraries the game calls are reimplemented, and the game's RSX command stream is replayed on Direct3D 12. The game's archive is read in place from your dump. It is tested on Windows x64 under Proton.</p>
+<p>It follows <a href="https://github.com/undecuple/project-helghast">Project Helghast</a>, the same method applied to Killzone 3, and reuses its general runtime work. More in the <a href="https://github.com/undecuple/project-pyrrhus#readme">README</a>.</p>
+</section>
+<section id="channels" class="sec" aria-labelledby="h-channels">
+<h2 id="h-channels">Channels</h2>
+<p class="lede">Source, releases, bug reports and the Discord server.</p>
 <ul class="links">
 <li><a href="https://github.com/undecuple/project-pyrrhus">Source on GitHub</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/issues">Report a problem</a></li><li><a href="https://discord.gg/W8fMT78Q7k">Discord</a> (undecuple server, unofficial fan work)</li><li><a href="https://github.com/undecuple/project-helghast">Project Helghast</a> (the Killzone 3 port)</li>
 </ul>
+<h4>Docs</h4>
+<ul class="links">
+<li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">Features</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/KNOWN_ISSUES.md">Known issues</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/ROADMAP.md">Roadmap</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/BUILDING.md">Building</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a></li><li><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/SCREENSHOTS.md">Screenshots</a></li>
+</ul>
 </section>
-</aside>
-</div>
-</div>
-<footer><div class="wrap"><div class="fcols">
-<div><h4>Project</h4><a href="https://github.com/undecuple/project-pyrrhus">Repository</a><a href="https://github.com/undecuple/project-pyrrhus/releases">Releases</a><a href="https://github.com/undecuple/project-pyrrhus/issues">Issues</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/CHANGELOG.md">Changelog</a></div>
-<div><h4>Docs</h4><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/FEATURES.md">Features</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/KNOWN_ISSUES.md">Known issues</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/ROADMAP.md">Roadmap</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/BUILDING.md">Building</a></div>
-<div><h4>Play</h4><a href="#install">Install</a><a href="#requirements">Requirements</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md">Getting your files ready</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/docs/SCREENSHOTS.md">Screenshots</a></div>
-<div><h4>About</h4><a href="https://github.com/undecuple/project-pyrrhus/blob/main/NOTICE.md">Notice and credits</a><a href="https://github.com/undecuple/project-pyrrhus/blob/main/LICENSE">Licence (MIT)</a><a href="https://github.com/undecuple/project-helghast">Project Helghast</a></div>
-</div>
-<div id="legal" class="legal">
+<section id="legal" class="sec" aria-labelledby="h-legal">
+<h2 id="h-legal">Legal</h2>
+<p class="lede">No game content is distributed. The port&#x27;s own code is MIT.</p>
 <p>Killzone and Killzone 2 are trademarks of Sony Interactive Entertainment. This project is not affiliated with or endorsed by Sony Interactive Entertainment or Guerrilla Games; the names are used only to say which game the port runs. No game content is distributed: no disc files, no decrypted or translated game code, no assets and no keys. Players supply their own copy of the game; the game's code is translated and compiled on the player's own machine from their own files.</p>
 <p>The port's own code, tools and documentation are <a href="https://github.com/undecuple/project-pyrrhus/blob/main/LICENSE">MIT</a>. Third-party components and credits: <a href="https://github.com/undecuple/project-pyrrhus/blob/main/NOTICE.md">NOTICE.md</a>.</p>
+<p><a href="https://github.com/undecuple/project-pyrrhus/blob/main/NOTICE.md">Notice and credits</a> · <a href="https://github.com/undecuple/project-pyrrhus/blob/main/LICENSE">Licence (MIT)</a></p>
 <ul class="marks" aria-label="Platform"><li><b>Windows</b>x64</li><li><b>D3D12</b>renderer</li><li><b>Proton</b>tested</li><li><b>MIT</b>licence</li><li><b>No game</b>files shipped</li></ul>
-<p class="credit">Project Pyrrhus by undecuple</p></div></div></footer>
+<p class="credit">Project Pyrrhus by undecuple</p>
+</section>
+</main>
+</div>
+<footer id="foot">
+<p class="legend" aria-hidden="true"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> select</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> back</span><span><kbd>&larr;</kbd><kbd>&rarr;</kbd> in the viewer</span></p>
+<p class="fl"><a href="#legal">Legal</a> <a href="https://github.com/undecuple/project-pyrrhus/blob/main/NOTICE.md">Notice and credits</a> <a href="plain.html">Plain page</a></p>
+</footer>
+</div>
 </body>
 </html>

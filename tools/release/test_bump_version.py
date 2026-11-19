@@ -154,7 +154,7 @@ def layout_round(name, root):
     if (root / "docs/features.tsv").is_file():   # here the page is regenerated; the public repository waits for the export
         check(f"<!-- version -->v{new}<!-- /version -->" in site and f"Download v{new}</a><!-- /version -->" in site,
               f"{name}: the site's version and download block")
-        check(f"<h2>v{new}</h2>" in site and "2 Jan 2030" in site, f"{name}: the site regenerated with the release news")
+        check(f"<h3>v{new}</h3>" in site and "2 Jan 2030" in site, f"{name}: the site regenerated with the release news")
     r = subprocess.run([sys.executable, str(root / "tools/release/test_version_agree.py"), "--repo", str(root)],
                        capture_output=True, text=True)
     check(r.returncode == 0, f"{name}: test_version_agree passes on the bumped copy", r.stdout[-800:])

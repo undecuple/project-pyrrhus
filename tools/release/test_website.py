@@ -5,8 +5,8 @@ missing style.css; Markdown in the data is escaped and links become GitHub URLs 
 headline follows the "Full campaign" row; the screens come from the public collection (a missing one fails); the
 version and download block follows installer/VERSION and its CHANGELOG entry (released, not released, missing) inside
 marker spans; the changelog box and the release news come from the whole CHANGELOG (newest first, capped on the page
-only, internal wording skipped, [Unreleased] left out), checked on the real CHANGELOG too; both layouts; the lint
-refuses scripts, event handlers and outside resources other than Google Fonts; the forbidden third-party service name
+only, internal wording skipped, [Unreleased] left out), checked on the real CHANGELOG too; both layouts; plain.html (the same section HTML as the
+menu page, no script, no fonts); the lint refuses inline or outside scripts, event handlers and outside resources other than Google Fonts; the forbidden third-party service name
 appears nowhere. From Project Helghast tools/release/test_website.py, first and later versions (same author, MIT).
 Exit 0 = PASS.
 
@@ -83,7 +83,8 @@ def fixture(root, playable="not yet", drop_key=None, req=REQ, version="0.2.0", c
         (root / "docs/requirements.md").write_text(req)
     pub = root / "public" if layout == "public" else root
     (pub / "site").mkdir(parents=True)
-    (pub / "site/style.css").write_text("body{}\n")
+    for f in ("style.css", "plain.css", "site.js"):
+        (pub / "site" / f).write_text("body{}\n")
     (pub / "docs/screenshots").mkdir(parents=True)
     for i, (name, _t, _c) in enumerate(website.SHOTS if shots else ()):
         (pub / "docs/screenshots" / f"2026101{i}_{name}.png").write_bytes(b"png")
@@ -121,29 +122,52 @@ def main():
         expect("<strong>it</strong>" in page and "<code>x</code>" in page, "inline Markdown not rendered")
         expect('src="../assets/banner.png"' in page and "../assets/banner@2x.png 2x" in page, "banner missing")
         expect("(D4)" not in page and "<td>6 cores</td>" in page and "Basis" not in page, "requirements table wrong")
-        expect(page.count("<figure class=\"tile") == len(website.SHOTS) and page.count("lead-tile") == 1
-               and page.index(website.SHOTS[-1][1]) < page.index(website.SHOTS[0][1]),
-               "screens: one tile each, newest (by file date) first")
+        expect(page.count("<figure class=\"tile\"") == len(website.SHOTS) and page.count("class=\"shot\"") == len(website.SHOTS)
+               and page.index(website.SHOTS[-1][1]) < page.index(website.SHOTS[0][1])
+               and all(f'id="shot-{i}"' in page for i in range(1, len(website.SHOTS) + 1)),
+               "screens: one linked tile each with a #shot-N id, newest (by file date) first")
         expect('<!-- version --><a href="' + website.REPO + '/releases/tag/v0.2.0">v0.2.0</a><!-- /version -->' in page
                and "<b><!-- version -->v0.2.0<!-- /version --></b>" in page
                and "Download v0.2.0</a><!-- /version -->" in page, "version and download block (marker spans)")
         expect(page.count("<!-- version -->") == page.count("<!-- /version -->") == 3
                and all("\n" not in m for m in page.split("<!-- version -->")[1:] for m in [m.split("<!-- /version -->")[0]]),
                "three one-line marker spans")
-        expect("<h2>v0.2.0</h2>" in page and "<h2>v0.1.0</h2>" in page and "The first tag." in page
+        expect("<h3>v0.2.0</h3>" in page and "<h3>v0.1.0</h3>" in page and "The first tag." in page
                and "Not out yet" not in page and "D56" not in page, "release news: dated entries, [Unreleased] and internal lines left out")
-        expect(page.index("<h2>v0.2.0</h2>") < page.index("<h2>v0.1.0</h2>"), "release news newest first")
+        expect(page.index("<h3>v0.2.0</h3>") < page.index("<h3>v0.1.0</h3>"), "release news newest first")
         expect(not re.search(r"\b[Vv]ersion\s+v?\d+\.\d+\.\d+", page), "no 'version X' prose (test_version_agree would read it)")
         expect("Hidden" not in page, "BACKLOG row shown")
         expect(f'href="{website.HELGHAST}"' in page, "Project Helghast link missing")
         expect(f'href="{website.DISCORD}"' in page, "Discord invite missing from Official channels")
-        expect('class="clog"' in page and 'class="todo"' in page and page.count('class="divider"') == 2,
-               "changelog box, objectives box or dividers missing")
+        expect('class="clog"' in page and 'class="todo"' in page, "changelog box or objectives box missing")
+        plain = (root / "public/site/plain.html").read_text()
+        ids = lambda s: re.findall(r'<section id="([a-z]+)" class="sec"', s)  # noqa: E731
+        expect(ids(page) == ids(plain) == ["top", "shots", "status", "news", "progress", "install", "requirements",
+                                           "about", "channels", "legal"], f"sections differ: {ids(page)} vs {ids(plain)}")
+        body = lambda s: s.split("<main", 1)[1].split("</main>")[0].split(">", 1)[1]  # noqa: E731
+        expect(body(page) == body(plain), "plain.html and the menu page do not share the same section HTML")
+        expect("<script" not in plain and "fonts.googleapis.com" not in plain, "plain.html loads a script or web fonts")
+        expect('<script src="site.js"></script>' in page and "script-src 'self'" in page and "script-src 'self'" in plain,
+               "index.html: same-origin script and CSP script-src 'self'")
+        expect(all(f'<a href="#{s}"' in page for s in ids(page)) and 'href="plain.html"' in page
+               and 'href="index.html"' in plain, "menu links, plain link or link back missing")
+        expect(page.count("<!-- version -->") == 3 and plain.count("<!-- version -->") == 2,
+               "version spans: three on the menu page (header box, link, button), two on the plain page")
+        expect("<noscript" not in page and page.count('id="panel"') == 1, "panel missing")
         expect(not website.lint(page), f"lint on the generated page: {website.lint(page)}")
         expect(FORBIDDEN not in page.lower(), "page names the forbidden service")
         expect(FORBIDDEN not in open(os.path.join(HERE, "website.py")).read().lower(), "website.py names it")
         (root / website.PAGE).write_text(page + "x")
         expect(run("--root", str(root), "--check")[0] == 1, "stale page passes")
+        (root / website.PAGE).write_text(page)
+        (root / "public/site/plain.html").write_text(plain + "x")
+        expect(run("--root", str(root), "--check")[0] == 1, "stale plain.html passes")
+        (root / "public/site/plain.html").write_text(plain)
+        (root / "public/site/site.js").unlink()
+        expect(run("--root", str(root), "--check")[0] == 1, "missing site.js passes")
+        (root / "public/site/site.js").write_text("x")
+        (root / website.PAGE).write_text(page.replace('<script src="site.js">', '<script src="https://example.com/a.js">'))
+        expect(run("--root", str(root), "--check")[0] == 1, "outside script passes")
         (root / website.PAGE).write_text(page.replace("<body>", "<body><script>x</script>"))
         expect(run("--root", str(root), "--check")[0] == 1, "injected script passes")
         (root / website.PAGE).write_text(page.replace("<body>", '<body><img src="https://example.com/a.png">'))
@@ -169,7 +193,7 @@ def main():
         fixture(root, layout="root")
         expect(run("--root", str(root))[0] == 0 and (root / "site/index.html").is_file() and not (root / "public").exists(),
                "root layout: the page is written to site/index.html")
-        expect("<h2>v0.2.0</h2>" in (root / "site/index.html").read_text(), "root layout: CHANGELOG.md read at the root")
+        expect("<h3>v0.2.0</h3>" in (root / "site/index.html").read_text(), "root layout: CHANGELOG.md read at the root")
         expect(run("--root", str(root), "--check")[0] == 0, "root layout: --check passes")
 
         for name, kw in (("nokey", {"drop_key": website.KEY_ROWS[1]}), ("noreq", {"req": None}),
@@ -210,11 +234,11 @@ def main():
     vf = real / website.VERSION_FILE
     expect(website.release_of(real, vf.read_text().strip()) is not None, "real CHANGELOG has an entry for installer/VERSION")
 
-    for bad in ('<script src="a.js"></script>', '<img src="x.png" onerror="x()">', '<a href="javascript:x()">a</a>',
+    for bad in ('<script src="https://example.com/a.js"></script>', '<script>x()</script>', '<script src="//cdn.example/a.js"></script>', '<img src="x.png" onerror="x()">', '<a href="javascript:x()">a</a>',
                 '<img src="https://example.com/a.png">', '<link rel="stylesheet" href="https://cdn.example/x.css">',
                 '<link href="https://fonts.googleapis.com.evil.example/x">', '<img src="file:///C:/a.png">'):
         expect(website.lint(bad), f"lint misses {bad}")
-    for good in ('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=X">',
+    for good in ('<script src="site.js"></script>', '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=X">',
                  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>', '<img src="../assets/a.png">',
                  f'<a href="{website.REPO}/issues">issues</a>'):
         expect(not website.lint(good), f"lint refuses {good}")
@@ -222,7 +246,7 @@ def main():
     if fails:
         print("FAIL test_website:\n  - " + "\n  - ".join(fails))
         return 1
-    print("PASS test_website (generate, check, negative controls, screens, version block, changelog and news, both layouts, 7 lint refusals)")
+    print("PASS test_website (generate, check, negative controls, screens, version block, changelog and news, both layouts, 9 lint refusals)")
     return 0
 
 
