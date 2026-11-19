@@ -164,20 +164,107 @@ ran to the end and produced `kz2.exe`, linked with the lifted SPU code. Step 5 w
 
 ## Building on macOS
 
-**Status: not tested. No build has been run on a Mac yet, and nothing has been run on macOS.** Reports are welcome
-(open an issue).
+**Experimental native ARM64 route:** the port executable and runtime compile on Apple silicon and the synthetic
+boot passed on an Apple M4 Pro with Metal, both offscreen and in a Cocoa window. With patches 6084 (lwcond) and
+6085 (font folder), the USA 1.29 game ran on the same machine in a window, driven by `PAD_FILE` button presses (no
+physical controller): language and gamma screens, the intro movie, the title screen, the main menu, New Campaign,
+the Corinth River loading screen and the first mission's in-engine opening scene. Loading the mission stalled the
+frame for up to 22 seconds at a time (depth readbacks wait on the GPU); it then ran on. Playing the mission, sound
+on a speaker, a physical controller and performance were not checked.
 
-- **Untested route:** a Mac with Apple silicon and Nix with flakes enabled, then the [Steps](#steps) 1 to 4 as
-  written. `tools/sandbox.sh` needs bubblewrap, which is Linux-only, so on macOS it may need to be bypassed by running
-  the commands directly. Nobody has tried this. The cross-compiler would be built by Nix the first time, which can
-  take a long while.
-- **Running:** `kz2.exe` is a Windows program and Proton does not run on macOS. The route is the one in
-  [Building on Windows](#building-on-windows): copy the finished build and the game to a Windows PC. Not tried.
-- **Windows-on-Mac layers (untested):** tools that run Windows programs on Apple silicon with Direct3D 12 translated
-  to Metal might start `kz2.exe`, but expect it to be much slower than on a PC; the port is not at full speed even
-  natively. If you try, open an issue with your Mac model, macOS version, the tool and its version, how far the game
-  got, and the log.
-- **Native macOS build:** not started.
+The native route uses Apple Clang and the toolkit's existing Metal backend with guest-shader translation, not
+Direct3D 12 or Proton. The guest runs on a 256 MiB-stack worker while the main thread services Cocoa. ARM64 builds
+omit x86 ISA flags and the optional x86 native SPU-job replacements; the lifted SPU jobs stay enabled.
+
+Prerequisites are Xcode Command Line Tools (or Xcode), Python 3.11+, CMake, Ninja, SDL2 and SDL3. For guest shaders,
+install glslang, SPIRV-Tools and SPIRV-Cross; a fixed-function-only fallback is insufficient for this smoke test.
+The patch-preparation shell script also needs GNU coreutils (`realpath`, `sha256sum`). With Homebrew these are the
+packages `python@3.12 cmake ninja sdl2 sdl3 glslang spirv-tools spirv-cross coreutils`. The tested build used already
+installed tools; no package installation was performed as part of validation.
+
+From an initialized checkout (`third_party/ps3recomp` at the repository's pinned commit), prepare the patched tree
+as in the source-build steps. On macOS, put GNU coreutils on PATH for that shell script:
+
+```sh
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+bash tools/ps3recomp-patched.sh
+python3.12 tools/build-kz2-macos.py --smoke
+python3.12 tools/runtime/test_macos_host.py
+python3.12 tools/runtime/test_spu_pool_portability.py
+python3.12 tools/test_macos_smoke.py
+python3.12 tools/test_macos_smoke.py --windowed
+```
+
+The two Metal smoke commands require GPU access. They run only the toolkit's generated synthetic ELF, in temporary
+folders; they do not read the game. The smoke build also compiles a synthetic SPU translation unit and the real
+SPU dispatch source. Success requires all 11 boot markers, three presented frames, vblank and the guest's exit.
+The generated executable is `build/kz2-macos-smoke/kz2`; logs are in `work/macos-smoke/run-*.log` and
+`build/kz2-macos-smoke/build-macos.log`. This executable contains synthetic functions and cannot run Killzone 2.
+The validated toolkit was prepared from the exact pinned commit using an existing local Git checkout and the
+complete patch series; fresh submodule initialization and the shell preparation route were not exercised on Mac.
+
+For a game build, `tools/lift-kz2-macos.py` accepts an **existing decrypted 1.29 ELF** whose SHA-256 matches the
+known US build. It performs no SELF conversion and uses no keys. It runs the same Python analysis/lifting tools,
+TOC, code boundary, 64 chunks, overrides and Lua continuations as the Linux scripts, with one worker and the native
+build's resource guard. The PPU/SPU lift has been generated from the verified USA 1.29 ELF on Apple silicon:
+65 PPU translation units, 60 SPU images, no failed SPU lifts. This generation evidence does not establish game
+playability. Other games' lifted code cannot be substituted.
+
+Run game-reading tools with read-only inputs and no network. For example, from the repository root on Mac:
+
+```sh
+KZ2_REPO="$(pwd -P)"
+KZ2_SANDBOX="(version 1)(allow default)(deny network*)(deny file-write*)(allow file-write* (literal \"/dev/null\") (subpath \"$KZ2_REPO/work\") (subpath \"$KZ2_REPO/build\"))"
+sandbox-exec -p "$KZ2_SANDBOX" python3.12 -B tools/lift-kz2-macos.py --eboot /path/to/EBOOT.elf
+```
+
+The generated sources stay under ignored `work/recomp` and `work/spu/lift`. Logs are in `work/native-lift`.
+The build checks the lift's version, toolkit stamp, override announcements and Lua receipt before compiling.
+Once those inputs exist:
+
+```sh
+bash tools/runtime/ffmpeg-lgpl-macos.sh
+python3.12 tools/build-kz2-macos.py --ffmpeg-include work/ffmpeg-macos/include
+python3.12 tools/run-kz2-macos.py --disc /Volumes/PS3VOLUME --update /path/to/BCUS98116 --eboot /path/to/EBOOT.elf --seconds 60
+```
+
+FFmpeg headers and matching libraries from an **LGPL-only build** are needed for movie/AC3 decoding, as in the
+Windows route; do not substitute a GPL-enabled FFmpeg build (Homebrew's is one). `tools/runtime/ffmpeg-lgpl-macos.sh`
+builds FFmpeg 9.0.1 with the Windows recipe's decoder set and checks `config.h` for LGPL 2.1 only; it needs the
+network once, for the source. The runner then loads `work/ffmpeg-macos/lib`. On an Apple M4 Pro the intro movie
+played with its picture and its 5.1 AC-3 sound decoded through it. `PS3RECOMP_FFMPEG_AVCODEC` and
+`PS3RECOMP_FFMPEG_AVUTIL` select other matching dylibs at launch.
+`--allow-no-ffmpeg` is an explicit developer-only build with black movies and silent AC3.
+
+The system fontset (Cyrillic, Greek and CJK text) reads `build/kz2-macos/fonts/`. Without Nix, make the two files
+with the release scripts from the pinned upstream sources (both scripts refuse a source whose SHA-256 differs) and
+fontTools 4.63.0 in a throwaway virtual environment:
+
+```sh
+python3.12 -m venv /tmp/ft && /tmp/ft/bin/pip install fonttools==4.63.0
+curl -fLo /tmp/NotoSans.ttf 'https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/unhinted/variable-ttf/NotoSans%5Bwdth%2Cwght%5D.ttf'
+curl -fLo /tmp/NotoSansCJK-VF.otf.ttc 'https://github.com/notofonts/noto-cjk/raw/Sans2.004/Sans/Variable/OTC/NotoSansCJK-VF.otf.ttc'
+mkdir -p build/kz2-macos/fonts
+/tmp/ft/bin/python -B tools/runtime/mkfont_noto.py --src /tmp/NotoSans.ttf build/kz2-macos/fonts/NotoSans-Regular.ttf
+/tmp/ft/bin/python -B tools/runtime/mkfont_cjk.py --src /tmp/NotoSansCJK-VF.otf.ttc build/kz2-macos/fonts/NotoSansCJK-Regular.ttc
+```
+
+The CJK output matches the release's pinned SHA-256. A run's log should show `2 font file(s) in the chain`.
+
+The bounded native runner uses the mounted disc in place, never copying the whole ISO. It verifies the inputs,
+blocks network access and writes only under `work/` and `build/`. Saves/caches are isolated from RPCS3's data.
+`--skip-intro` is an opt-in diagnostic for one run; `--headless` selects offscreen Metal. Each run has its own
+`work/macos-runs/<timestamp>/stdout.log` and a result receipt. The default limit is 60 seconds; only its own process
+group is terminated on timeout. The runner's write isolation is covered by a game-free host test.
+`--toolkit <tree>` selects a patched toolkit; its stamp must match the current patches and pinned revision.
+`--check` configures and prints the Ninja plan without compiling. Always build through this script: it holds a
+build lock, uses one compiler job, refuses low disk space and stops its own build if free memory falls below 15%.
+
+Native limitations: there is no `.app` bundle or Mac installer yet. SDL3 gamepad-library loading is wired, but no
+physical controller was tested. The Windows keyboard/mouse remapping and SendInput scripts are unavailable; use a
+controller for eventual game testing. Display/settings persistence, prompt-font replacement and D3D12-specific
+options are not validated on Mac. The GUI session-log recorder remains Windows-only; native stdout/stderr can be
+redirected to a file. No playability or performance claim is made by the synthetic smoke.
 
 ## Building on Windows
 
@@ -246,6 +333,12 @@ nix develop .#re --command python3 tools/release/test_installer_art.py
 
 `tools/host-tests.txt` lists the host tests (the installer's checks, packaging, the asset tools). They need no game
 data and no GPU. Each line is a command to run inside the Nix shell shown on that line.
+
+The focused synchronization regression can also run with Python 3 and host C/C++ compilers:
+`python3 tools/runtime/test_sync_mutex_semantics.py`. It finds the patched toolkit using `KZ2_PATCHED_DIR`,
+`KZ2_OUT`, or the usual `work/` locations; `--toolkit <tree>` selects one explicitly. This test passed on macOS
+with Apple Clang against the pinned toolkit plus the full patch series, and failed without patch 3009.
+This validates the tested HLE contracts only; it does not validate a Mac build or a game run.
 
 On Windows without Nix, the Python tests run with Python 3.12 (`python tools/release/test_....py`), and the shell
 tests in `tools/` with Git Bash. All 38 `tools/release/test_*.py` files passed with Python 3.12.10 on native Windows

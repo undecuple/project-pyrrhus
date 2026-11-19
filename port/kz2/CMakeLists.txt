@@ -18,6 +18,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(_kz2_x86 OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i.86)$")
+    set(_kz2_x86 ON)
+endif()
+option(KZ2_NATIVE_SPU_JOBS "Compile the optional x86 host SPU-job replacements" ${_kz2_x86})
+if(KZ2_NATIVE_SPU_JOBS AND NOT _kz2_x86)
+    message(FATAL_ERROR "Native SPU-job replacements currently require x86; use -DKZ2_NATIVE_SPU_JOBS=OFF on ARM64 (the lifted jobs remain enabled)")
+endif()
+
 # Prefer Ninja if available
 if(NOT CMAKE_GENERATOR MATCHES "Ninja" AND NOT DEFINED ENV{CMAKE_GENERATOR})
     message(STATUS "Tip: use -G Ninja for faster builds")
@@ -123,6 +132,13 @@ endif()
 # END ffmpeg-headers
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
+if(APPLE)
+    # The port's patched pad backend loads SDL3 dynamically; give dyld the
+    # installed library path rather than the Linux libSDL3.so.0 filename.
+    find_library(KZ2_SDL3_LIBRARY NAMES SDL3 SDL3.0 REQUIRED)
+    target_compile_definitions(ps3recomp_runtime PRIVATE
+        "PS3RECOMP_SDL3_LIBRARY=\"${KZ2_SDL3_LIBRARY}\"")
+endif()
 
 # Shader translator identity (patch 6047): a hash of the renderer's sources (libs/video), compiled into
 # rsx_live_draw.c as RSX_TRANSLATOR_ID and written into the PSO preload's key file, so a shader cache made by another
@@ -219,8 +235,10 @@ if(PORT_ENABLE_SPU)
         # Native host versions of hot SPU job code (re/spu/native_gates.tsv): built with the
         # lifted SPU code's flags (same float helpers), registered by spu/kz2_native_jobs.c, off unless
         # KZ2_NATIVE_JOB_<NAME>=1.
-        file(GLOB KZ2_NATIVE_SPU CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/spu/*.c")
-        list(APPEND SPU_SOURCES ${KZ2_NATIVE_SPU})
+        if(KZ2_NATIVE_SPU_JOBS)
+            file(GLOB KZ2_NATIVE_SPU CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/spu/*.c")
+            list(APPEND SPU_SOURCES ${KZ2_NATIVE_SPU})
+        endif()
         # Generated beside the lift; each is present only once its generator
         # has been run, so each is included only if it is actually here.
         foreach(gen IN ITEMS spu_workloads.c jobmods_register.c taskset_policy_bytes.c)
@@ -260,6 +278,14 @@ add_executable(${PROJECT_NAME}
     ${SPU_SOURCES}
 )
 
+if(APPLE)
+    target_sources(${PROJECT_NAME} PRIVATE kz2_macos_host.cpp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreFoundation")
+    # macOS exposes the obsolete but still supplied ucontext fiber APIs only
+    # with this feature macro. Scope it to the fiber implementation.
+    set_property(SOURCE guest_fiber.c APPEND PROPERTY COMPILE_DEFINITIONS _XOPEN_SOURCE=600)
+endif()
+
 # Private developer diagnostics of the online reader: compiled only when the file is present (the
 # public tree has none); kz2_online.cpp then calls it (KZ2_ONLINE_DIAG). Only these two sources change.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/kz2_online_diag.cpp")
@@ -285,11 +311,18 @@ if(SPU_SOURCES)
         #   -mfma     spu__fma4 as one hardware fused multiply-add per vector, same bits (KZ3 1097/1106; AVX + FMA3);
         #   -ffp-contract=off  no spontaneous contraction once FMA instructions exist (SPU fma/fms are explicit);
         #   -mcmodel=small     direct RIP-relative loads of the runtime gates instead of .refptr slots (MinGW).
-        set(KZ2_SPU_ISA "-msse4.1" CACHE STRING "ISA flags for the lifted SPU sources")
-        option(KZ2_SPU_FMA "build the lifted SPU code with -mfma (needs AVX + FMA3)" ON)
+        set(_kz2_spu_isa_default "")
+        if(_kz2_x86)
+            set(_kz2_spu_isa_default "-msse4.1")
+        endif()
+        set(KZ2_SPU_ISA "${_kz2_spu_isa_default}" CACHE STRING "ISA flags for the lifted SPU sources (empty on ARM64)")
+        option(KZ2_SPU_FMA "build the lifted SPU code with -mfma (x86 only; unused on ARM64)" ${_kz2_x86})
         option(KZ2_SPU_CMODEL_SMALL "build the lifted SPU code with -mcmodel=small on MinGW" ON)
         set(_kz2_spu_opts -O2 ${KZ2_SPU_ISA} -ffp-contract=off)
         if(KZ2_SPU_FMA)
+            if(NOT _kz2_x86)
+                message(FATAL_ERROR "KZ2_SPU_FMA requires x86; use -DKZ2_SPU_FMA=OFF on ARM64")
+            endif()
             list(APPEND _kz2_spu_opts -mfma)
             # kz2_cpu_check.c (not an SPU source, built without -mavx/-mfma) checks CPUID/XGETBV at startup.
             set_source_files_properties(kz2_cpu_check.c PROPERTIES COMPILE_DEFINITIONS KZ2_SPU_NEEDS_FMA)
@@ -435,6 +468,11 @@ if(MSVC)
 else()
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-w;-ffp-contract=off")
+endif()
+if(APPLE)
+    # Large lifted PPU chunks need less compiler memory at -O1. Scope this to
+    # those sources so native-runtime optimization and Windows builds stay as configured.
+    set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -O1)
 endif()
 
 # ---------------------------------------------------------------------------

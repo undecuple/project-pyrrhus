@@ -1,0 +1,515 @@
+KZ2 patch 2162: emulate the RSX depth-bounds test on Metal (draw engine).
+
+Adapted from ps3recomp commit 59d1533b by Erik Martins (erikomis), MIT, in the local
+ps3recomp-up-r10 fork; applied unchanged to this tree's draw engine and fragment-program
+decompiler, with its Metal and MSL tests. RPCS3 is cited in a comment as a behaviour
+reference only (clamping the bounds into [0, 1]); no RPCS3 code.
+Metal has no depth-bounds test, so draws that set SET_DEPTH_BOUNDS_TEST_ENABLE reached every
+pixel their geometry covers. Deferred renderers bound their light volumes and per-cascade
+shadow passes with it (Killzone 2 lights its G-buffer this way). The fragment program now
+loads a float copy of the depth buffer, taken before the draw, on a texture unit the
+program does not sample, and discards outside [min, max]. PS3RECOMP_ENG_DEPTH_BOUNDS=0
+restores the old behaviour. Host test: tools/runtime/test_metal_lighting.py.
+
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -130,6 +130,9 @@
+     u32 last_use;          /* g.frames when last bound or sampled             */
+     u32 ext_w, ext_h;      /* the largest clip it was bound with: past it,
+                             * nothing was drawn or cleared (eng_clear_rect) */
++    u32 dbz_copy;          /* float copy for the emulated depth-bounds test */
++    u32 dbz_w, dbz_h;
++    u64 dbz_serial;        /* depth_serial that copy holds                 */
+ 
+ } eng_zdepth;
+ 
+@@ -1000,6 +1003,8 @@
+     if (z->handle) g.be->depth_target_release(g.be->user, z->handle);
+     if (z->conv) g.be->texture_release(g.be->user, z->conv);
+     if (z->snapshot) g.be->texture_release(g.be->user, z->snapshot);
++    if (z->dbz_copy && g.be->texture_release) g.be->texture_release(g.be->user, z->dbz_copy);
++    z->dbz_copy = 0; z->dbz_w = z->dbz_h = 0; z->dbz_serial = 0;
+     z->conv = 0;
+     z->location = location; z->offset = offset;
+     z->w = want_w; z->h = want_h;
+@@ -1911,6 +1916,74 @@
+         ? rsx_fp_structural_hash(fp_uc, fp_size, 1469598103934665603ull) : 0;
+ }
+ 
++/* The depth-bounds test (SET_DEPTH_BOUNDS_TEST_ENABLE 0x0380, MIN 0x0384,
++ * MAX 0x0388) on a backend without one (no set_depth_bounds: Metal). A
++ * fragment survives only where the depth ALREADY STORED at its pixel lies in
++ * [min, max]; the fragment's own depth plays no part. Deferred renderers
++ * bound their light volumes and per-cascade shadow passes with it; ignored,
++ * those passes reach every pixel their geometry covers. The fragment program
++ * does the test instead: a float copy of the depth buffer, taken before the
++ * draw (so a bounded draw that also writes depth is tested against the
++ * depth before it, as one draw on the hardware is), goes on a texture unit
++ * the program does not sample, and rsx_fp_apply_depth_bounds reads it at the
++ * pixel and discards. The bounds go in the float4 after fp_alpha. A bound of
++ * [0, 1] is no bound. s_dbz says what eng_pipeline_get, the texture binding
++ * and the constants need for the current draw.
++ * PS3RECOMP_ENG_DEPTH_BOUNDS=0: the test is ignored there, as before. */
++static struct { u32 unit; u32 copy; float mn, mx; } s_dbz;   /* unit + 1, or 0 */
++
++static int eng_depth_bounds_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("PS3RECOMP_ENG_DEPTH_BOUNDS");
++        on = !(e && *e && atoi(e) == 0);
++    }
++    return on;
++}
++
++static void eng_depth_bounds_prepare(u32 zslot, const rsx_be_render_state* rs)
++{
++    s_dbz.unit = 0; s_dbz.copy = 0;
++    if (g.be->set_depth_bounds || !g.be->depth_snapshot || !rs->depth_bounds_test ||
++        zslot == ENG_INVALID || !eng_depth_bounds_on())
++        return;
++    float mn, mx;
++    { const u32 a = rsx_dsp_reg(&g.rsx, M_DEPTH_BOUNDS_MIN), b = rsx_dsp_reg(&g.rsx, M_DEPTH_BOUNDS_MAX);
++      memcpy(&mn, &a, 4); memcpy(&mx, &b, 4); }
++    /* Saturated into the depth range, as the hardware does (RPCS3
++     * clamp_depth_bounds_value); NaN reads as 0. */
++    mn = mn > 0.0f ? (mn < 1.0f ? mn : 1.0f) : 0.0f;
++    mx = mx > 0.0f ? (mx < 1.0f ? mx : 1.0f) : 0.0f;
++    if (mn <= 0.0f && mx >= 1.0f) return;
++    const u8* vp_uc = NULL; const u8* fp_uc = NULL; u32 vp_instrs = 0, fp_size = 0;
++    if (!eng_guest_programs(&vp_uc, &vp_instrs, &fp_uc, &fp_size)) return;
++    /* A unit the program neither samples nor has declared as a cube or a
++     * volume (rsx_fp_apply_depth_bounds reads it as a Texture2D). */
++    const u32 busy = rsx_fp_texture_units(fp_uc, fp_size) | eng_cube_mask() | eng_volume_mask();
++    int unit = -1;
++    for (int u = RSX_BE_MAX_TEXTURES - 1; u >= 0 && unit < 0; u--)
++        if (!((busy >> u) & 1u)) unit = u;
++    eng_zdepth* z = &g.zdepths[zslot];
++    if (unit < 0 || !z->handle) {
++        static u32 said;
++        if (PS3_LOG_FIRST(said, 4))
++            fprintf(stderr, "[rsx engine] depth bounds %.4f..%.4f not applied: %s\n",
++                    mn, mx, unit < 0 ? "no free texture unit" : "no depth target");
++        return;
++    }
++    if (!z->dbz_copy || z->dbz_serial != z->depth_serial || z->dbz_w != z->w || z->dbz_h != z->h) {
++        const u32 tex = g.be->depth_snapshot(g.be->user, z->handle, z->w, z->h);
++        if (!tex) return;
++        if (z->dbz_copy && z->dbz_copy != tex && g.be->texture_release)
++            g.be->texture_release(g.be->user, z->dbz_copy);
++        z->dbz_copy = tex; z->dbz_w = z->w; z->dbz_h = z->h;
++        z->dbz_serial = z->depth_serial;
++    }
++    s_dbz.unit = (u32)unit + 1u; s_dbz.copy = z->dbz_copy;
++    s_dbz.mn = mn; s_dbz.mx = mx;
++}
++
+ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+                             const rsx_be_render_state* rs,
+                             rsx_be_format rt_fmt, u32 rt_count, int* out_fixed,
+@@ -1937,6 +2010,7 @@
+     const int vp_branch_bits_used = !fixed && rsx_vp_uses_branch_bits(vp_uc, vp_instrs * 16u);
+     const u32 vp_branch_bits = vp_branch_bits_used ? rsx_dsp_reg(&g.rsx, 0x1FF8u) : 0;
+     const u32 ucp = fixed ? 0 : eng_user_clip_key();
++    const u32 dbz = fixed ? 0 : s_dbz.unit;   /* eng_depth_bounds_prepare: unit + 1 */
+ 
+     rsx_fp_shadow_desc shadow[RSX_DSP_NUM_TEXTURES] = {{0}};
+     u32 shadow_mask = 0;
+@@ -2016,6 +2090,7 @@
+         }
+         key = eng_fnv1a(&vtex_mask, sizeof vtex_mask, key);
+         if (ucp) key = eng_fnv1a(&ucp, sizeof ucp, key);
++        if (dbz) { const u32 tag = 0x5A424400u | dbz; key = eng_fnv1a(&tag, sizeof tag, key); }
+         key = eng_fnv1a(&unnorm_mask, sizeof unnorm_mask, key);
+         if (unnorm_mask) key = eng_fnv1a(unnorm_dim, sizeof unnorm_dim, key);
+         if (wpos_scaled) key = eng_fnv1a(wpos_grid, sizeof wpos_grid, key);
+@@ -2043,6 +2118,7 @@
+     u32 handle = 0;
+     int vi = 1, fi = 1;
+     u32 nconst = 0;
++    u32 dbz_bit = 0;
+     if (fixed) {
+         snprintf(s_vs_hlsl, sizeof s_vs_hlsl, "%s", kEngFixedVS);
+         snprintf(s_ps_hlsl, sizeof s_ps_hlsl, "%s", kEngFixedPS);
+@@ -2076,6 +2152,16 @@
+             rsx_fp_apply_alpha_test_buffered(s_ps_hlsl, sizeof s_ps_hlsl,
+                                              rs->alpha_func) < 0)
+             fi = -1;
++        if (fi > 0 && dbz) {
++            if (rsx_fp_apply_depth_bounds(s_ps_hlsl, sizeof s_ps_hlsl, dbz - 1u) > 0) {
++                dbz_bit = 1u << (dbz - 1u);   /* read with Load: no rsx_samp[] names it */
++            } else {
++                static u32 said;   /* drawn unbounded rather than dropped */
++                if (PS3_LOG_FIRST(said, 8))
++                    fprintf(stderr, "[rsx engine] depth bounds not applied to a fragment program"
++                                    " (unexpected text)\n");
++            }
++        }
+     }
+     if (vi > 0 && fi > 0)
+         handle = g.be->pipeline_create(g.be->user, s_vs_hlsl, s_ps_hlsl, rs,
+@@ -2124,7 +2210,7 @@
+     g.pipelines[g.n_pipelines].handle = handle;
+     g.pipelines[g.n_pipelines].fixed = (u8)fixed;
+     g.pipelines[g.n_pipelines].tex_used =
+-        (u16)(fixed ? 0xFFFFu : eng_sampled_units(s_ps_hlsl));
++        (u16)(fixed ? 0xFFFFu : (eng_sampled_units(s_ps_hlsl) | dbz_bit));
+     *out_tex_used = g.pipelines[g.n_pipelines].tex_used;
+     *out_fp_hash = fp_hash;
+     g.pipeline_index[slot] = (u16)(g.n_pipelines + 1u);
+@@ -3087,6 +3173,7 @@
+     int pipeline_is_fixed = 1;
+     u32 tex_used = 0;
+     u64 fp_hash = 0;
++    eng_depth_bounds_prepare(zslot, &rs);
+     const u32 pipeline = eng_pipeline_get(&layout, &rs,
+                                           eng_surface_format(sf.color_format),
+                                           n_targets, &pipeline_is_fixed, &tex_used,
+@@ -3104,9 +3191,17 @@
+     memset(samplers, 0, sizeof samplers);
+     memset(vtextures, 0, sizeof vtextures);
+     memset(vsamplers, 0, sizeof vsamplers);
+-    const u32 tex_mask = sink_bind_textures(targets, n_targets, zslot, tex_used,
+-                                            textures, samplers);
++    /* The depth-bounds copy's unit is not the guest's: its texture state,
++     * whatever an earlier draw left there, is not resolved. */
++    const u32 dbz_bit = s_dbz.unit ? 1u << (s_dbz.unit - 1u) : 0u;
++    u32 tex_mask = sink_bind_textures(targets, n_targets, zslot, tex_used & ~dbz_bit,
++                                      textures, samplers);
+     if (tex_mask == ENG_INVALID) return;
++    if (dbz_bit && (tex_used & dbz_bit)) {
++        textures[s_dbz.unit - 1u] = s_dbz.copy;
++        memset(&samplers[s_dbz.unit - 1u], 0, sizeof samplers[0]);
++        tex_mask |= dbz_bit;
++    }
+     const u32 vtex_mask = sink_bind_vertex_textures(eng_vtex_mask(), vtextures,
+                                                     vsamplers);
+ 
+@@ -3142,7 +3237,8 @@
+     /* The buffered fragment constants, then fp_alpha: the layout
+      * rsx_fp_decompile_buffered_ex compiled the shader against. */
+     const u32 nslots = g.fp_constants.count ? g.fp_constants.count : 1u;
+-    const u32 fp_bytes = (nslots + 1u) * 16u;
++    /* + fp_dbounds after fp_alpha for a depth-bounded draw. */
++    const u32 fp_bytes = (nslots + (s_dbz.unit ? 2u : 1u)) * 16u;
+     if (g.fp_cb_cap < fp_bytes) {
+         u8* n = (u8*)realloc(g.fp_cb, fp_bytes);
+         if (!n) return;
+@@ -3160,7 +3256,8 @@
+       const u32 win = rsx_dsp_reg(&g.rsx, 0x1D88);
+       alpha[1] = ((win >> 12) & 0xFu) ? (float)(win & 0xFFFu) : 0.0f;
+       alpha[2] = ((win >> 16) & 0xFu) ? -0.5f : 0.0f;
+-      alpha[3] = 0.0f; }
++      alpha[3] = 0.0f;
++      if (s_dbz.unit) { alpha[4] = s_dbz.mn; alpha[5] = s_dbz.mx; alpha[6] = alpha[7] = 0.0f; } }
+ 
+     pd_note(targets, n_targets, zslot, &rs, pipeline, tex_mask);
+ 
+@@ -3470,6 +3567,7 @@
+     }
+     for (u32 i = 0; i < g.n_zdepths; i++) {
+         if (g.zdepths[i].conv) g.be->texture_release(g.be->user, g.zdepths[i].conv);
++        if (g.zdepths[i].dbz_copy) g.be->texture_release(g.be->user, g.zdepths[i].dbz_copy);
+         if (g.zdepths[i].handle) g.be->depth_target_release(g.be->user, g.zdepths[i].handle);
+     }
+     if (g.ready && g.be->shutdown) g.be->shutdown(g.be->user);
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1757,6 +1757,44 @@
+     return 1;
+ }
+ 
++int rsx_fp_apply_depth_bounds(char* hlsl, u32 capacity, u32 unit)
++{
++    if (!hlsl || capacity == 0 || unit >= 16u) return -1;
++    const size_t len = strlen(hlsl);
++    if (len >= capacity || strstr(hlsl, "fp_dbounds")) return -1;
++    /* The units are declared one by one (Texture2D, TextureCube, Texture3D)
++     * or, when none is a cube or a volume, as one Texture2D array. */
++    char decl[64], name[24];
++    snprintf(decl, sizeof decl, "Texture2D   rsx_tex%u : register(t%u);\n", unit, unit);
++    if (strstr(hlsl, decl)) snprintf(name, sizeof name, "rsx_tex%u", unit);
++    else if (strstr(hlsl, "Texture2D    rsx_tex[16] : register(t0);\n"))
++        snprintf(name, sizeof name, "rsx_tex[%u]", unit);
++    else return -1;   /* a cube or volume slot */
++    static const char cb[] = "    float4 fp_alpha;\n";
++    static const char cb_add[] = "    float4 fp_dbounds;\n";
++    char* at_cb = strstr(hlsl, cb);
++    char* at_main = strstr(hlsl, " main(PSInput input)");
++    if (!at_cb || !at_main || at_cb > at_main) return -1;
++    char* body = strstr(at_main, "{\n");
++    if (!body) return -1;
++    body += 2;
++    char test[256];
++    const int tn = snprintf(test, sizeof test,
++        "    { const float _rsx_zs = %s.Load(int3(int2(input.position.xy), 0)).r;\n"
++        "      if (_rsx_zs < fp_dbounds.x || _rsx_zs > fp_dbounds.y) discard; }\n", name);
++    if (tn < 0 || (size_t)tn >= sizeof test) return -1;
++    const size_t add = (sizeof cb_add - 1) + (size_t)tn;
++    if (len + add + 1 > capacity) return -1;
++    const size_t a = (size_t)(at_cb - hlsl) + (sizeof cb - 1);   /* after fp_alpha's line */
++    const size_t b = (size_t)(body - hlsl);                      /* after main's brace    */
++    /* Shift the tail, then the middle, then write the two insertions. */
++    memmove(hlsl + b + add, hlsl + b, len - b + 1);
++    memmove(hlsl + a + (sizeof cb_add - 1), hlsl + a, b - a);
++    memcpy(hlsl + a, cb_add, sizeof cb_add - 1);
++    memcpy(hlsl + b + (sizeof cb_add - 1), test, (size_t)tn);
++    return 1;
++}
++
+ int rsx_fp_apply_alpha_test_buffered(
+     char* hlsl, u32 out_size, u32 func)
+ {
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -212,6 +212,18 @@
+ int rsx_fp_apply_alpha_test_buffered(
+     char* hlsl, u32 out_size, u32 func);
+ 
++/* The depth-bounds test (NV4097_SET_DEPTH_BOUNDS_TEST_ENABLE 0x0380, MIN
++ * 0x0384, MAX 0x0388) for a host API without one: the program first reads
++ * the depth STORED at its pixel from a float copy of the depth buffer bound
++ * on texture unit `unit` (one the program does not sample, declared
++ * Texture2D), and discards the fragment when it lies outside
++ * [fp_dbounds.x, fp_dbounds.y]. Adds `float4 fp_dbounds;` to PSConstants
++ * after fp_alpha, so the caller passes one more float4 there. For the
++ * buffered decompilers' HLSL, applied after the other wrappers. Returns 1,
++ * or -1 without mutation for an unexpected form, a cube or volume unit, a
++ * second application or insufficient capacity. */
++int rsx_fp_apply_depth_bounds(char* hlsl, u32 capacity, u32 unit);
++
+ /* Plan one 256-byte-aligned allocation in a fence-retired PS constant ring.
+  * Returns 1 when it fits, 0 when the caller must submit/wait/reset first, and
+  * -1 when one allocation can never fit. */
+diff --git a/libs/video/tests/test_metal_depth_bounds.m b/libs/video/tests/test_metal_depth_bounds.m
+new file mode 100644
+--- /dev/null
++++ b/libs/video/tests/test_metal_depth_bounds.m
+@@ -0,0 +1,139 @@
++/* The depth-bounds test through the real draw engine and the Metal backend,
++ * which has none of its own, on the GPU. No title data.
++ *
++ * A Z24S8 zeta gets depth 0.25 in its left half and 0.75 in its right half
++ * (red), then a full-screen green triangle is drawn with the depth test
++ * ALWAYS, no depth write and SET_DEPTH_BOUNDS_TEST_ENABLE on. The bounds
++ * look at the STORED depth, so:
++ *   - [0.5, 1.0]: only the right half turns green;
++ *   - [0.0, 0.5]: only the left half;
++ *   - [0.0, 1.0] (no bound) or the test off: both halves;
++ *   - PS3RECOMP_ENG_DEPTH_BOUNDS=0 (macos.yml's second run): both halves in
++ *     every case, as before the test was emulated.
++ *
++ * Built by CMake (build/test_metal_depth_bounds) only where glslang and
++ * spirv-cross were found, like test_metal_poly_offset.
++ */
++#include "rsx_metal_backend.m"
++#define eng_texture_upload test_engine_texture_upload
++#define eng_present test_engine_present
++#include "rsx_draw_engine.c"
++#undef eng_texture_upload
++#undef eng_present
++#include "rsx_test_programs.h"
++#include <math.h>
++
++u8* vm_base; u32 ppu_vm_size;
++u32 cellGcmResolveLocated(int local, u32 offset) { (void)local; return offset; }
++u32 cellGcmResolveIO(u32 offset) { return offset < ppu_vm_size ? offset : 0; }
++void cellGcm_replay_display_buffers_to_engine(void) {}
++float cellAvconfExt_display_gamma(void) { return 1.0f; }
++/* The backend's own (non-engine) draw path, which this test never takes. */
++u32 cellGcmResolveOffset(u32 offset) { return offset; }
++int cellGcmOffsetIsDisplay(u32 offset) { (void)offset; return 0; }
++void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
++{ (void)st; (void)idx; (void)vi; out[0] = out[1] = out[2] = 0.0f; out[3] = 1.0f; }
++
++static unsigned checks, failures;
++#define CHECK(x, ...) do { checks++; if (x) { printf("[PASS] " __VA_ARGS__); printf("\n"); } \
++                           else { failures++; printf("[FAIL] " __VA_ARGS__); printf("\n"); } } while (0)
++
++static void method(u32 a, u32 v) { rsx_draw_engine_method(a, v); }
++static void be_float(u8* p, float f) { u32 v; memcpy(&v, &f, 4); p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
++static u32 fbits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
++
++#define VB 0x10000u
++
++/* Two triangles over x in [x0, x1], the full height, at depth z. */
++static void rect(float x0, float x1, float z, float r, float gr, float b)
++{
++    const float c[4] = { r, gr, b, 1 };
++    const float p[6][2] = { {x0,-1}, {x1,-1}, {x0,1}, {x1,-1}, {x1,1}, {x0,1} };
++    for (u32 i = 0; i < 6; i++) {
++        const float v[12] = { p[i][0], p[i][1], z, 1, c[0], c[1], c[2], c[3], 0, 0, 0, 1 };
++        for (u32 k = 0; k < 12; k++) be_float(vm_base + VB + (i * 12 + k) * 4, v[k]);
++    }
++    method(0x1808, RSX_PRIMITIVE_TRIANGLES); method(0x1814, 5u << 24); method(0x1808, 0);
++}
++
++/* The green draw's result: bit 0 = left half green, bit 1 = right half. */
++static int bounded(int enable, float mn, float mx)
++{
++    if (rsx_draw_engine_init(64, 64) != 0) { CHECK(0, "engine init"); return -1; }
++    method(0x0194, 0xFEED0000);                 /* CONTEXT_DMA_COLOR_A: local */
++    method(0x0198, 0xFEED0000);                 /* CONTEXT_DMA_ZETA: local */
++    method(0x0210, 0x40000);                    /* COLOR_A_OFFSET */
++    method(0x020C, 64 * 4);                     /* COLOR_A_PITCH */
++    method(0x0214, 0x80000);                    /* ZETA_OFFSET */
++    method(0x022C, 64 * 4);                     /* ZETA_PITCH */
++    method(0x0200, 64u << 16);
++    method(0x0204, 64u << 16);
++    method(0x0208, 8u | (2u << 5) | (1u << 8)); /* A8R8G8B8, Z24S8, linear */
++    /* position, colour, texcoord: float32 x4, stride 48, in main memory */
++    method(0x1740, 2u | (4u << 4) | (48u << 8)); method(0x1680, 0x80000000u | VB);
++    method(0x1744, 2u | (4u << 4) | (48u << 8)); method(0x1684, 0x80000000u | (VB + 16));
++    method(0x1760, 2u | (4u << 4) | (48u << 8)); method(0x16A0, 0x80000000u | (VB + 32));
++    u8 vp[48];
++    rsx_test_vp_mov_out(vp, 0, RSX_TEST_VP_SWZ_IDENT, 0, 0);
++    rsx_test_vp_mov_out(vp + 16, 1, RSX_TEST_VP_SWZ_IDENT, 1, 0);
++    rsx_test_vp_mov_out(vp + 32, 8, RSX_TEST_VP_SWZ_IDENT, 7, 1);
++    method(0x1E9C, 0);
++    for (u32 i = 0; i < 12; i++) { u32 w; memcpy(&w, vp + i * 4, 4); method(0x0B80 + i * 4, w); }
++    method(0x1EA0, 0);
++    rsx_test_fp_mov_r0_col0(vm_base + 0x60000, RSX_TEST_FP_SWZ_IDENT);
++    method(0x08E4, 0x60002);
++    method(0x1D60, 64);
++    method(0x0A6C, 0x207);                      /* DEPTH_FUNC ALWAYS */
++    method(0x0A74, 1);                          /* DEPTH_TEST_ENABLE */
++    method(0x1D8C, 0xFFFFFF00u);                /* depth 1.0 */
++    method(0x1D94, 0xF3);                       /* clear colour, depth and stencil */
++    method(0x0A70, 1);                          /* DEPTH_MASK on: lay the depth down */
++    rect(-1.0f, 0.0f, 0.25f, 1, 0, 0);
++    rect( 0.0f, 1.0f, 0.75f, 1, 0, 0);
++    method(0x0A70, 0);                          /* DEPTH_MASK off */
++    method(0x0380, enable ? 1u : 0u);           /* DEPTH_BOUNDS_TEST_ENABLE */
++    method(0x0384, fbits(mn));
++    method(0x0388, fbits(mx));
++    rect(-1.0f, 1.0f, 0.5f, 0, 1, 0);
++
++    s_engine_backend.submit_and_wait(NULL, 0);
++    static u8 px[64 * 64 * 4];
++    memset(px, 0, sizeof px);
++    s_engine_backend.readback(NULL, g.surfaces[0].handle, 0, 0, 64, 64, px, 64 * 4);
++    const u8* l = px + (32 * 64 + 16) * 4;
++    const u8* r = px + (32 * 64 + 48) * 4;
++    rsx_draw_engine_shutdown();
++    const int lg = l[1] > 200 && l[0] < 50, rg = r[1] > 200 && r[0] < 50;
++    const int lr = l[0] > 200 && l[1] < 50, rr = r[0] > 200 && r[1] < 50;
++    CHECK((lg || lr) && (rg || rr), "both halves drawn (left %u,%u,%u right %u,%u,%u)",
++          l[0], l[1], l[2], r[0], r[1], r[2]);
++    return lg | (rg << 1);
++}
++
++int main(void)
++{
++    @autoreleasepool {
++        s_dev = MTLCreateSystemDefaultDevice();
++        if (!s_dev) { puts("no Metal device: skipped"); return 0; }
++        s_queue = [s_dev newCommandQueue];
++        s_headless = 1; s_guest_shaders = 1;
++        vm_base = calloc(1, 1u << 20); ppu_vm_size = 1u << 20;
++        rsx_draw_engine_set_backend(&s_engine_backend);
++
++        const char* e = getenv("PS3RECOMP_ENG_DEPTH_BOUNDS");
++        const int on = !(e && *e && atoi(e) == 0);
++        const int far_half  = bounded(1, 0.5f, 1.0f);
++        const int near_half = bounded(1, 0.0f, 0.5f);
++        const int unbound   = bounded(1, 0.0f, 1.0f);
++        const int off       = bounded(0, 0.5f, 1.0f);
++        CHECK(far_half == (on ? 2 : 3), "bounds [0.5, 1]: green halves 0x%X, want 0x%X", far_half, on ? 2 : 3);
++        CHECK(near_half == (on ? 1 : 3), "bounds [0, 0.5]: green halves 0x%X, want 0x%X", near_half, on ? 1 : 3);
++        CHECK(unbound == 3, "bounds [0, 1]: green halves 0x%X, want 0x3", unbound);
++        CHECK(off == 3, "test off: green halves 0x%X, want 0x3", off);
++
++        rsx_draw_engine_set_backend(NULL);
++        free(vm_base);
++    }
++    printf("%u checks, %u failed (depth bounds %s)\n", checks, failures, getenv("PS3RECOMP_ENG_DEPTH_BOUNDS") ? "off" : "on");
++    return failures ? 1 : 0;
++}
+diff --git a/libs/video/tests/test_shader_msl.c b/libs/video/tests/test_shader_msl.c
+--- a/libs/video/tests/test_shader_msl.c
++++ b/libs/video/tests/test_shader_msl.c
+@@ -725,6 +725,48 @@
+         }
+     }
+ 
++    /* ---- depth bounds (NV4097 0x0380), emulated in the program ----------
++     * The stored depth comes from a float copy on a unit the program does
++     * not sample (15 here); outside [fp_dbounds.x, fp_dbounds.y] the
++     * fragment is discarded before anything else runs. Single target behind
++     * the alpha-test wrapper, then the MRT form; a cube slot is refused. */
++    {
++        u8 fp[16];
++        rsx_test_fp_mov_r0_col0(fp, RSX_TEST_FP_SWZ_IDENT);
++        check_count("dbounds FP", rsx_fp_decompile_buffered_ex(fp, sizeof fp, 0x40u, 0, g_hlsl, sizeof g_hlsl, NULL), 1);
++        const int at = rsx_fp_apply_alpha_test_buffered(g_hlsl, sizeof g_hlsl, 0x204u /* GREATER */);
++        const int db = rsx_fp_apply_depth_bounds(g_hlsl, sizeof g_hlsl, 15);
++        const int again = rsx_fp_apply_depth_bounds(g_hlsl, sizeof g_hlsl, 15);   /* refuses twice */
++        if (at == 1 && db == 1 && again == -1) { printf("[PASS] dbounds FP patches\n"); g_pass++; }
++        else { printf("[FAIL] dbounds FP patches %d %d %d (want 1 1 -1)\n", at, db, again); g_fail++; }
++        check("dbounds FP HLSL", g_hlsl, "    float4 fp_alpha;\n    float4 fp_dbounds;\n};");
++        check("dbounds FP HLSL", g_hlsl, "rsx_tex[15].Load(int3(int2(input.position.xy), 0)).r");
++        check("dbounds FP HLSL", g_hlsl, "_rsx_zs > fp_dbounds.y) discard;");
++        if (translate("dbounds FP", RSX_SHADER_STAGE_FRAGMENT) == 0) {
++            check("dbounds FP MSL", g_msl, "discard_fragment()");
++            check("dbounds FP MSL", g_msl, "fp_dbounds");
++        }
++    }
++    {
++        u8 fp[32];
++        rsx_test_fp_mrt_col0(fp, RSX_TEST_FP_SWZ_IDENT, RSX_TEST_FP_SWZ(2, 1, 0, 3));
++        check_count("dbounds MRT FP", rsx_fp_decompile_buffered_ex(fp, sizeof fp, 0x40u, 0, g_hlsl, sizeof g_hlsl, NULL), 2);
++        if (rsx_fp_apply_depth_bounds(g_hlsl, sizeof g_hlsl, 12) == 1) { printf("[PASS] dbounds MRT FP patch\n"); g_pass++; }
++        else { printf("[FAIL] dbounds MRT FP patch\n"); g_fail++; }
++        check("dbounds MRT FP HLSL", g_hlsl, "PSOutput main(PSInput input) {\n    { const float _rsx_zs = rsx_tex[12].Load(");
++        if (translate("dbounds MRT FP", RSX_SHADER_STAGE_FRAGMENT) == 0)
++            check("dbounds MRT FP MSL", g_msl, "[[color(1)]]");
++        rsx_test_fp_mov_r0_col0(fp, RSX_TEST_FP_SWZ_IDENT);
++        rsx_fp_decompile_buffered_ex(fp, 16, 0x40u, 1u << 3 /* unit 3 a cube */, g_hlsl, sizeof g_hlsl, NULL);
++        if (rsx_fp_apply_depth_bounds(g_hlsl, sizeof g_hlsl, 3) == -1) { printf("[PASS] dbounds refuses a cube slot\n"); g_pass++; }
++        else { printf("[FAIL] dbounds took a cube slot\n"); g_fail++; }
++        if (rsx_fp_apply_depth_bounds(g_hlsl, sizeof g_hlsl, 15) == 1) { printf("[PASS] dbounds beside a cube\n"); g_pass++; }
++        else { printf("[FAIL] dbounds beside a cube\n"); g_fail++; }
++        check("dbounds cube FP HLSL", g_hlsl, "rsx_tex15.Load(int3(int2(input.position.xy), 0)).r");
++        if (translate("dbounds cube FP", RSX_SHADER_STAGE_FRAGMENT) == 0)
++            check("dbounds cube FP MSL", g_msl, "[[texture(15)]]");
++    }
++
+     test_cache();
+ 
+     printf("\n%d passed, %d failed\n", g_pass, g_fail);
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -578,6 +578,29 @@
+             # Only what the engine and the backend reach; the rest of the
+             # runtime is not linked in.
+             target_link_options(test_metal_poly_offset PRIVATE "-Wl,-dead_strip")
++
++            # The depth-bounds test, which Metal does not have, emulated in
++            # the fragment program; the same way.
++            add_executable(test_metal_depth_bounds
++                libs/video/tests/test_metal_depth_bounds.m
++                libs/video/rsx_shader_msl.cpp
++                libs/video/rsx_dispatch.c
++                libs/video/rsx_vertex_compact.c
++                libs/video/rsx_texture_layout.c
++                libs/video/rsx_vp_decompiler.c
++                libs/video/rsx_fp_decompiler.c
++            )
++            set_source_files_properties(
++                "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests/test_metal_depth_bounds.m"
++                PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
++            target_include_directories(test_metal_depth_bounds PRIVATE
++                "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
++                "${CMAKE_CURRENT_SOURCE_DIR}/include"
++            )
++            target_link_libraries(test_metal_depth_bounds PRIVATE
++                ps3recomp_msl_translation
++                "-framework Metal" "-framework QuartzCore" "-framework AppKit")
++            target_link_options(test_metal_depth_bounds PRIVATE "-Wl,-dead_strip")
+         endif()
+     endif()
+ 

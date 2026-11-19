@@ -1,0 +1,90 @@
+KZ2 patch 6084: sys_lwcond wait/signal on every host, not only Windows.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+The lwcond slot table, sys_lwcond_wait and lwcond_wake were inside #ifdef _WIN32.
+Off Windows the wait returned 0 at once without releasing the lwmutex and the
+signals did nothing. On the first native macOS boot, FIOS's media thread looped
+inside sys_lwcond_wait holding lwmutex 0x11095978. The other media thread and the
+scheduler blocked on that lwmutex, and the main thread polled forever for its
+first read (func_007ED4D0), so no frame was ever presented. The Windows code
+already only uses SRWLOCK, CreateSemaphoreA and ps3_evcv, all of which
+win32_compat.h / ps3_evcv.h provide on POSIX.
+
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -416,7 +416,9 @@
+ #define LWC_MUTEX  0x00
+ #define LWC_QUEUE  0x04
+ #define LWC_ID_BASE 0x4C000000u
+-#ifdef _WIN32
++/* KZ2 patch 6084: the lwcond slots, wait and wake are no longer Windows-only. Off Windows the wait returned 0 at
++ * once without dropping the lwmutex, so FIOS's media thread spun holding it and the boot never left its first read.
++ * Everything below uses win32_compat.h's POSIX SRWLOCK/semaphore and ps3_evcv's condition-variable fallback. */
+ #define LWC_SLOTS 8192u
+ /* KZ2 patch 6005: each waiter is a node in a per-lwcond FIFO (on the waiter's host stack) and is woken by name. The
+  * old shared counting semaphore let a thread that signal_all had woken, and that went straight back to waiting, take
+@@ -442,22 +444,16 @@
+     if (id <= LWC_ID_BASE || id - LWC_ID_BASE > LWC_SLOTS) return nullptr;
+     return &g_lwc[(id - LWC_ID_BASE - 1u) % LWC_SLOTS];
+ }
+-#endif
+ static void sys_lwcond_create(ppu_context* ctx)
+ {
+     uint32_t lwcond  = (uint32_t)ctx->gpr[3];
+     uint32_t lwmutex = (uint32_t)ctx->gpr[4];
+-#ifdef _WIN32
+     long n = _InterlockedIncrement(&g_lwc_next);
+     if ((uint32_t)n > LWC_SLOTS) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010005u; return; } /* EAGAIN */
+     struct LwcSlot* sl = &g_lwc[n - 1];
+     sl->waiters = 0; sl->head = sl->tail = nullptr;
+     if (!sl->sem) sl->sem = CreateSemaphoreA(NULL, 0, 0x7FFFFFFF, NULL);
+     uint32_t id = LWC_ID_BASE + (uint32_t)n;
+-#else
+-    static uint32_t s_lwcond_id = LWC_ID_BASE;
+-    uint32_t id = ++s_lwcond_id;
+-#endif
+     vm_write32(lwcond + LWC_MUTEX, lwmutex);
+     vm_write32(lwcond + LWC_QUEUE, id);
+     ctx->gpr[3] = 0;
+@@ -528,7 +524,6 @@
+ }
+ static void lwcond_wake(uint32_t lwcond, int all, uint32_t to_tid)
+ {
+-#ifdef _WIN32
+     struct LwcSlot* sl = lwc_slot(lwcond);
+     if (!sl || !sl->sem) return;
+     AcquireSRWLockExclusive(&sl->lock);
+@@ -544,15 +539,8 @@
+     }
+     ReleaseSRWLockExclusive(&sl->lock);
+     ps3_evcv_wake_all(&sl->cv);
+-#else
+-    (void)lwcond; (void)all; (void)to_tid;
+-#endif
+ }
+-#ifdef _WIN32
+ #define LWC_WAITERS(ea) (lwc_slot(ea) ? lwc_slot(ea)->waiters : -1L)
+-#else
+-#define LWC_WAITERS(ea) (-1L)
+-#endif
+ static void sys_lwcond_signal(ppu_context* ctx)     { lwc_trace("signal", (uint32_t)ctx->gpr[3], ctx, LWC_WAITERS((uint32_t)ctx->gpr[3]), 0);
+                                                       lwcond_wake((uint32_t)ctx->gpr[3], 0, 0); ctx->gpr[3] = 0; }
+ static void sys_lwcond_signal_all(ppu_context* ctx) { lwc_trace("signal_all", (uint32_t)ctx->gpr[3], ctx, LWC_WAITERS((uint32_t)ctx->gpr[3]), 0);
+@@ -567,7 +555,6 @@
+     uint32_t lwmutex = vm_read32(lwcond + LWC_MUTEX);
+     uint32_t result = 0;
+     lwc_trace("wait", lwcond, ctx, LWC_WAITERS(lwcond), (uint32_t)timeout_us);
+-#ifdef _WIN32
+     struct LwmSlot* ms = lwm_slot(lwmutex);
+     struct LwcSlot* sl = lwc_slot(lwcond);
+     if (ms && sl && sl->sem) {
+@@ -596,7 +583,6 @@
+         vm_write32(lwmutex + LWM_OWNER, own);
+         vm_write32(lwmutex + LWM_RECUR, rc ? rc : 1);
+     }
+-#endif
+     lwc_trace(result ? "timeout" : "woke", lwcond, ctx, LWC_WAITERS(lwcond), result);
+     ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)result;
+ }

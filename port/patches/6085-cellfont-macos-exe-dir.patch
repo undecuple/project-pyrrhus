@@ -1,0 +1,35 @@
+KZ2 patch 6085: cellFont finds <exe dir>/fonts on macOS.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+exe_dir() read /proc/self/exe off Windows. macOS has no /proc, so the fontset
+chain logged "dir none" and never loaded fonts/NotoSans-Regular.ttf or
+fonts/NotoSansCJK-Regular.ttc next to the executable. On Apple targets it now
+uses _NSGetExecutablePath plus realpath. Linux keeps /proc/self/exe.
+
+diff --git a/libs/font/cellFontOutline.c b/libs/font/cellFontOutline.c
+--- a/libs/font/cellFontOutline.c
++++ b/libs/font/cellFontOutline.c
+@@ -45,6 +45,10 @@
+ #  include <windows.h>
+ #else
+ #  include <unistd.h>
++#  include <limits.h>
++#  if defined(__APPLE__)
++#    include <mach-o/dyld.h>   /* _NSGetExecutablePath: macOS has no /proc (KZ2 patch 6085) */
++#  endif
+ #endif
+ 
+ /* The firmware's code (RPCS3 cellFont.h, read, not copied); cellFont.h's error table is not the firmware's. */
+@@ -256,6 +260,11 @@
+         p[n ? n - 1 : 0] = 0;
+         WideCharToMultiByte(CP_UTF8, 0, p, -1, out, (int)cap, NULL, NULL);
+     }
++#elif defined(__APPLE__)
++    char raw[PATH_MAX]; uint32_t sz = sizeof raw; char p[PATH_MAX];
++    if (_NSGetExecutablePath(raw, &sz) == 0 && realpath(raw, p)) {
++        char* s = strrchr(p, '/'); if (s) { *s = 0; snprintf(out, cap, "%s", p); }
++    }
+ #else
+     char p[1024]; ssize_t n = readlink("/proc/self/exe", p, sizeof p - 1);
+     if (n > 0) { p[n] = 0; char* s = strrchr(p, '/'); if (s) { *s = 0; snprintf(out, cap, "%s", p); } }

@@ -1,0 +1,91 @@
+KZ2 patch 7023: native macOS SPU portability.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+6083: audio and LFQueue use existing POSIX wrappers; cellPad loads SDL3's dylib.
+7023: exact SPU helpers keep the caller FPCR when no native RZ mode is supplied;
+lock profiling uses the ARM virtual counter on AArch64, TSC on x86, or a
+monotonic nanosecond clock elsewhere (diagnostic ticks, not CPU cycles).
+Host validation: native synthetic boot and full patch-series application;
+see docs/BUILDING.md. No game run performed.
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -281,3 +281,3 @@
+ {
+-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS)
++#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS) && defined(SPU_FPCR_RZFZ)
+     static int s_on = -1;
+@@ -301,3 +301,3 @@
+ {
+-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS)
++#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS) && defined(SPU_FPCR_RZFZ)
+     if (outer != ~0ull) __asm__ volatile("msr fpcr, %0" :: "r"(outer));
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -190,2 +190,16 @@
+ #endif
++static unsigned long long ll_prof_ticks(void)
++{
++#if defined(__i386__) || defined(__x86_64__)
++    return __builtin_ia32_rdtsc();
++#elif defined(__aarch64__)
++    uint64_t value;
++    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(value));
++    return value;
++#else
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
++#endif
++}
+ static void ll_prof_print(void)
+@@ -226,3 +240,3 @@
+     }
+-    const unsigned long long t0 = __builtin_ia32_rdtsc();
++    const unsigned long long t0 = ll_prof_ticks();
+     unsigned cont = 0;
+@@ -236,3 +250,3 @@
+     }
+-    const unsigned long long t1 = __builtin_ia32_rdtsc();
++    const unsigned long long t1 = ll_prof_ticks();
+     const int i = ll_prof_slot(site);
+@@ -253,3 +267,3 @@
+         const int i = ll_prof_slot(tl_llp_site);
+-        if (i >= 0) __atomic_fetch_add(&s_llp[i].hold, __builtin_ia32_rdtsc() - tl_llp_t, __ATOMIC_RELAXED);
++        if (i >= 0) __atomic_fetch_add(&s_llp[i].hold, ll_prof_ticks() - tl_llp_t, __ATOMIC_RELAXED);
+         tl_llp_site = NULL;
+@@ -300,3 +314,3 @@
+             if (s == 0xFFFFFFFFu) {
+-                const unsigned long long p0 = ll_prof_on() ? __builtin_ia32_rdtsc() : 0;   /* KZ2 patch 7010 */
++                const unsigned long long p0 = ll_prof_on() ? ll_prof_ticks() : 0;   /* KZ2 patch 7010 */
+                 LL_PAUSE();
+@@ -304,3 +318,3 @@
+                     __atomic_fetch_add(&s_llp_gspin, 1, __ATOMIC_RELAXED);
+-                    __atomic_fetch_add(&s_llp_gspin_t, __builtin_ia32_rdtsc() - p0, __ATOMIC_RELAXED);
++                    __atomic_fetch_add(&s_llp_gspin_t, ll_prof_ticks() - p0, __ATOMIC_RELAXED);
+                 }
+diff --git a/runtime/spu/spu_async_pool.h b/runtime/spu/spu_async_pool.h
+--- a/runtime/spu/spu_async_pool.h
++++ b/runtime/spu/spu_async_pool.h
+@@ -59,3 +59,5 @@
+     pthread_condattr_init(&a);
++#ifndef __APPLE__
+     pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
++#endif
+     pthread_cond_init(c, &a);
+@@ -67,2 +69,8 @@
+ {
++#ifdef __APPLE__
++    /* Darwin has no pthread_condattr_setclock; its relative wait is immune
++     * to wall-clock changes and uses a duration rather than an absolute date. */
++    struct timespec duration = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
++    return pthread_cond_timedwait_relative_np(c, l, &duration) == ETIMEDOUT;
++#else
+     struct timespec ts;
+@@ -73,2 +81,3 @@
+     return pthread_cond_timedwait(c, l, &ts) == ETIMEDOUT;
++#endif
+ }

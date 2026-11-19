@@ -1,0 +1,36 @@
+KZ2 patch 6086: SPU fma/fms/fnms flush-to-zero on hosts without SSE4.1 (ARM64).
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+Patch 1040's rule (a result that would be a float subnormal becomes +-0 with the
+IEEE result's sign, while g_kz3_spu_slowcg == 0) lived only in the SSE4.1 paths.
+The scalar loops ARM64 builds run returned the subnormal instead. A comparison of
+all 150 public helpers, SSE4.1 build (x86_64) against the scalar build (arm64), on
+deterministic subnormal/NaN/Inf-heavy inputs found exactly these three helpers
+differing; with this patch every helper matches bit for bit (1,500,000 cases).
+Host test: tools/runtime/test_spu_helpers_sse_vs_scalar.py.
+
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -1177,9 +1177,17 @@
+ SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__fma4(a, b, c, 0, 1); }
+ SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__fma4(a, b, c, 1, 0); }
+ #else
+-SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); return r; }
+-SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], -c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); return r; }
+-SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], -b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); return r; }
++/* KZ2 patch 6086: the 1040 flush-to-zero on hosts without SSE4.1 (ARM64). The x86 paths above end in it
++ * (spu__fma4_ref: a result that would be a float subnormal is +-0 with the sign of the IEEE result, while
++ * g_kz3_spu_slowcg == 0, the default), but these loops returned the subnormal, so the same lifted SPU code gave
++ * different bits on ARM64 (1 in 4 vectors of a subnormal-heavy random test). Same rule, same order (after the
++ * 1071 exponent-255 lanes), so fma/fms/fnms match the x86 build bit for bit. */
++extern int g_kz3_spu_slowcg;
++#define SPU__FMA_FTZ(r) do { if (g_kz3_spu_slowcg == 0) for (int i_ = 0; i_ < 4; i_++) \
++        if ((r)._f32[i_] != 0.0f && __builtin_fabsf((r)._f32[i_]) < 0x1p-126f) (r)._u32[i_] &= 0x80000000u; } while (0)
++SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); SPU__FMA_FTZ(r); return r; }
++SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], b._f32[i], -c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); SPU__FMA_FTZ(r); return r; }
++SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=spu__fmaf(a._f32[i], -b._f32[i], c._f32[i]); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); SPU__FMA_FTZ(r); return r; }
+ #endif
+ /* patch 1079: forced inline; an exponent-255 operand lane is recomputed in spu__xr_fix (a twice = no result term) */
+ #if defined(__SSE2__)

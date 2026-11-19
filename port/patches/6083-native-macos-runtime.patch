@@ -1,0 +1,94 @@
+KZ2 patch 6083: native macOS runtime portability.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+6083: audio and LFQueue use existing POSIX wrappers; cellPad loads SDL3's dylib.
+7023: exact SPU helpers keep the caller FPCR when no native RZ mode is supplied;
+lock profiling uses the ARM virtual counter on AArch64, TSC on x86, or a
+monotonic nanosecond clock elsewhere (diagnostic ticks, not CPU cycles).
+Host validation: native synthetic boot and full patch-series application;
+see docs/BUILDING.md. No game run performed.
+
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -16,2 +16,3 @@
+ #include "cellAudio.h"
++#include "../../runtime/platform/win32_compat.h" /* QPC diagnostics on POSIX too */
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_read64, vm_write32 */
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -958,5 +958,12 @@
+ #else
+-        void* m = dlopen("libSDL3.so.0", RTLD_NOW | RTLD_LOCAL);
++        #if defined(__APPLE__)
++# ifndef PS3RECOMP_SDL3_LIBRARY
++#  define PS3RECOMP_SDL3_LIBRARY "libSDL3.0.dylib"
++# endif
++        const char* lib = PS3RECOMP_SDL3_LIBRARY;
++#else
++        const char* lib = "libSDL3.so.0";
++#endif
++        void* m = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+         #define PAD_SDL_SYM(n) (void (*)(void))dlsym(m, n)
+-        const char* lib = "libSDL3.so.0";
+ #endif
+@@ -1159,2 +1166,13 @@
+ }
++
++#ifndef _WIN32
++/* Keyboard remapping currently relies on the Windows key-capture backend.
++ * Report that limitation to the menu instead of leaving an unresolved symbol. */
++int pad_kb_ui_cmd(const char* cmd, char* out, size_t n)
++{
++    (void)cmd;
++    if (out && n) snprintf(out, n, "Keyboard remapping is unavailable on this platform; use a gamepad.");
++    return 0;
++}
++#endif
+ 
+diff --git a/libs/spurs/cellSpursLFQueue.c b/libs/spurs/cellSpursLFQueue.c
+--- a/libs/spurs/cellSpursLFQueue.c
++++ b/libs/spurs/cellSpursLFQueue.c
+@@ -33,3 +33,3 @@
+ #include <string.h>
+-#include <windows.h>
++#include "../../runtime/platform/win32_compat.h"
+ 
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -15,2 +15,3 @@
+ #include "lv2_syscall_table.h"
++#include "../platform/ps3_evcv.h" /* SPU port-binding wait is cross-platform */
+ #include "lv2_lock_line.h"
+diff --git a/runtime/syscalls/sys_event.c b/runtime/syscalls/sys_event.c
+--- a/runtime/syscalls/sys_event.c
++++ b/runtime/syscalls/sys_event.c
+@@ -336,3 +336,5 @@
+ {
++#ifdef _WIN32
+     static volatile LONG started = 0;
++#endif
+     s_sd_r[0] = r28; s_sd_r[1] = r29; s_sd_r[2] = r30; s_sd_r[3] = r31;
+@@ -342,4 +344,2 @@
+     if (!InterlockedExchange(&started, 1)) CreateThread(NULL, 0, kz3_semdump_thread, NULL, 0, NULL);
+-#else
+-    (void)started;
+ #endif
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2028,4 +2028,11 @@
+ /* The jm wait-loop classifier lives in the port (port/spu/kz3_fiber_stall.c); weak so the runtime links without it. */
++#ifdef __APPLE__
++/* Mach-O executables need definitions for optional port diagnostics. Strong
++ * port definitions can override these empty weak defaults. */
++__attribute__((weak)) int kz3_jm_pc_class(uint32_t pc) { (void)pc; return 0; }
++__attribute__((weak)) const char* kz3_jm_pc_class_name(int cls) { (void)cls; return ""; }
++#else
+ extern int kz3_jm_pc_class(uint32_t pc) __attribute__((weak));
+ extern const char* kz3_jm_pc_class_name(int cls) __attribute__((weak));
++#endif
+ static void kz3_spurs_report_stuck_run(int j, int kt, u32 rw, u64 d, const char* tag)

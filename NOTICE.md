@@ -13,6 +13,13 @@ where there is one). The port's own code is MIT ([LICENSE](LICENSE)).
 
 ## Absorbed upstream PRs (ps3recomp pull requests by other authors)
 
+Patch 3009 and `tools/runtime/test_sync_mutex_semantics.py` / `test_cellsync_mutex.c` are adapted from
+[ps3recomp PR #621](https://github.com/sp00nznet/ps3recomp/pull/621) by **Max Leiter**, commit
+`5d3494a95a038e295cfa2aaf245d3f55cb2549bc`, found in the local `ps3recomp-up-r10` checkout.
+Only the lwmutex attribute / busy-error and cellSyncMutex alignment changes are used, together with the focused
+tests, adapted for this port's striped coherence locks. MIT, Copyright (c) 2026 Ned Heller / sp00nznet and
+contributors; licence text: [licenses/ps3recomp-LICENSE.txt](licenses/ps3recomp-LICENSE.txt).
+
 Code or logic from these pull requests is used in our patches or, where they were merged, comes in with ps3recomp
 itself. One row per author: the pull requests first, our patch numbers (`port/patches/`) in brackets. All are MIT, as
 ps3recomp.
@@ -34,6 +41,18 @@ ps3recomp.
 
 ## Other ports' patches
 
+The native macOS main-run-loop/guest-worker design in `port/kz2/kz2_macos_host.cpp` and the resource guards in
+`tools/build-kz2-macos.py` are informed by Erik Martins's MIT
+[Afro Samurai port](https://github.com/erikomis/afro-samurai-recomp), `port/main.cpp` and `tools/build.sh`
+(the latter adapted there from PES 2013). They are newly implemented here; no lifted code was imported.
+Copyright and licence: [licenses/afro-samurai-recomp-LICENSE.txt](licenses/afro-samurai-recomp-LICENSE.txt).
+
+The Metal lighting patches take their rules from Erik Martins's MIT work:
+- 2162 (depth-bounds emulation) and 2163 (depth clamp) are his ps3recomp commits `59d1533b` and `53650c7d`;
+- 2164 (stale depth snapshot, sampler table) and 2165 (ZPASS occlusion counts) follow his Resistance 3 macOS port.
+
+The per-commit visibility buffer and the report path that never waits for the GPU are new in 2165.
+
 | Project | Author | Source | Licence | What was used |
 |---|---|---|---|---|
 | Project Helghast (the Killzone 3 PC port) | undecuple (the same author as this project) | [undecuple/project-helghast](https://github.com/undecuple/project-helghast) | MIT (Copyright (c) 2026 undecuple) | the runtime, SPU, RSX/D3D12 and pad patches 0001-5004 in `port/patches/` (headers carry "From KZ3 <commit>"), the split disc archive reader in patch 6034 and its test, the fail-closed GPU fence wait in patch 2157 (from KZ3 2157), the texture-unit and vertex-input reuse counters in patches 2158 and 2160 (from KZ3 2158 and 2160; off by default), the setup's on-screen stop reasons and the EBOOT page's version check (from Project Helghast PR #11), the per-input failure reasons and the setup's dump and update page messages (from Project Helghast PR #14), the first-run folder hints limited to Killzone 2's title id (from Project Helghast PR #17), the published-release check (`release_check.py` and its workflow), the disk cache stamp in patch 6035 (`port/kz2/kz2_fios_stamp.h`) and the window icon in patch 2123, the cellFont outline API in patch 6061 (from its patch 5005), the DSU (cemuhook) motion client in patch 6062 (from its patch 4028), the SPU switches in patches 7017-7020 (from its patches 1151, 1152, 1153 and 1155), the RSX command walker switches in patches 6063-6066 (from its patches 2147-2150), the renderer fixes in patches 6053-6057 (from Project Helghast's 2100, 2103 and 2127, 2133, 2119 and 9633), the per-tick message pump in `port/kz2/main.cpp`, the failed-link undo rule and the junction error 1392 wording in `tools/release/launch.py`, the ini decode order in `tools/release/install_ini.py`, the wider RPCS3 search and the user-folder redaction in `tools/release/rpcs3_locate.py` and `firstrun.py` (and their test `test_rpcs3_locate.py`), and the link-free install design (`cache_root_supported` / `link_free` in `launch.py` and `firstrun.py`; adopted, inactive until the runtime reads its cache-folder setting), native mouse look (Raw Input counts, the pointer clip, the sensitivity model; patch 6046 and `port/kz2/kz2_ppu_overrides.cpp`, from Project Helghast's patches 2069, 2097, 2099 and 2123), the lift/build/installer tooling (including the ISO 9660 reader `tools/release/iso9660.py`), the art and website generators and the AGENTS.md guide, adapted for Killzone 2, and the byte-validated shader-program memo design extended in patch 6071 (from its patch 2029), and the log-gated play controller and host tests adapted from its `tools/gameplay/play.py` |
@@ -42,13 +61,25 @@ ps3recomp.
 
 ## Libraries
 
+The experimental native Mac developer build additionally uses locally installed libraries (not bundled by these changes):
+
+| Library | Author / source | Licence | Use |
+|---|---|---|---|
+| SDL2 | SDL contributors, <https://libsdl.org/> | zlib ([text](licenses/SDL2-LICENSE.txt)) | native audio through the existing toolkit backend |
+| glslang | Khronos and contributors, <https://github.com/KhronosGroup/glslang> | BSD/MIT/Apache terms by component ([complete text](licenses/glslang-LICENSE.txt)) | existing HLSL-to-SPIR-V shader translator |
+| SPIRV-Tools | Khronos and contributors, <https://github.com/KhronosGroup/SPIRV-Tools> | Apache-2.0 ([text](licenses/SPIRV-Tools-LICENSE.txt)) | SPIR-V processing used by the native shader toolchain |
+| SPIRV-Cross | Khronos and contributors, <https://github.com/KhronosGroup/SPIRV-Cross> | Apache-2.0 and component terms ([text](licenses/SPIRV-Cross-LICENSE.txt)) | existing SPIR-V-to-MSL shader translator, linked statically by the toolkit |
+
+SDL3 also supplies native gamepads via its installed dylib; its existing zlib licence entry below applies.
+Apple's Metal, QuartzCore, Foundation, CoreFoundation and AppKit frameworks are supplied by macOS/Xcode and are not bundled.
+
 | Library | Author | Source | Licence | What was used |
 |---|---|---|---|---|
 | SDL3 | Sam Lantinga and the SDL contributors | <https://libsdl.org/> | zlib ([licenses/SDL3-LICENSE.txt](licenses/SDL3-LICENSE.txt)) | gamepads (DualShock 4, DualSense, Switch Pro, Xbox) and rumble: `SDL3.dll` is shipped unmodified next to the game's exe (an unmodified mingw-w64 build of SDL 3.4.x) |
 | zlib 1.3.2 | Jean-loup Gailly and Mark Adler | <https://zlib.net/> (mingw-w64 build from nixpkgs) | zlib ([licenses/zlib-LICENSE.txt](licenses/zlib-LICENSE.txt)) | linked statically into the game's exe when the build's compiler setup has zlib (our own Linux build): it decompresses the game's zlib-compressed data on the PC instead of the emulated SPU job (`port/kz2/kz2_edge_zlib.c`); the installer's first-run build has no zlib and uses the runtime's stb_image decoder for the same job |
 | llvm-mingw (clang, lld, LLVM, MinGW-w64, winpthreads), CMake, Ninja, Python (embeddable) | the respective projects | pinned with SHA-256 in `tools/release/toolchain.json` | Apache-2.0 with LLVM exception, ZPL-2.1, MIT/BSD-3-Clause, ISC, BSD-3-Clause, Apache-2.0, PSF-2.0 | the build tools the installer downloads on the player's machine for the first-run build; their licence texts are fetched with them and shipped under `licenses\<component>\` |
 | ATRAC3 / ATRAC3+ decoder (`third_party/at3_standalone` in ps3recomp) | FFmpeg: Maxim Poliakovski, Benjamin Larsson, Fabrice Bellard, Michael Niedermayer, Loren Merritt and the FFmpeg developers; extracted as a standalone decoder by the PPSSPP project | <https://ffmpeg.org/> by way of [PPSSPP](https://github.com/hrydgard/ppsspp) `ext/at3_standalone`, commit ebc151f | LGPL-2.1-or-later ([licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt)) | decoding of the game's ATRAC3/ATRAC3+ audio. Built unmodified as `at3_standalone.dll` beside `kz2.exe`, which links it dynamically; replaceable by a rebuilt copy; its source is the unmodified directory in ps3recomp (`third_party/ps3recomp/third_party/at3_standalone`); the rest of the port stays MIT |
-| FFmpeg libavcodec and libavutil (`avcodec-63.dll`, `avutil-61.dll`, and their headers in `ffmpeg/include`) | the FFmpeg developers | <https://ffmpeg.org/>, version 9.0.1 (git tag n9.0.1); the exact source and build options ship as `licenses/FFmpeg-SOURCE.txt` and `licenses/FFmpeg-LICENSE-build.txt`, with the licence text as `licenses/FFmpeg-COPYING.LGPLv2.1.txt` | LGPL-2.1-or-later ([text](licenses/LGPL-2.1.txt)) | decoding of the game's H.264 movies and AC3 surround audio. Built unmodified, LGPL-only (no GPL or non-free parts, H.264, MPEG-2 and AC3 decoders only), and loaded at run time from separate DLLs beside `kz2.exe`, so they can be replaced by a rebuilt copy. The release also ships FFmpeg's unmodified libavcodec and libavutil headers from the same build (`ffmpeg/include`): the first run compiles the port's run-time loader against them; the rest of the port stays MIT |
+| FFmpeg libavcodec and libavutil (`avcodec-63.dll`, `avutil-61.dll`, and their headers in `ffmpeg/include`) | the FFmpeg developers | <https://ffmpeg.org/>, version 9.0.1 (git tag n9.0.1); the exact source and build options ship as `licenses/FFmpeg-SOURCE.txt` and `licenses/FFmpeg-LICENSE-build.txt`, with the licence text as `licenses/FFmpeg-COPYING.LGPLv2.1.txt` | LGPL-2.1-or-later ([text](licenses/LGPL-2.1.txt)) | decoding of the game's H.264 movies and AC3 surround audio. Built unmodified, LGPL-only (no GPL or non-free parts, H.264, MPEG-2 and AC3 decoders only), and loaded at run time from separate DLLs beside `kz2.exe`, so they can be replaced by a rebuilt copy. The release also ships FFmpeg's unmodified libavcodec and libavutil headers from the same build (`ffmpeg/include`): the first run compiles the port's run-time loader against them; the rest of the port stays MIT. The experimental macOS developer build makes the same LGPL-only configuration as `libavcodec.63.dylib` and `libavutil.61.dylib` with `tools/runtime/ffmpeg-lgpl-macos.sh` (not distributed; it records the source and build options in `share/ffmpeg-lgpl/`) |
 | Mesa/nouveau `nv40_3d.xml.h` (RSXGL's copy) | Mesa and nouveau contributors; RSXGL: Alexander Betts | <https://gitlab.freedesktop.org/mesa/mesa> | MIT/X11 | the COLOR_MASK byte layout, read as a fact for a comment in patch 2031; no code is copied |
 | AMD FidelityFX Super Resolution 1 (FSR 1) shader headers `ffx_a.h`, `ffx_fsr1.h` (unmodified) | Advanced Micro Devices, Inc.; `ffx_a.h` also carries an MIT notice by Michal Drobot (2014) | <https://github.com/GPUOpen-Effects/FidelityFX-FSR>, commit a21ffb8f | MIT ([licenses/FidelityFX-FSR1-LICENSE.txt](licenses/FidelityFX-FSR1-LICENSE.txt), [licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt](licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt)) | the optional FSR 1 upscaler (Options > Display > Upscaling), compiled into the renderer; brought in through the Killzone 3 port's patch 2145 (Project Helghast, same author), our patch 6051 |
 

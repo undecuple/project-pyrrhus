@@ -11,6 +11,9 @@ covers nothing of Killzone 2 itself.
 
 ## Names and branding
 
+For the local cross-project synchronization backport and its validation, see [REUSE-AUDIT.md](REUSE-AUDIT.md).
+Its source credit must travel with the patch and tests.
+
 "Project Pyrrhus" is this fan project's name. Use your own name for a fork, and say it is unofficial and not affiliated
 with Sony Interactive Entertainment or Guerrilla Games, as the README does. Where the name lives:
 
