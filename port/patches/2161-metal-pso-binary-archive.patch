@@ -1,0 +1,227 @@
+KZ2 patch 2161: the Metal backend creates pipeline states through one MTLBinaryArchive.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+A pipeline's first build pays the Metal compiler -- the MTLCompiler service
+round-trip -- on the thread that is drawing. On the Mac route that thread is the
+FIFO walker, and the first-seen pipelines of a level load stalled it for up to
+32 s at a time (the walker sampler spent 43 s of one 120 s window inside
+newRenderPipelineStateWithDescriptor; the ftrace of the same window shows an
+otherwise idle machine -- GPU waits total 6.5 s, no readbacks over 13 ms). The
+attribution to depth readbacks waited for the GPU does not survive that
+measurement: the stall is the walker itself compiling. Metal's own per-app
+cache cannot serve the sandboxed runner, whose writable world is one folder,
+so every run started cold.
+
+PS3RECOMP_METAL_PSO_ARCHIVE=<file> opens one archive for the process. Every
+pipeline state now goes through eng_new_pipeline(): the archive-attached create
+with MTLPipelineOptionFailOnBinaryArchiveMiss is the hit probe (a hit compiles
+nothing), a miss builds exactly the way today's code does, and a successful
+build's functions are recorded in the archive for the next run, serialized
+every 16 recordings and at backend shutdown. An archive that fails to load
+(another GPU, another OS, corrupt bytes) is deleted and started over; a
+descriptor the archive cannot hold is built the plain way and not recorded.
+Unset, or =0, keeps the plain build of today. The port defaults the file beside
+the game's other writes; the flow is pinned by tools/runtime/test_metal_pso_archive.py.
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -109,6 +109,115 @@
+ static u32                 s_host_w, s_host_h, s_host_gen;
+ static dispatch_source_t   s_host_watch;          /* the launcher's exit */
+ 
++/* PS3RECOMP_METAL_PSO_ARCHIVE=<file> (KZ2 patch 2161): every pipeline state this backend
++ * creates goes through one MTLBinaryArchive. A pipeline's first build pays the Metal
++ * compiler -- the MTLCompiler service round-trip -- on the thread that is drawing: the
++ * first-seen pipelines of a level load stalled the FIFO walker for up to 32 s at a time
++ * (the walker sampler spent 43 s of a 120 s window inside newRenderPipelineStateWithDescriptor).
++ * The archive stores the compiled functions on disk, and every run after the first creates
++ * them without the compiler -- Metal's own per-app cache cannot serve a sandboxed runner
++ * whose writable world is one folder. An archive that fails to load (another GPU, another
++ * OS, corrupt bytes) is deleted and started over; a descriptor the archive cannot hold is
++ * built the plain way and simply not recorded. PS3RECOMP_METAL_PSO_ARCHIVE=0 keeps the
++ * plain build of today. */
++static id<MTLBinaryArchive> s_pso_archive;
++static NSURL*               s_pso_archive_url;
++static dispatch_semaphore_t s_pso_archive_lock;    /* add / serialize, against shutdown */
++static unsigned            s_pso_archive_new;      /* functions added since the last write */
++static unsigned            s_pso_archive_added;   /* functions added since backend init */
++static int                 s_pso_archive_writes;
++
++static void eng_pso_archive_init(void)
++{
++    const char* e = getenv("PS3RECOMP_METAL_PSO_ARCHIVE");
++    if (!e || !*e || (*e == '0' && !e[1])) return;
++    NSError* err = nil;
++    MTLBinaryArchiveDescriptor* d = [MTLBinaryArchiveDescriptor new];
++    s_pso_archive_url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:e]];
++    d.url = s_pso_archive_url;
++    s_pso_archive = [s_dev newBinaryArchiveWithDescriptor:d error:&err];
++    int fresh = 0;
++    if (!s_pso_archive) {
++        /* Not there yet, unreadable, or from another GPU/OS: delete it, so the next
++         * serialize starts the file over instead of growing a dead one. */
++        [[NSFileManager defaultManager] removeItemAtURL:s_pso_archive_url error:NULL];
++        d.url = nil;
++        s_pso_archive = [s_dev newBinaryArchiveWithDescriptor:d error:NULL];
++        if (!s_pso_archive) {   /* MTLBinaryArchive unsupported here: run without it */
++            s_pso_archive_url = nil;
++            fprintf(stderr, "[pso-archive] '%s' cannot be opened and an empty archive cannot be created\n", e);
++            return;
++        }
++        fresh = 1;
++    }
++    s_pso_archive_lock = dispatch_semaphore_create(1);
++    s_pso_archive_new = s_pso_archive_added = 0;
++    s_pso_archive_writes = 0;
++    fprintf(stderr, "[pso-archive] %s'%s'\n", fresh ? "starting " : "loaded ", e);
++}
++
++/* Serialize what the archive has gathered. Under the lock: shutdown may be waiting. */
++static void eng_pso_archive_write(const char* why)
++{
++    if (!s_pso_archive || !s_pso_archive_url) return;
++    if (!s_pso_archive_new && s_pso_archive_writes) return;
++    NSError* err = nil;
++    if ([s_pso_archive serializeToURL:s_pso_archive_url error:&err]) {
++        s_pso_archive_new = 0;
++        s_pso_archive_writes++;
++        fprintf(stderr, "[pso-archive] %u pipeline function set(s) written (%s)\n",
++                s_pso_archive_added, why);
++    } else {
++        static int n = 0;
++        if (PS3_LOG_FIRST(n, 3))
++            fprintf(stderr, "[pso-archive] write failed (%s): %s\n", why,
++                    err ? [[err localizedDescription] UTF8String] : "?");
++    }
++}
++
++static void eng_pso_archive_shutdown(void)
++{
++    if (!s_pso_archive) return;
++    dispatch_semaphore_wait(s_pso_archive_lock, DISPATCH_TIME_FOREVER);
++    eng_pso_archive_write("shutdown");
++    s_pso_archive = nil;   /* a later build takes the plain path */
++    s_pso_archive_url = nil;
++    dispatch_semaphore_signal(s_pso_archive_lock);
++}
++
++/* Create the pipeline state for `pd`, through the archive when one is open; `pd` is not
++ * kept. The archive-attached create with MTLPipelineOptionFailOnBinaryArchiveMiss is the
++ * hit probe: on a hit no compiler runs at all, and on a miss the plain build below is
++ * exactly today's path, so a descriptor Metal cannot serve from the archive costs what it
++ * costs now and the draw is never dropped for the archive's sake. A successful plain build
++ * is then recorded in the archive for the next run -- the in-process compiler cache makes
++ * that second compilation cheap, and every 16 recordings the file is written back. */
++static id<MTLRenderPipelineState> eng_new_pipeline(MTLRenderPipelineDescriptor* pd, NSError** err)
++{
++    if (!s_dev) return nil;
++    id<MTLBinaryArchive> arch = s_pso_archive;
++    if (!arch) return [s_dev newRenderPipelineStateWithDescriptor:pd error:err];
++    pd.binaryArchives = @[arch];
++    id<MTLRenderPipelineState> pso =
++        [s_dev newRenderPipelineStateWithDescriptor:pd
++                                             options:MTLPipelineOptionFailOnBinaryArchiveMiss
++                                          reflection:NULL error:NULL];
++    if (pso) { pd.binaryArchives = nil; return pso; }   /* archive hit */
++    pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:err];
++    pd.binaryArchives = nil;
++    if (!pso) return nil;   /* the caller logs *err and drops the draw as before */
++    dispatch_semaphore_wait(s_pso_archive_lock, DISPATCH_TIME_FOREVER);
++    if (s_pso_archive) {
++        if ([s_pso_archive addRenderPipelineFunctionsWithDescriptor:pd error:NULL]) {
++            s_pso_archive_new++;
++            s_pso_archive_added++;
++            if (s_pso_archive_new >= 16) eng_pso_archive_write("every 16");
++        }
++    }
++    dispatch_semaphore_signal(s_pso_archive_lock);
++    return pso;
++}
++
+ /* Each initialization owns its counters. A drawable callback retained by the
+  * compositor can outlive shutdown without writing into a later session. */
+ #if !TARGET_OS_IPHONE
+@@ -2206,8 +2315,7 @@
+     }
+ 
+     NSError* err = nil;
+-    id<MTLRenderPipelineState> pso =
+-        [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++    id<MTLRenderPipelineState> pso = eng_new_pipeline(pd, &err);
+     if (!pso) {
+         fprintf(stderr, "[RSX metal] pipeline state failed (vs %d, fs %d): %s\n",
+                 d->vs_idx, d->fs_idx, [[err localizedDescription] UTF8String]);
+@@ -3224,7 +3332,7 @@
+         pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:@"eng_depth_fs"];
+         pd.colorAttachments[0].pixelFormat = MTLPixelFormatR32Float;
+         NSError* err = nil;
+-        s_eng_depth_pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++        s_eng_depth_pso = eng_new_pipeline(pd, &err);
+         if (!s_eng_depth_pso) {
+             fprintf(stderr, "[rsx engine/metal] depth resolve pipeline failed: %s\n",
+                     [[err localizedDescription] UTF8String]);
+@@ -3265,7 +3373,7 @@
+         pd.vertexFunction   = [lib newFunctionWithName:@"eng_depth_color_vs"];
+         pd.fragmentFunction = [lib newFunctionWithName:k ? @"eng_depth_d16_fs" : @"eng_depth_argb_fs"];
+         pd.colorAttachments[0].pixelFormat = formats[k];
+-        if (lib) s_eng_depth_color_pso[k] = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++        if (lib) s_eng_depth_color_pso[k] = eng_new_pipeline(pd, &err);
+         if (!s_eng_depth_color_pso[k]) {
+             fprintf(stderr, "[rsx engine/metal] depth-as-colour pipeline failed: %s\n",
+                     [[err localizedDescription] UTF8String]);
+@@ -3409,8 +3517,7 @@
+     }
+ 
+     NSError* err = nil;
+-    id<MTLRenderPipelineState> pso =
+-        [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++    id<MTLRenderPipelineState> pso = eng_new_pipeline(pd, &err);
+     if (!pso) {
+         fprintf(stderr, "[rsx engine/metal] pipeline state failed: %s\n",
+                 [[err localizedDescription] UTF8String]);
+@@ -3825,7 +3932,7 @@
+         pd.colorAttachments[0].pixelFormat = fmt;
+     }
+     NSError* err = nil;
+-    id<MTLRenderPipelineState> pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++    id<MTLRenderPipelineState> pso = eng_new_pipeline(pd, &err);
+     if (!pso) {
+         fprintf(stderr, "[rsx engine/metal] rectangle clear pipeline failed: %s\n",
+                 [[err localizedDescription] UTF8String]);
+@@ -4155,7 +4262,7 @@
+         pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:@"eng_fxaa_fs"];
+         pd.colorAttachments[0].pixelFormat = fmt;
+         NSError* err = nil;
+-        s_eng_fxaa_pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++        s_eng_fxaa_pso = eng_new_pipeline(pd, &err);
+         if (!s_eng_fxaa_pso) {
+             fprintf(stderr, "[rsx engine/metal] FXAA pipeline failed (FXAA off): %s\n",
+                     [[err localizedDescription] UTF8String]);
+@@ -4209,7 +4316,7 @@
+         pd.fragmentFunction = [s_eng_helper_lib newFunctionWithName:@"eng_present_fs"];
+         pd.colorAttachments[0].pixelFormat = [dst pixelFormat];
+         NSError* err = nil;
+-        s_eng_blit_pso = [s_dev newRenderPipelineStateWithDescriptor:pd error:&err];
++        s_eng_blit_pso = eng_new_pipeline(pd, &err);
+         if (!s_eng_blit_pso) {
+             fprintf(stderr, "[rsx engine/metal] present pipeline failed: %s\n",
+                     [[err localizedDescription] UTF8String]);
+@@ -4523,6 +4630,7 @@
+             fprintf(stderr, "[RSX metal] could not create command queue\n");
+             return -1;
+         }
++        eng_pso_archive_init();
+ 
+         int rc;
+ #if TARGET_OS_IPHONE
+@@ -4646,6 +4754,7 @@
+         s_guest_draws = s_last_guest_draws = 0;
+         clear_caches();
+         release_surfaces();
++        eng_pso_archive_shutdown();
+         s_shader_lib = nil;
+         s_null_tex   = nil;
+         s_default_sampler = nil;

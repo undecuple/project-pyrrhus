@@ -121,4 +121,5 @@ nix develop .#re --command python3 tools/runtime/test_spu_pool_portability.py
 nix develop .#re --command python3 tools/runtime/test_lwcond_all_hosts.py
 nix develop .#re --command python3 tools/runtime/test_cellfont_exe_dir.py
 nix develop .#re --command python3 tools/runtime/test_spu_helpers_sse_vs_scalar.py
+nix develop .#re --command python3 tools/runtime/test_metal_pso_archive.py
 nix develop .#re --command python3 tools/runtime/test_metal_lighting.py

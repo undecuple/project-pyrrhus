@@ -168,9 +168,17 @@ ran to the end and produced `kz2.exe`, linked with the lifted SPU code. Step 5 w
 boot passed on an Apple M4 Pro with Metal, both offscreen and in a Cocoa window. With patches 6084 (lwcond) and
 6085 (font folder), the USA 1.29 game ran on the same machine in a window, driven by `PAD_FILE` button presses (no
 physical controller): language and gamma screens, the intro movie, the title screen, the main menu, New Campaign,
-the Corinth River loading screen and the first mission's in-engine opening scene. Loading the mission stalled the
-frame for up to 22 seconds at a time (depth readbacks wait on the GPU); it then ran on. Playing the mission, sound
-on a speaker, a physical controller and performance were not checked.
+the Corinth River loading screen and the first mission's in-engine opening scene. The multi-second freezes of the
+first bring-up no longer reproduce: a latency timeline plus a walker sampler attributed them to first-seen Metal
+pipeline builds compiling synchronously on the FIFO thread and to a fully covered game window starving
+`nextDrawable` and the in-flight present slots -- the same scripted session offscreen never drained longer than
+961 ms. Patch 2161 stores compiled pipelines in an `MTLBinaryArchive` beside the game's other writes
+(`PS3RECOMP_METAL_PSO_ARCHIVE`), patch 2166 keeps the walker off the compositor with a prefetching presenter
+thread and a bounded in-flight wait (`PS3RECOMP_METAL_PRESENT_WAIT_MS`, default 100 ms), and patch 2167 builds the
+pipelines a session still sees first on a worker thread instead of the walker's (`PS3RECOMP_METAL_ASYNC_PSO=0`
+restores the synchronous build): a 400 s scripted run through the mission's worst case is now a single 805 ms
+present and not one multi-second drain. Playing the mission, sound on a speaker, a physical controller and
+performance were not checked.
 
 The native route uses Apple Clang and the toolkit's existing Metal backend with guest-shader translation, not
 Direct3D 12 or Proton. The guest runs on a 256 MiB-stack worker while the main thread services Cocoa. ARM64 builds

@@ -1,0 +1,223 @@
+KZ2 patch 2167: the walker never builds a pipeline; misses build on a worker.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+The game's pipeline set varies per session -- SPU timing shifts render states, so
+keys differ run to run, and a warm MTLBinaryArchive (patch 2161) still saw 50-150
+first-seen pipelines a session, each a synchronous MTLCompiler round-trip on the
+FIFO walker; a cluster of them froze the drain for up to 40 s with the GPU idle
+(the walker sampler sits in MTLCompilerScheduler buildRequest; runs
+work/macos-runs/20261119-001723 and its predecessors).
+
+A serial worker builds the misses. A pending build returns 0; the engine drops
+that draw and asks again on its next one -- the engine no longer memoizes a miss
+(a memoized miss froze a pipeline at one dropped attempt) -- and the finished
+handle lands in the slot table for the frames after. A build that fails hard
+stays failed in the backend's table and is answered 0 forever, exactly as a
+failed synchronous build is today. PS3RECOMP_METAL_ASYNC_PSO=0 restores the
+synchronous build. The worker owns the function and pipeline tables while a
+build runs; the engine's draws only read completed slots.
+
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -2241,16 +2241,25 @@
+                 vi, fi, nconst, (unsigned long long)fp_hash,
+                 handle ? "ok" : "FAILED (draw dropped)"); }
+ 
+-    g.pipelines[g.n_pipelines].key = key;
+-    g.pipelines[g.n_pipelines].fp_hash = fp_hash;
+-    g.pipelines[g.n_pipelines].handle = handle;
+-    g.pipelines[g.n_pipelines].fixed = (u8)fixed;
+-    g.pipelines[g.n_pipelines].tex_used =
+-        (u16)(fixed ? 0xFFFFu : (eng_sampled_units(s_ps_hlsl) | dbz_bit));
+-    *out_tex_used = g.pipelines[g.n_pipelines].tex_used;
+-    *out_fp_hash = fp_hash;
+-    g.pipeline_index[slot] = (u16)(g.n_pipelines + 1u);
+-    g.n_pipelines++;
++    /* Patch 2167: a miss is not memoized. The backend answers 0 for a build
++     * still in flight (or one that failed hard, which it answers forever),
++     * and the next draw asks again; memoizing the miss would freeze the
++     * pipeline's draws at one dropped attempt. */
++    if (handle) {
++        g.pipelines[g.n_pipelines].key = key;
++        g.pipelines[g.n_pipelines].fp_hash = fp_hash;
++        g.pipelines[g.n_pipelines].handle = handle;
++        g.pipelines[g.n_pipelines].fixed = (u8)fixed;
++        g.pipelines[g.n_pipelines].tex_used =
++            (u16)(fixed ? 0xFFFFu : (eng_sampled_units(s_ps_hlsl) | dbz_bit));
++        *out_tex_used = g.pipelines[g.n_pipelines].tex_used;
++        *out_fp_hash = fp_hash;
++        g.pipeline_index[slot] = (u16)(g.n_pipelines + 1u);
++        g.n_pipelines++;
++    } else {
++        *out_tex_used = (u16)(fixed ? 0xFFFFu : dbz_bit);
++        *out_fp_hash = fp_hash;
++    }
+     *out_fixed = fixed;
+     return handle;
+ }
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3173,10 +3173,32 @@
+ 
+ /* ---- lifecycle ----------------------------------------------------------- */
+ 
++/* Patch 2167: the async pipeline-build state. Declared here, before eng_init
++ * uses the queue, because the dispatcher that creates the builds lives with
++ * the pipeline section below. */
++static pthread_mutex_t s_eng_build_lock = PTHREAD_MUTEX_INITIALIZER;
++static dispatch_queue_t s_eng_build_queue;
++enum { ENG_ASYNC_MAX = 4096 };
++typedef struct {
++    u64 key;
++    u32 result;                 /* 0 while in flight, the handle once done */
++    int done;
++    char* vs_hlsl;              /* the worker's own copies; freed on its way out */
++    char* ps_hlsl;
++    rsx_be_render_state rs;
++    rsx_vertex_layout_plan layout;
++    u32 vertex_stride;
++    rsx_be_format rt_fmt;
++    u32 rt_count;
++} eng_async_build;
++static eng_async_build* s_eng_builds[ENG_ASYNC_MAX];
++static u32 s_eng_build_count;
++
+ static int eng_init(void* user, u32 width, u32 height)
+ {
+     (void)user; (void)width; (void)height;
+     s_eng_encoding_failed = 0;
++    if (!s_eng_build_queue) s_eng_build_queue = dispatch_queue_create("kz2.pso.build", DISPATCH_QUEUE_SERIAL);   /* patch 2167 */
+     if (!s_dev) return -1;
+     NSError* err = nil;
+     s_eng_helper_lib = [s_dev newLibraryWithSource:kEngHelperMSL options:nil error:&err];
+@@ -3205,6 +3227,9 @@
+ static void eng_shutdown(void* user)
+ {
+     (void)user;
++    /* Patch 2167: let the build worker finish before the tables it fills
++     * (and reads from) are cleared below. */
++    if (s_eng_build_queue) dispatch_sync(s_eng_build_queue, ^{});
+     for (u32 i = 0; i < s_eng_obj_count; i++) s_eng_obj[i] = nil;
+     for (u32 i = 0; i < s_eng_pipe_count; i++) {
+         s_eng_pipe[i].pso = nil;
+@@ -3524,6 +3549,44 @@
+     return fn;
+ }
+ 
++/* KZ2 patch 2167: the walker never builds a pipeline. The game's pipeline set
++ * varies per session (SPU timing shifts render states, so keys differ run to
++ * run; a warm archive still sees ~50-150 first-seen pipelines, each a
++ * synchronous MTLCompiler round-trip ON THE WALKER, and a cluster froze the
++ * FIFO drain for up to 40 s, GPU idle -- the sampler sits in
++ * MTLCompilerScheduler buildRequest). A serial worker builds the misses now:
++ * a pending build returns 0, the engine drops that draw and asks again on its
++ * next one (the engine no longer memoizes a miss), and the finished handle
++ * lands in the slot table for the frames after. A build that fails hard stays
++ * failed, exactly as a failed synchronous build does today.
++ * PS3RECOMP_METAL_ASYNC_PSO=0 restores the synchronous build. The build state
++ * lives above, before eng_init. */
++static int eng_async_pso_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3RECOMP_METAL_ASYNC_PSO");
++                  on = (e && e[0] == '0' && !e[1]) ? 0 : 1; }
++    return on && s_eng_build_queue;
++}
++
++static u64 eng_async_key(const char* vs, const char* ps, const rsx_be_render_state* rs,
++                         const rsx_vertex_layout_plan* layout, u32 stride,
++                         rsx_be_format fmt, u32 count)
++{
++    u64 k = fnv1a64((const u8*)vs, (u32)strlen(vs), 1469598103934665603ull);
++    k = fnv1a64((const u8*)ps, (u32)strlen(ps), k);
++    k = fnv1a64((const u8*)rs, (u32)sizeof *rs, k);
++    k = fnv1a64((const u8*)layout, (u32)sizeof *layout, k);
++    u32 tail[3] = { stride, (u32)fmt, count };
++    return fnv1a64((const u8*)tail, (u32)sizeof tail, k);
++}
++
++static u32 eng_pipeline_create_sync(void* user, const char* vs_hlsl, const char* ps_hlsl,
++                                    const rsx_be_render_state* rs,
++                                    const rsx_vertex_layout_plan* layout,
++                                    u32 vertex_stride, rsx_be_format rt_fmt,
++                                    u32 rt_count);
++
+ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_hlsl,
+                                const rsx_be_render_state* rs,
+                                const rsx_vertex_layout_plan* layout,
+@@ -3534,6 +3597,70 @@
+     if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
+     if (!rt_count) rt_count = 1;
+     if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
++    if (!eng_async_pso_on())
++        return eng_pipeline_create_sync(user, vs_hlsl, ps_hlsl, rs, layout,
++                                        vertex_stride, rt_fmt, rt_count);
++    const u64 key = eng_async_key(vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
++    pthread_mutex_lock(&s_eng_build_lock);
++    for (u32 i = 0; i < s_eng_build_count; i++) {
++        if (s_eng_builds[i]->key != key) continue;
++        const int done = s_eng_builds[i]->done;
++        const u32 result = s_eng_builds[i]->result;
++        pthread_mutex_unlock(&s_eng_build_lock);
++        return done ? result : 0;   /* in flight: the engine retries later */
++    }
++    if (s_eng_build_count >= ENG_ASYNC_MAX || s_eng_pipe_count >= ENG_MAX_PIPES) {
++        pthread_mutex_unlock(&s_eng_build_lock);
++        return 0;
++    }
++    eng_async_build* b = (eng_async_build*)calloc(1, sizeof *b);
++    char* vs_copy = b ? strdup(vs_hlsl) : NULL;
++    char* ps_copy = b ? strdup(ps_hlsl) : NULL;
++    if (!b || !vs_copy || !ps_copy) {
++        free(b); free(vs_copy); free(ps_copy);
++        pthread_mutex_unlock(&s_eng_build_lock);
++        return 0;
++    }
++    b->key = key;
++    b->vs_hlsl = vs_copy;
++    b->ps_hlsl = ps_copy;
++    b->rs = *rs;
++    b->layout = *layout;
++    b->vertex_stride = vertex_stride;
++    b->rt_fmt = rt_fmt;
++    b->rt_count = rt_count;
++    s_eng_builds[s_eng_build_count++] = b;
++    pthread_mutex_unlock(&s_eng_build_lock);
++    dispatch_async(s_eng_build_queue, ^{
++        const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
++                                                    &b->rs, &b->layout,
++                                                    b->vertex_stride, b->rt_fmt, b->rt_count);
++        pthread_mutex_lock(&s_eng_build_lock);
++        b->result = handle;
++        b->done = 1;
++        pthread_mutex_unlock(&s_eng_build_lock);
++        { static int n = 0;
++          if (PS3_LOG_FIRST(n, 24))
++            fprintf(stderr, "[rsx engine/metal] async pipeline %016llx -> %s\n",
++                    (unsigned long long)b->key, handle ? "ok" : "failed"); }
++        /* The functions are deduplicated by their own hashes; the texts are
++         * only for this build. */
++        free(b->vs_hlsl); b->vs_hlsl = NULL;
++        free(b->ps_hlsl); b->ps_hlsl = NULL;
++    });
++    return 0;
++}
++
++static u32 eng_pipeline_create_sync(void* user, const char* vs_hlsl, const char* ps_hlsl,
++                                    const rsx_be_render_state* rs,
++                                    const rsx_vertex_layout_plan* layout,
++                                    u32 vertex_stride, rsx_be_format rt_fmt,
++                                    u32 rt_count)
++{
++    (void)user;
++    if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
++    if (!rt_count) rt_count = 1;
++    if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
+     if (s_eng_pipe_count >= ENG_MAX_PIPES) return 0;
+     id<MTLFunction> vs = eng_function(vs_hlsl, RSX_SHADER_STAGE_VERTEX, "vp");
+     if (!vs) return 0;
