@@ -31,6 +31,7 @@ CODE_END = {}
 # SPURS policy module: raw LS image the SPURS kernel loads at LS 0xA00 and enters at 0xA00 (cellSpursModuleEntry).
 # 0xA2C is its interrupt handler (the entry stores `bra 0xA2C` at LS 0; nothing branches there).
 PM_BASE = 0xA00
+AMADEUS_PLUGIN_LSA = 0x8400   # where the Amadeus job loads its plugin modules (see job_modules)
 PM_SEEDS = [0xA2C]
 
 
@@ -73,7 +74,16 @@ def job_modules(d, rows):
         inside = any(0 < s - e < 0x200 for e in aud)
         meta = dict(file_offset=s, entry_off=ent, footprint=foot, w3=w3, w4=w4, w9=w9, hdr_base=base,
                     flags=flags, inside_elf=inside, reg_name=r.get("reg_name", ""))
-        out.append((r["name"], raw, base or 0x4000, ent, meta))
+        # The Amadeus audio plugin modules (header base 0, flags bit 31) are loaded by the Amadeus job at LS 0x8400,
+        # not 0x4000: every [spu-ovl-map] line for them in first-mission runs (images 229, 230, 235, wid 6
+        # jm_amadeus) says "-> LS 0x08400". Lifted at 0x4000 their code was never used and Amadeus ran them in the SPU
+        # interpreter, 25-30 M steps/s and 13 % of all process samples on an Apple M4 Pro. Lifted where they run, the
+        # runtime's resident-code check (memcmp of the lifted bytes at the load address) still decides per load.
+        if not base and flags & 0x80000000:
+            ls = AMADEUS_PLUGIN_LSA
+        else:
+            ls = base or 0x4000
+        out.append((r["name"], raw, ls, ent, meta))
     return out
 
 

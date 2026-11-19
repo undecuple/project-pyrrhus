@@ -31,6 +31,8 @@ def main():
     parser.add_argument('--seconds', type=int, default=60, help='maximum run duration, default 60 seconds')
     parser.add_argument('--skip-intro', action='store_true', help='diagnostic opt-in; do not save this setting')
     parser.add_argument('--headless', action='store_true', help='offscreen Metal rendering')
+    parser.add_argument('--data', default='macos-game-data',
+                        help='folder under work/ for saves and caches (default macos-game-data; a benchmark can keep its own)')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise SystemExit('Native Mac runner requires macOS')
@@ -46,7 +48,9 @@ def main():
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     run = work / 'macos-runs' / stamp
     run.mkdir(parents=True, exist_ok=False)
-    data = work / 'macos-game-data'
+    if '/' in args.data or args.data in ('', '.', '..'):
+        raise SystemExit('--data names one folder under work/')
+    data = work / args.data
     for folder in ('hdd0', 'hdd1', 'gamedata', 'tmp'):
         (data / folder).mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()

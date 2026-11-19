@@ -14,6 +14,12 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - **SPU math on ARM64 (patch 6086):** `fma`, `fms` and `fnms` now flush subnormal results to zero on hosts without SSE4.1, as the Windows build does. A new host test runs all 150 SPU helpers on both paths and found these three the only ones that differed; all now match bit for bit.
 - **macOS light coronas (patch 2165):** the Metal renderer now measures the occlusion counts the game sizes and fades its light glows by. Every count used to read "fully visible", so each corona showed as a hard dot at full strength, through walls; the count reaches the game a frame later, without waiting for the GPU. `PS3RECOMP_ENG_ZPASS=0` turns it off.
 - **macOS lighting passes (patches 2162-2164):** the Metal renderer emulates the depth-bounds test that deferred light volumes use and honours the depth clamp shadow casters use. A depth copy read as a texture no longer stays stale after more depth is drawn, and the sampler table holds 4096 states instead of 256. Adapted from Erik Martins's ps3recomp commits and Resistance 3 port (MIT); Metal tests pass on an Apple M4 Pro.
+- **macOS speed, SPU (patches 7024, 7025):** on Apple ARM64 the SPU helpers that dominated a first-mission profile now run as NEON, bit for bit the same as the Windows build's SSE4.1 paths (all 150 helpers, 3,000,000 cases):
+  - `shufb` and its `ra == rb` and hoisted forms took 35.7 % of all process samples as a byte loop;
+  - `xr_mask`, the quadword byte permutes (`rotqby` and the rest) and `fma`/`fms`/`fnms` came next.
+  Gameplay went from about 5 to 24-27 frames per second on an Apple M4 Pro.
+- **macOS fibers:** a finished job fiber of the game's scheduler is reused instead of freed. Each new fiber had a 32 MiB stack that macOS's `makecontext` zeroed, 3.7 % of all samples.
+- **macOS audio plugins (patch 7026, lift):** the Amadeus audio plugin modules are now lifted at LS 0x8400, where the audio job loads them, and are recognised by their header (the job DMAs a heap copy). Before, they ran in the SPU interpreter: 25-30 million steps a second and 13 % of all samples in combat. The lifted code is used only when its bytes match what was loaded. It has not yet been seen running in a scene that loads the plugins.
 - **macOS picture smears in play:** depth of field starts off on Apple ARM64, where the SPU post chain reads inputs the Metal renderer does not yet keep in memory and the whole picture was drawn as horizontal smears. `KZ2_DOF=1` turns it back on for testing.
 
 ### Added

@@ -857,7 +857,8 @@ void func_000732D8(ppu_context* ctx)
     }
     if (kf_log()) fprintf(stderr, "[kz2-fiber] S=0x%08X finish slot %u (#%llu)\n", S, cur, g_kf_finishes);
     fs->dead = guest_fiber_current();
-    guest_fiber_switch(fs->home);
+    /* Back to home as the job's end: the fiber (created by home) parks for reuse on POSIX hosts (guest_fiber_exit). */
+    guest_fiber_exit();
     fprintf(stderr, "[kz2-fiber] finished fiber resumed (S=0x%08X)\n", S);
     abort();
 }

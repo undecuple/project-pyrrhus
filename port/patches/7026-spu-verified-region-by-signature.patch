@@ -1,0 +1,58 @@
+KZ2 patch 7026: verified resident-code regions recognised by header signature.
+
+Written for the Pyrrhus native Mac performance work; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+spu_overlay_register_verified_region opens a resident-code slot (beside the resident
+overlay, bytes compared once per load) only for a GET from the image's own EA. Killzone 2's
+Amadeus audio job copies its plugin modules into a heap buffer first and DMAs them to LS
+0x8400 from there (every GET into 0x8400 in a first-mission run came from 0x12D75F40), so
+they could only be recognised by signature, which made them THE resident overlay; the
+Amadeus job module took that slot back at its next branch-in and every call into the plugin
+ran in the SPU interpreter (25-30 M steps/s, 13 % of all process samples on an Apple M4 Pro).
+spu_overlay_register_verified_sig registers the same verified region keyed by the 16-byte
+header instead of the EA; note_get's signature test and span branch do the rest.
+
+diff --git a/runtime/spu/spu_overlay_residency.h b/runtime/spu/spu_overlay_residency.h
+--- a/runtime/spu/spu_overlay_residency.h
++++ b/runtime/spu/spu_overlay_residency.h
+@@ -29,6 +29,16 @@
+     uint32_t span, int image_id, const spu_overlay_code_segment* code,
+     unsigned count);
+ 
++/* KZ2 patch 7026: the same, but the load is recognised by the image's 16-byte header signature instead of its
++ * source EA, for code a title copies into a buffer of its own before it DMAs it to local store (Killzone 2's
++ * Amadeus audio plugins: GETs into LS 0x8400 come from a heap copy, never from the image's EA). A GET of at
++ * least 512 bytes whose first 16 bytes are `sig`, landing at load_lsa, opens a resident-code slot (pending until the
++ * first dispatch compares the segments), so the image is found beside the resident overlay instead of replacing it.
++ * Returns 1 on success, 0 on invalid input or a full registry. */
++int spu_overlay_register_verified_sig(const uint8_t sig[16], uint32_t load_lsa,
++    uint32_t span, int image_id, const spu_overlay_code_segment* code,
++    unsigned count);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2142,6 +2142,20 @@
+     spu_overlay_register_region(content_ea, span, image_id);
+     spu_ovl_src* o = &s_ovl_src[s_ovl_src_count - 1];
+     o->load_lsa = load_lsa; o->code = copy; o->code_count = count;
++    return 1;
++}
++
++/* KZ2 patch 7026: a verified region recognised by its header signature (spu_overlay_residency.h). The entry is the
++ * one spu_overlay_register_verified_region makes, with the EA match replaced by the signature: note_get's hit test
++ * already takes has_sig entries by content, and its span branch opens the resident-code slot at load_lsa. */
++int spu_overlay_register_verified_sig(const uint8_t sig[16], uint32_t load_lsa,
++    uint32_t span, int image_id, const spu_overlay_code_segment* code, unsigned count)
++{
++    if (!sig) return 0;
++    if (!spu_overlay_register_verified_region(0, load_lsa, span, image_id, code, count)) return 0;
++    spu_ovl_src* o = &s_ovl_src[s_ovl_src_count - 1];
++    memcpy(o->sig, sig, 16);
++    o->has_sig = 1;
+     return 1;
+ }
+ 
