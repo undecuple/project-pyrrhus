@@ -62,10 +62,11 @@ diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -3173,10 +3173,32 @@
+@@ -3172,11 +3172,34 @@
+ }
  
  /* ---- lifecycle ----------------------------------------------------------- */
- 
++
 +/* Patch 2167: the async pipeline-build state. Declared here, before eng_init
 + * uses the queue, because the dispatcher that creates the builds lives with
 + * the pipeline section below. */
@@ -76,6 +77,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +    u64 key;
 +    u32 result;                 /* 0 while in flight, the handle once done */
 +    int done;
++    int inline_building;        /* a retry built it on the walker; the worker skips */
 +    char* vs_hlsl;              /* the worker's own copies; freed on its way out */
 +    char* ps_hlsl;
 +    rsx_be_render_state rs;
@@ -86,7 +88,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +} eng_async_build;
 +static eng_async_build* s_eng_builds[ENG_ASYNC_MAX];
 +static u32 s_eng_build_count;
-+
+ 
  static int eng_init(void* user, u32 width, u32 height)
  {
      (void)user; (void)width; (void)height;
@@ -95,7 +97,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
      if (!s_dev) return -1;
      NSError* err = nil;
      s_eng_helper_lib = [s_dev newLibraryWithSource:kEngHelperMSL options:nil error:&err];
-@@ -3205,6 +3227,9 @@
+@@ -3205,6 +3228,9 @@
  static void eng_shutdown(void* user)
  {
      (void)user;
@@ -105,7 +107,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
      for (u32 i = 0; i < s_eng_obj_count; i++) s_eng_obj[i] = nil;
      for (u32 i = 0; i < s_eng_pipe_count; i++) {
          s_eng_pipe[i].pso = nil;
-@@ -3524,6 +3549,44 @@
+@@ -3524,6 +3550,44 @@
      return fn;
  }
  
@@ -150,7 +152,7 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
  static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_hlsl,
                                 const rsx_be_render_state* rs,
                                 const rsx_vertex_layout_plan* layout,
-@@ -3534,6 +3597,70 @@
+@@ -3534,6 +3598,113 @@
      if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
      if (!rt_count) rt_count = 1;
      if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
@@ -161,10 +163,37 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +    pthread_mutex_lock(&s_eng_build_lock);
 +    for (u32 i = 0; i < s_eng_build_count; i++) {
 +        if (s_eng_builds[i]->key != key) continue;
-+        const int done = s_eng_builds[i]->done;
-+        const u32 result = s_eng_builds[i]->result;
++        eng_async_build* e = s_eng_builds[i];
++        if (e->done) {
++            const u32 result = e->result;
++            pthread_mutex_unlock(&s_eng_build_lock);
++            return result;
++        }
++        if (!e->inline_building) {
++            /* A re-request of a pipeline whose first draw was dropped: the
++             * content that needs it is on screen NOW, and the worker reaches
++             * this entry only after everything queued before it. Build it
++             * here, once -- this is the R2 SYNC_HIT lesson, and it is what
++             * keeps static content (menu text) from being drawn only into
++             * the drop window. The worker skips the duplicate when it sees
++             * the entry finished. */
++            e->inline_building = 1;
++            pthread_mutex_unlock(&s_eng_build_lock);
++            const u32 handle = eng_pipeline_create_sync(NULL, e->vs_hlsl, e->ps_hlsl,
++                                                        &e->rs, &e->layout,
++                                                        e->vertex_stride, e->rt_fmt, e->rt_count);
++            pthread_mutex_lock(&s_eng_build_lock);
++            e->result = handle;
++            e->done = 1;
++            pthread_mutex_unlock(&s_eng_build_lock);
++            { static int n = 0;
++              if (PS3_LOG_FIRST(n, 12))
++                fprintf(stderr, "[rsx engine/metal] async pipeline %016llx built on retry -> %s\n",
++                        (unsigned long long)e->key, handle ? "ok" : "failed"); }
++            return handle;
++        }
 +        pthread_mutex_unlock(&s_eng_build_lock);
-+        return done ? result : 0;   /* in flight: the engine retries later */
++        return 0;
 +    }
 +    if (s_eng_build_count >= ENG_ASYNC_MAX || s_eng_pipe_count >= ENG_MAX_PIPES) {
 +        pthread_mutex_unlock(&s_eng_build_lock);
@@ -189,6 +218,22 @@ diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
 +    s_eng_builds[s_eng_build_count++] = b;
 +    pthread_mutex_unlock(&s_eng_build_lock);
 +    dispatch_async(s_eng_build_queue, ^{
++        /* A retry may build this entry on the walker (inline_building); wait
++         * for that and skip the duplicate. The normal path (no retry) falls
++         * straight through to the build. */
++        for (;;) {
++            pthread_mutex_lock(&s_eng_build_lock);
++            const int done = b->done;
++            const int inline_bld = b->inline_building;
++            pthread_mutex_unlock(&s_eng_build_lock);
++            if (done) {
++                free(b->vs_hlsl); b->vs_hlsl = NULL;
++                free(b->ps_hlsl); b->ps_hlsl = NULL;
++                return;
++            }
++            if (!inline_bld) break;
++            usleep(1000);
++        }
 +        const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
 +                                                    &b->rs, &b->layout,
 +                                                    b->vertex_stride, b->rt_fmt, b->rt_count);
