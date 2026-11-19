@@ -90,6 +90,7 @@ def main():
     mutate("css import", "style.css", lambda t: '@import url("https://x.example/a.css");\n' + t, "@import")
     mutate("css external url", "style.css", lambda t: t + "\nbody{background:url(https://x.example/a.png)}\n", "url(")
     mutate("no reduced motion", "style.css", lambda t: t.replace("prefers-reduced-motion", "prefers-x"), "reduced-motion")
+    mutate("class without a rule", "style.css", lambda t: re.sub(r"\.gallery\b", ".gone-gallery", t), "class 'gallery' is used")
     if fails:
         print("FAIL test_site:\n  - " + "\n  - ".join(fails))
         return 1

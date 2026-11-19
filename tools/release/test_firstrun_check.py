@@ -543,7 +543,7 @@ def main():
         gap = split_dump("splitgap", [1024, 1024, 1024, 1024], skip=(2,))
         rc, out = run(["--dump", gap] + a1)
         check("split parts with a gap name the missing part",
-              rc == 1 and "FAIL D3" in out and "data_ps3.psarc.66602 is missing" in out and "A1" not in out, out)
+              rc == 1 and "FAIL D3" in out and "data_ps3.psarc.66602 is missing" in out and "A1:" not in out, out)
         late = split_dump("splitlate", [1024, 1024, 1024, 1024], skip=(0,))
         rc, out = run(["--dump", late] + a1)
         check("split parts without .66600 name it", rc == 1 and "data_ps3.psarc.66600 is missing" in out, out)
