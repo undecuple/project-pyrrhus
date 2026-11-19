@@ -1,0 +1,386 @@
+KZ2 patch 2170: a pipeline record with a boot-time prewarm; background builds
+only once the record exists.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+The archive of 2161 misses the engine's descriptors (the menu pipelines missed
+on a warm file), so a session still rebuilt its known set -- synchronously, on
+the drawing thread (the owner's freezes), or in the background (the owner's
+missing menu boxes and gameplay elements: a dropped first draw of content drawn
+only during the build window has no second chance).
+
+The record keeps each new pipeline's full inputs beside the archive: the two
+decompiled programs, the render state, the vertex layout, the formats. At boot
+the workers rebuild the recorded set (PS3RECOMP_METAL_PSO_PREWARM_MAX, default
+256, four workers, well inside a boot), so the menu and known gameplay draw
+with their real pipelines before they are first needed. The default is
+synchronous until the record exists -- a first play renders everything, slowly
+-- and background after, because everything known is then prebuilt. An explicit
+PS3RECOMP_METAL_ASYNC_PSO always wins. The port defaults the record path beside
+the archive; the record file is generated at run time and never committed.
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3220,12 +3220,20 @@
+ } eng_async_build;
+ static eng_async_build* s_eng_builds[ENG_ASYNC_MAX];
+ static u32 s_eng_build_count;
++/* Used before their definitions below (eng_init, the async worker). */
++static void eng_pso_prewarm(void);
++static u32 eng_pipeline_create_sync(void* user, const char* vs_hlsl, const char* ps_hlsl,
++                                    const rsx_be_render_state* rs,
++                                    const rsx_vertex_layout_plan* layout,
++                                    u32 vertex_stride, rsx_be_format rt_fmt,
++                                    u32 rt_count);
+ 
+ static int eng_init(void* user, u32 width, u32 height)
+ {
+     (void)user; (void)width; (void)height;
+     s_eng_encoding_failed = 0;
+     if (!s_eng_build_queue) s_eng_build_queue = dispatch_queue_create("kz2.pso.build", DISPATCH_QUEUE_CONCURRENT);   /* patch 2167 */
++    if (s_eng_build_queue) eng_pso_prewarm();   /* patch 2170: rebuild the recorded set before the game draws it */
+     if (!s_dev) return -1;
+     NSError* err = nil;
+     s_eng_helper_lib = [s_dev newLibraryWithSource:kEngHelperMSL options:nil error:&err];
+@@ -3601,15 +3609,249 @@
+ static int eng_async_pso_on(void)
+ {
+     static int on = -1;
+-    if (on < 0) { const char* e = getenv("PS3RECOMP_METAL_ASYNC_PSO");
+-                  /* Off by default until a pending build can draw with something
+-                   * instead of dropping: content drawn only during the drop window
+-                   * (menu boxes, gameplay elements) never came back. The retry of
+-                   * 94dcfc6 recovers re-drawn content, not once-drawn content. */
+-                  on = (e && e[0] == '1') ? 1 : 0; }
++    if (on < 0) {
++        const char* e = getenv("PS3RECOMP_METAL_ASYNC_PSO");
++        if (e && e[0] == '1') on = 1;
++        else if (e && e[0] == '0') on = 0;
++        else {
++            /* Default: async once a warm record exists (the prewarm has the
++             * known pipelines building before the menu draws them); the first
++             * session builds synchronously, so once-drawn content is never
++             * lost to a drop window. */
++            const char* rec = getenv("PS3RECOMP_METAL_PSO_RECORD");
++            on = (rec && *rec && access(rec, F_OK) == 0) ? 1 : 0;
++        }
++    }
+     return on && s_eng_build_queue;
++}
++
++/* ---- patch 2170: the pipeline record and the boot-time prewarm ------------
++ * The archive of 2161 misses the engine's descriptors (the menu keys missed on
++ * a warm file), so a session still rebuilds its known pipelines. The record
++ * keeps each NEW pipeline's full inputs -- the two decompiled programs, the
++ * render state, the layout -- beside the archive; at boot the workers rebuild
++ * the recorded set before the game draws it. The first session records (and
++ * builds synchronously); every session after starts warm: menu and known
++ * gameplay render with their real pipelines immediately, and async drops
++ * shrink to genuinely new content, which redraws. */
++enum { ENG_PSO_RECORD_MAX = 2048 };
++static FILE* s_pso_record;
++static unsigned s_pso_record_n;
++/* Keys already in the record file, so a sync-mode session does not append a
++ * second copy of a pipeline it built in an earlier run. */
++static u64 s_rec_keys[ENG_PSO_RECORD_MAX];
++static unsigned s_rec_key_n;
++
++static void eng_pso_record_keys_add(u64 key)
++{
++    if (s_rec_key_n < ENG_PSO_RECORD_MAX) s_rec_keys[s_rec_key_n++] = key;
++}
++
++static int eng_pso_record_keys_has(u64 key)
++{
++    for (unsigned i = 0; i < s_rec_key_n; i++) if (s_rec_keys[i] == key) return 1;
++    return 0;
++}
++
++static void hex_write(FILE* f, const u8* p, size_t n)
++{
++    static const char h[] = "0123456789abcdef";
++    for (size_t i = 0; i < n; i++) { fputc(h[p[i] >> 4], f); fputc(h[p[i] & 15], f); }
++}
++
++/* One line: key stride fmt count, the state and layout hex, the two lengths. */
++static void eng_pso_record_line(u64 key, const char* vs, const char* ps,
++                                 const rsx_be_render_state* rs,
++                                 const rsx_vertex_layout_plan* layout,
++                                 u32 stride, rsx_be_format fmt, u32 count)
++{
++    const char* path = getenv("PS3RECOMP_METAL_PSO_RECORD");
++    if (!path || !*path || s_pso_record_n >= ENG_PSO_RECORD_MAX) return;
++    if (eng_pso_record_keys_has(key)) return;   /* an earlier session recorded it */
++    if (!s_pso_record) {
++        s_pso_record = fopen(path, "a");   /* the port defaults it beside the archive */
++        if (!s_pso_record) return;
++        fprintf(stderr, "[pso-record] recording new pipelines to '%s'\n", path);
++    }
++    fprintf(s_pso_record, "R %016llx %u %u %u ", (unsigned long long)key, stride,
++            (u32)fmt, count);
++    hex_write(s_pso_record, (const u8*)rs, sizeof *rs);
++    fputc(' ', s_pso_record);
++    hex_write(s_pso_record, (const u8*)layout, sizeof *layout);
++    fprintf(s_pso_record, " %zu %zu\n", strlen(vs), strlen(ps));
++    hex_write(s_pso_record, (const u8*)vs, strlen(vs));
++    fputc('\n', s_pso_record);
++    hex_write(s_pso_record, (const u8*)ps, strlen(ps));
++    fputc('\n', s_pso_record);
++    fflush(s_pso_record);
++    s_pso_record_n++;
++    eng_pso_record_keys_add(key);
+ }
+ 
++static int hex_read(const char* s, u8* out, size_t n)
++{
++    for (size_t i = 0; i < n; i++) {
++        int hi = -1, lo = -1;
++        if (s[2*i] >= '0' && s[2*i] <= '9') hi = s[2*i] - '0';
++        else if (s[2*i] >= 'a' && s[2*i] <= 'f') hi = s[2*i] - 'a' + 10;
++        if (s[2*i+1] >= '0' && s[2*i+1] <= '9') lo = s[2*i+1] - '0';
++        else if (s[2*i+1] >= 'a' && s[2*i+1] <= 'f') lo = s[2*i+1] - 'a' + 10;
++        if (hi < 0 || lo < 0) return -1;
++        out[i] = (u8)((hi << 4) | lo);
++    }
++    return (s[2*n] == 0 || s[2*n] == ' ' || s[2*n] == '\n') ? 0 : -1;
++}
++
++/* The insert the dispatcher uses, shared with the prewarm below: a pending
++ * entry with a worker build behind it. Called with the build lock held;
++ * releases it. Recording is the dispatcher's business (once per new key,
++ * sync or async). */
++static void eng_async_insert(u64 key, const char* vs_hlsl, const char* ps_hlsl,
++                             const rsx_be_render_state* rs,
++                             const rsx_vertex_layout_plan* layout,
++                             u32 vertex_stride, rsx_be_format rt_fmt,
++                             u32 rt_count)
++{
++    eng_async_build* b = (eng_async_build*)calloc(1, sizeof *b);
++    char* vs_copy = b ? strdup(vs_hlsl) : NULL;
++    char* ps_copy = b ? strdup(ps_hlsl) : NULL;
++    if (!b || !vs_copy || !ps_copy) {
++        free(b); free(vs_copy); free(ps_copy);
++        return;
++    }
++    b->key = key;
++    b->queued_us = ps3_ft_now();
++    b->vs_hlsl = vs_copy;
++    b->ps_hlsl = ps_copy;
++    b->rs = *rs;
++    b->layout = *layout;
++    b->vertex_stride = vertex_stride;
++    b->rt_fmt = rt_fmt;
++    b->rt_count = rt_count;
++    s_eng_builds[s_eng_build_count++] = b;
++    pthread_mutex_unlock(&s_eng_build_lock);
++    dispatch_async(s_eng_build_queue, ^{
++        /* Patch 2167: up to four builds at a time; the translation itself
++         * serializes in eng_function's lock, the pipeline creation overlaps. */
++        static dispatch_semaphore_t s_build_slots;
++        if (!s_build_slots) s_build_slots = dispatch_semaphore_create(ENG_ASYNC_WORKERS);
++        dispatch_semaphore_wait(s_build_slots, DISPATCH_TIME_FOREVER);
++        /* A retry may build this entry on the walker (inline_building); wait
++         * for that and skip the duplicate. The normal path (no retry) falls
++         * straight through to the build. */
++        for (;;) {
++            pthread_mutex_lock(&s_eng_build_lock);
++            const int done = b->done;
++            const int inline_bld = b->inline_building;
++            pthread_mutex_unlock(&s_eng_build_lock);
++            if (done) {
++                free(b->vs_hlsl); b->vs_hlsl = NULL;
++                free(b->ps_hlsl); b->ps_hlsl = NULL;
++                dispatch_semaphore_signal(s_build_slots);
++                return;
++            }
++            if (!inline_bld) break;
++            usleep(1000);
++        }
++        const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
++                                                    &b->rs, &b->layout,
++                                                    b->vertex_stride, b->rt_fmt, b->rt_count);
++        dispatch_semaphore_signal(s_build_slots);
++        pthread_mutex_lock(&s_eng_build_lock);
++        b->result = handle;
++        b->done = 1;
++        pthread_mutex_unlock(&s_eng_build_lock);
++        { static int n = 0;
++          if (PS3_LOG_FIRST(n, 24))
++            fprintf(stderr, "[rsx engine/metal] async pipeline %016llx -> %s\n",
++                    (unsigned long long)b->key, handle ? "ok" : "failed"); }
++        /* The functions are deduplicated by their own hashes; the texts are
++         * only for this build. */
++        free(b->vs_hlsl); b->vs_hlsl = NULL;
++        free(b->ps_hlsl); b->ps_hlsl = NULL;
++    });
++}
++
++/* Rebuild the recorded pipelines on the workers at backend init, before the
++ * game draws them. Bounded by PS3RECOMP_METAL_PSO_PREWARM_MAX (default 256):
++ * four workers take ~25 s for that many, well inside a boot. */
++static void eng_pso_prewarm(void)
++{
++    const char* path = getenv("PS3RECOMP_METAL_PSO_RECORD");
++    if (!path || !*path || !s_eng_build_queue) return;
++    static int max_n = -1;
++    if (max_n < 0) { const char* e = getenv("PS3RECOMP_METAL_PSO_PREWARM_MAX");
++                     max_n = (e && atoi(e) > 0) ? atoi(e) : 256; }
++    FILE* f = fopen(path, "r");
++    if (!f) return;
++    char* line = NULL; size_t cap = 0;
++    unsigned n = 0, kept = 0;
++    long long t0 = 0;
++    while (getline(&line, &cap, f) > 0) {
++        if (line[0] != 'R' || line[1] != ' ') break;   /* not a record file */
++        if (!t0) { extern unsigned long long ps3_ms_now(void); t0 = (long long)ps3_ms_now(); }
++        u64 key = 0; u32 stride = 0, fmt = 0, count = 0; size_t vlen = 0, plen = 0;
++        char* rs_hex = NULL, * lo_hex = NULL;
++        /* R <key> <stride> <fmt> <count> <rs_hex> <layout_hex> <vlen> <plen> */
++        char* save = NULL;
++        int ok = 0;
++        for (int tok = 0; tok <= 8; tok++) {
++            char* s = tok ? strtok_r(NULL, " \n", &save) : strtok_r(line, " \n", &save);
++            if (!s) break;
++            if (tok == 0) continue;   /* "R" */
++            if (tok == 1) key = strtoull(s, NULL, 16);
++            else if (tok == 2) stride = (u32)strtoul(s, NULL, 10);
++            else if (tok == 3) fmt = (u32)strtoul(s, NULL, 10);
++            else if (tok == 4) count = (u32)strtoul(s, NULL, 10);
++            else if (tok == 5) rs_hex = s;
++            else if (tok == 6) lo_hex = s;
++            else if (tok == 7) vlen = (size_t)strtoul(s, NULL, 10);
++            else { plen = (size_t)strtoul(s, NULL, 10); ok = 1; }
++        }
++        if (!ok || vlen > (64u << 20) || plen > (64u << 20)) continue;
++        n++;
++        eng_pso_record_keys_add(key);   /* the dispatcher skips recorded keys */
++        if (n > (unsigned)max_n) continue;
++        rsx_be_render_state rs; rsx_vertex_layout_plan layout;
++        if (hex_read(rs_hex, (u8*)&rs, sizeof rs) != 0) continue;
++        if (hex_read(lo_hex, (u8*)&layout, sizeof layout) != 0) continue;
++        char* vs = (char*)malloc(vlen + 1);
++        char* ps = (char*)malloc(plen + 1);
++        int bad = 0;
++        for (int k = 0; k < 2 && !bad; k++) {
++            const size_t want = k ? plen : vlen;
++            size_t got = getline(&line, &cap, f);
++            if (got != (size_t)(2 * want + 1)) bad = 1;   /* hex line + newline */
++            else {
++                char* dst = k ? ps : vs;
++                if (hex_read(line, (u8*)dst, want) != 0) bad = 1;
++                else dst[want] = 0;
++            }
++        }
++        if (bad) { free(vs); free(ps); continue; }
++        /* Insert as a pending build the dispatcher will find (and not record
++         * again). Duplicate keys within the file: the first wins. */
++        pthread_mutex_lock(&s_eng_build_lock);
++        u32 i;
++        for (i = 0; i < s_eng_build_count; i++) if (s_eng_builds[i]->key == key) break;
++        if (i == s_eng_build_count &&
++            s_eng_build_count < ENG_ASYNC_MAX && s_eng_pipe_count < ENG_MAX_PIPES) {
++            eng_async_insert(key, vs, ps, &rs, &layout, stride, (rsx_be_format)fmt,
++                             count);
++            kept++;
++        } else pthread_mutex_unlock(&s_eng_build_lock);
++        free(vs); free(ps);
++    }
++    free(line);
++    fclose(f);
++    if (kept) {
++        extern unsigned long long ps3_ms_now(void);
++        fprintf(stderr, "[pso-record] prewarming %u recorded pipeline(s) on the workers\n",
++                kept);
++        (void)t0;
++    }
++}
++
+ static u64 eng_async_key(const char* vs, const char* ps, const rsx_be_render_state* rs,
+                          const rsx_vertex_layout_plan* layout, u32 stride,
+                          rsx_be_format fmt, u32 count)
+@@ -3638,10 +3880,13 @@
+     if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
+     if (!rt_count) rt_count = 1;
+     if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
++    const u64 key = eng_async_key(vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
++    /* Patch 2170: record every new pipeline, sync or async -- the first session
++     * runs sync (no record yet) and is the one that must CREATE the record. */
++    eng_pso_record_line(key, vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
+     if (!eng_async_pso_on())
+         return eng_pipeline_create_sync(user, vs_hlsl, ps_hlsl, rs, layout,
+                                         vertex_stride, rt_fmt, rt_count);
+-    const u64 key = eng_async_key(vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
+     pthread_mutex_lock(&s_eng_build_lock);
+     for (u32 i = 0; i < s_eng_build_count; i++) {
+         if (s_eng_builds[i]->key != key) continue;
+@@ -3693,65 +3938,9 @@
+         pthread_mutex_unlock(&s_eng_build_lock);
+         return 0;
+     }
+-    eng_async_build* b = (eng_async_build*)calloc(1, sizeof *b);
+-    char* vs_copy = b ? strdup(vs_hlsl) : NULL;
+-    char* ps_copy = b ? strdup(ps_hlsl) : NULL;
+-    if (!b || !vs_copy || !ps_copy) {
+-        free(b); free(vs_copy); free(ps_copy);
+-        pthread_mutex_unlock(&s_eng_build_lock);
+-        return 0;
+-    }
+-    b->key = key;
+-    b->queued_us = ps3_ft_now();
+-    b->vs_hlsl = vs_copy;
+-    b->ps_hlsl = ps_copy;
+-    b->rs = *rs;
+-    b->layout = *layout;
+-    b->vertex_stride = vertex_stride;
+-    b->rt_fmt = rt_fmt;
+-    b->rt_count = rt_count;
+-    s_eng_builds[s_eng_build_count++] = b;
+-    pthread_mutex_unlock(&s_eng_build_lock);
+-    dispatch_async(s_eng_build_queue, ^{
+-        /* Patch 2167: up to four builds at a time; the translation itself
+-         * serializes in eng_function's lock, the pipeline creation overlaps. */
+-        static dispatch_semaphore_t s_build_slots;
+-        if (!s_build_slots) s_build_slots = dispatch_semaphore_create(ENG_ASYNC_WORKERS);
+-        dispatch_semaphore_wait(s_build_slots, DISPATCH_TIME_FOREVER);
+-        /* A retry may build this entry on the walker (inline_building); wait
+-         * for that and skip the duplicate. The normal path (no retry) falls
+-         * straight through to the build. */
+-        for (;;) {
+-            pthread_mutex_lock(&s_eng_build_lock);
+-            const int done = b->done;
+-            const int inline_bld = b->inline_building;
+-            pthread_mutex_unlock(&s_eng_build_lock);
+-            if (done) {
+-                free(b->vs_hlsl); b->vs_hlsl = NULL;
+-                free(b->ps_hlsl); b->ps_hlsl = NULL;
+-                dispatch_semaphore_signal(s_build_slots);
+-                return;
+-            }
+-            if (!inline_bld) break;
+-            usleep(1000);
+-        }
+-        const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
+-                                                    &b->rs, &b->layout,
+-                                                    b->vertex_stride, b->rt_fmt, b->rt_count);
+-        dispatch_semaphore_signal(s_build_slots);
+-        pthread_mutex_lock(&s_eng_build_lock);
+-        b->result = handle;
+-        b->done = 1;
+-        pthread_mutex_unlock(&s_eng_build_lock);
+-        { static int n = 0;
+-          if (PS3_LOG_FIRST(n, 24))
+-            fprintf(stderr, "[rsx engine/metal] async pipeline %016llx -> %s\n",
+-                    (unsigned long long)b->key, handle ? "ok" : "failed"); }
+-        /* The functions are deduplicated by their own hashes; the texts are
+-         * only for this build. */
+-        free(b->vs_hlsl); b->vs_hlsl = NULL;
+-        free(b->ps_hlsl); b->ps_hlsl = NULL;
+-    });
++    /* Patch 2170: the record happened above (sync or async alike); hand the
++     * build to a worker. The lock is eng_async_insert's contract. */
++    eng_async_insert(key, vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
+     return 0;
+ }
+ 

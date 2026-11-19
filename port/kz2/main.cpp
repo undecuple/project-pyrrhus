@@ -840,14 +840,17 @@ static void kz2_split_roots(void)   /* after setup_update_dir: an RPCS3 update t
     if (!p.split) return;
     kz2_mkdirs(p.cache);
 #if defined(__APPLE__)
-    /* The Metal backend's pipeline archive (its patch 2161): first-seen pipeline builds
-     * pay the Metal compiler on the drawing thread, so the file persists them beside the
-     * game's other writes, the one place a sandboxed run may write. An explicit
-     * PS3RECOMP_METAL_PSO_ARCHIVE (including =0) wins. */
-    if (!getenv("PS3RECOMP_METAL_PSO_ARCHIVE")) {
-        static char pso_env[1200];
-        snprintf(pso_env, sizeof pso_env, "PS3RECOMP_METAL_PSO_ARCHIVE=%s/metal-pso.bin", p.cache);
-        kz2_host_putenv(pso_env);
+    /* The Metal pipeline record (patch 2170): the workers rebuild the recorded set at
+     * boot, before the game draws it, so first-seen pipeline builds never run on the
+     * drawing thread for content the player has already seen. The archive of patch 2161
+     * is off by default now -- Metal's archive files grow super-linearly (1.17 GB over
+     * ten sessions, then 168 MB in one), and the record achieves the warm start without
+     * a write-back that stalls the walker. Explicit PS3RECOMP_METAL_PSO_ARCHIVE (or the
+     * record =0) still wins. */
+    if (!getenv("PS3RECOMP_METAL_PSO_RECORD")) {
+        static char rec_env[1200];
+        snprintf(rec_env, sizeof rec_env, "PS3RECOMP_METAL_PSO_RECORD=%s/metal-pso-record.txt", p.cache);
+        kz2_host_putenv(rec_env);
     }
 #endif
     if (p.hdd1[0]) { snprintf(s_hdd1_env, sizeof s_hdd1_env, "PS3_HDD1_ROOT=%s", p.hdd1); kz2_host_putenv(s_hdd1_env); }

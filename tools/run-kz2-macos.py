@@ -61,17 +61,9 @@ def main():
                PS3RECOMP_METAL_HEADLESS='1' if args.headless else '0',
                KZ2_SKIP_INTRO='1' if args.skip_intro else '0',
                KZ2_TEST_CLOSE=str(args.seconds - 5), KZ2_NO_ERROR_DIALOG='1')
-    # Patch 2167's background builds still lose content drawn only during a pending
-    # build's drop window: menu boxes, and now gameplay elements too (the owner's
-    # report). Synchronous builds show everything (the owner confirmed the incomplete
-    # menu with async on); an explicit PS3RECOMP_METAL_ASYNC_PSO value wins.
-    env.setdefault('PS3RECOMP_METAL_ASYNC_PSO', '0')
-    # Patches 2162/2163 (depth bounds, depth clamp) break this title's rendering: the owner
-    # bisected menu text, in-game text and floor textures all to them (2026-11-19, run
-    # 20261119-124314: everything correct with both off, everything broken with both on).
-    # Off until they are fixed; explicit PS3RECOMP_ENG_DEPTH_BOUNDS/_DEPTH_CLAMP values win.
-    env.setdefault('PS3RECOMP_ENG_DEPTH_BOUNDS', '0')
-    env.setdefault('PS3RECOMP_ENG_DEPTH_CLAMP', '0')
+    # Pipeline builds: synchronous until the record file exists (every draw, menu
+    # included, renders complete on the first play), background after -- the recorded
+    # set prewarms at boot (patch 2170). An explicit PS3RECOMP_METAL_ASYNC_PSO wins.
     # The LGPL-only FFmpeg built into work/ffmpeg-macos (docs/BUILDING.md); an explicit environment choice wins.
     ffmpeg = work / 'ffmpeg-macos/lib'
     for name, lib in (('PS3RECOMP_FFMPEG_AVUTIL', 'libavutil.61.dylib'),
