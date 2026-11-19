@@ -20,6 +20,9 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
   Gameplay went from about 5 to 24-27 frames per second on an Apple M4 Pro.
 - **macOS fibers:** a finished job fiber of the game's scheduler is reused instead of freed. Each new fiber had a 32 MiB stack that macOS's `makecontext` zeroed, 3.7 % of all samples.
 - **macOS audio plugins (patch 7026, lift):** the Amadeus audio plugin modules are now lifted at LS 0x8400, where the audio job loads them, and are recognised by their header (the job DMAs a heap copy). Before, they ran in the SPU interpreter: 25-30 million steps a second and 13 % of all samples in combat. The lifted code is used only when its bytes match what was loaded. It has not yet been seen running in a scene that loads the plugins.
+- **macOS speed, SPU masks (patch 7027):** the exponent-255 lane test every float helper runs now returns at once in the usual case and tests three or four words in one go. It had been the largest single item of the profile.
+- **macOS washed-out and smeared scenes:** bloom, ILR/vignette and grain start off on Apple ARM64, like depth of field, until the Metal renderer keeps the SPU post chain's inputs in memory. Bright interiors were drawn white-pink and smeared. `KZ2_POST_CLEAR=0` keeps them for testing.
+- **macOS main menu without text:** the run script builds Metal pipelines synchronously by default (`PS3RECOMP_METAL_ASYNC_PSO=0`). Patch 2167's background builds left the UI text pipelines unbuilt.
 - **macOS picture smears in play:** depth of field starts off on Apple ARM64, where the SPU post chain reads inputs the Metal renderer does not yet keep in memory and the whole picture was drawn as horizontal smears. `KZ2_DOF=1` turns it back on for testing.
 
 ### Added

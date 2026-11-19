@@ -61,6 +61,9 @@ def main():
                PS3RECOMP_METAL_HEADLESS='1' if args.headless else '0',
                KZ2_SKIP_INTRO='1' if args.skip_intro else '0',
                KZ2_TEST_CLOSE=str(args.seconds - 5), KZ2_NO_ERROR_DIALOG='1')
+    # Patch 2167's background pipeline builds leave two UI-text pipelines unbuilt, so the main menu shows no text
+    # (work/handoff/metal-for-opencode.md, section 0). Synchronous builds until that is fixed; an explicit value wins.
+    env.setdefault('PS3RECOMP_METAL_ASYNC_PSO', '0')
     # The LGPL-only FFmpeg built into work/ffmpeg-macos (docs/BUILDING.md); an explicit environment choice wins.
     ffmpeg = work / 'ffmpeg-macos/lib'
     for name, lib in (('PS3RECOMP_FFMPEG_AVUTIL', 'libavutil.61.dylib'),
