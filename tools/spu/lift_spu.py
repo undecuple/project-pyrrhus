@@ -409,7 +409,16 @@ def main():
     from wrap_spu_elf import wrap
     from lift_jobmods import manual_link_targets, switch_table_targets
 
-    cov = {}  # no RPCS3 coverage seeds for KZ2 yet (KZ3 re/data/spu_coverage_seeds.tsv)
+    # Extra entries seen in the SPU interpreter at run time (re/spu_entry_seeds_v<VER>.tsv: name, lsa, evidence),
+    # in place of KZ3's RPCS3 coverage seeds (re/data/spu_coverage_seeds.tsv).
+    cov = {}
+    seeds_tsv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "re", f"spu_entry_seeds_v{kz2ver.VER}.tsv")
+    if os.path.exists(seeds_tsv):
+        for line in open(seeds_tsv):
+            if not line.strip() or line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t")
+            cov.setdefault(f[0], []).append(int(f[1], 16))
     kinds = set(a.kinds.split(","))
     d, rows = census()
     AUDIO_ELFS = audio_elfs(rows)
