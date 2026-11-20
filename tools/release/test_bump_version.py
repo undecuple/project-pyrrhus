@@ -15,6 +15,7 @@ script, kz2.iss and CMakeLists are moved while the build-time ones are left alon
     python3 tools/release/test_bump_version.py
 """
 import contextlib
+import hashlib
 import io
 import os
 import pathlib
@@ -30,7 +31,8 @@ sys.path.insert(0, str(HERE))
 import bump_version  # noqa: E402
 import release_version  # noqa: E402
 
-IGNORE = shutil.ignore_patterns(".git", "third_party", "build", "work", "__pycache__", "Game", "Output")
+IGNORE = shutil.ignore_patterns(".git", "third_party", "build", "work", "__pycache__", "Game", "Output",
+                                "*.iso", "*.ISO")
 FAILS = []
 
 
@@ -87,8 +89,16 @@ def seed_unreleased(root):
 
 
 def snapshot(root):
-    return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*")
+    return {str(p.relative_to(root)): file_hash(p) for p in root.rglob("*")
             if p.is_file() and "__pycache__" not in p.parts}
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.digest()
 
 
 def run(root, *args):
@@ -166,6 +176,9 @@ def layout_round(name, root):
 
 
 def units():
+    ignored = IGNORE(str(REAL), ["keep.py", "disc.iso", "DISC.ISO"])
+    check("keep.py" not in ignored and {"disc.iso", "DISC.ISO"} <= ignored,
+          "repository copies ignore disc ISOs")
     for heading in ("## [Unreleased]", "## [Unreleased]  ", "## [Unreleased]\t"):
         text = f"# Changelog\n\n{heading}\n\n### Added\n- A.\n\n## [0.1.0] - 2026-10-28 (tagged, not released)\n"
         got = bump_version.changelog(text, "0.1.1", "2030-01-02")
