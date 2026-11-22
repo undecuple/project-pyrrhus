@@ -1,0 +1,16 @@
+# Extra function entries for the SPU lift (tools/spu/lift_spu.py), 1.29. Entries the lifter does not find because
+# only a computed branch reaches them, seen in the SPU interpreter at run time: SPU_INTERP_HIST=1 lines
+# "[interp-hist] img=2 ovl=<image> start=<lsa>" (ovl = the resident overlay, i.e. the job module the code belongs to).
+# Seeds outside a module's code are dropped by keep_seeds and listed in the lift log.
+# name	lsa	evidence
+job_00d95d80	0x0CFA0	Anim.EdgeAnim (image 224); interp-hist 2026-11-19, cruiser, 676k calls/10 s
+job_00d95d80	0x0DE34	Anim.EdgeAnim (image 224); 360k calls/10 s
+job_00d95d80	0x0DC34	Anim.EdgeAnim (image 224); 360k calls/10 s
+job_00d95d80	0x0DE84	Anim.EdgeAnim (image 224); 360k calls/10 s
+job_00d95d80	0x0DC84	Anim.EdgeAnim (image 224); 360k calls/10 s
+job_00ce7a00	0x0B5D4	Gfx.Particles.ManagerJob (image 203); 929k calls/10 s
+job_00ce7a00	0x0B6C0	Gfx.Particles.ManagerJob (image 203); 929k calls/10 s
+job_00cdb900	0x0F85C	Gfx.Particles.UpdateJob (image 202); 183k calls/10 s
+job_00cdb900	0x0F948	Gfx.Particles.UpdateJob (image 202); 183k calls/10 s
+job_00e22100	0x04C88	Snd.Amadeus (image 231); 2k calls/10 s
+job_00e22100	0x04868	Snd.Amadeus (image 231); 720 calls/10 s

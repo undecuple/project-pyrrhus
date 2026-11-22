@@ -11,6 +11,10 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - **Website:** the project page is now a game-style menu (arrow keys, Enter and Esc, or a game pad) with an in-page screenshot viewer (previous and next, swipe, Esc to close); it works without scripts, and a plain page (`plain.html`) carries the same content. The page's only script is its own and uses no network or storage.
 - **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
 
+### Fixed
+- **macOS audio plugins (patch 7043, lift):** the Amadeus audio plugin modules are now lifted at LS 0x8400, where the audio job loads them, and are recognised by their header (the job DMAs a heap copy). Before, they ran in the SPU interpreter: 25-30 million steps a second and 13 % of all samples in combat. The lifted code is used only when its bytes match what was loaded. Opt-in (`KZ2_SPU_AMADEUS_PLUGINS=1`, set by `tools/lift-kz2-macos.py`), so other lifts are unchanged until it is checked there. It has not yet been seen running in a scene that loads the plugins.
+- **SPU code no longer interpreted (lift seeds):** eleven SPU function entries that only a computed branch reaches -- in the EdgeAnim, particle manager, particle update and Amadeus jobs -- are now lifted from `re/spu_entry_seeds_v129.tsv`, found with `SPU_INTERP_HIST=1`. Opt-in (`KZ2_SPU_ENTRY_SEEDS=1`, set by `tools/lift-kz2-macos.py`), so other lifts are unchanged until it is checked there. They had been the SPU interpreter's whole remaining load, about 1 % of one thread in the cruiser; a run from the mission start into play entered the interpreter zero times.
+
 ## [0.1.13] - 2026-11-13 (pre-release)
 
 ### Added
