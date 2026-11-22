@@ -1,0 +1,90 @@
+KZ2 patch 7046: the POSIX SPURS kernel wake signals without the lock when nobody
+sleeps, and a waiter watches the generation briefly before it sleeps.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+kz3_kwake_signal runs on every job-module exit and every commit to the SPURS
+instance's first lines. On POSIX it took the kwake's mutex and broadcast its
+condition each time, sleepers or not, so the six kernel threads queued on that
+mutex (__psynch_mutexwait under kz3_kwake_wait/kz3_kwake_signal in every Mac
+profile), and each idle kernel thread slept and woke ~2000 times a second
+through the kernel (KZ3_WAIT_ACCT: ksleep 4.5 s in 10 s, avg ~225 us a sleep).
+
+The signal now bumps the generation and takes the lock only when a thread is
+asleep (nsleep). Waiter and signal pair sequentially consistent operations --
+the waiter counts itself, then re-reads the generation; the signal bumps the
+generation, then reads the count -- so either the signal sees the sleeper and
+broadcasts under the lock, or the sleeper sees the new generation and does not
+sleep. Before that, a waiter watches the generation for KZ2_KWAKE_SPIN_US
+microseconds (default 20, 0 = off) with a yield hint: a job posted inside that
+window starts without a kernel round trip. Windows keeps its own path.
+Test: tools/runtime/test_kwake_posix.py.
+
+--- a/runtime/spu/spurs_kern_sched.h
++++ b/runtime/spu/spurs_kern_sched.h
+@@ -168,26 +168,59 @@
+ }
+ #else
+ #include <pthread.h>
++#include <stdlib.h>
+ #include <time.h>
+-typedef struct { pthread_mutex_t lk; pthread_cond_t cv; volatile uint32_t gen; } kz3_kwake;
+-static inline void kz3_kwake_init(kz3_kwake* w) { pthread_mutex_init(&w->lk, 0); pthread_cond_init(&w->cv, 0); w->gen = 0; }
++/* KZ2 patch 7046: the signal (every job-module exit, every commit to the instance's first lines) took the mutex
++ * and broadcast whether anyone slept or not, so the kernel threads queued on that one mutex (__psynch_mutexwait
++ * in every profile), and every sleep went straight to the kernel. Now the signal bumps the generation and takes
++ * the lock only when a thread sleeps (nsleep, sequentially consistent against the waiter's own count and its
++ * re-read of the generation: either the signal sees the sleeper, or the sleeper sees the new generation); and a
++ * waiter first watches the generation for KZ2_KWAKE_SPIN_US (default 20 us, 0 = off) before it sleeps -- a job
++ * posted within that window starts without a kernel round trip. */
++typedef struct { pthread_mutex_t lk; pthread_cond_t cv; volatile uint32_t gen; volatile int nsleep; } kz3_kwake;
++static inline void kz3_kwake_init(kz3_kwake* w) { pthread_mutex_init(&w->lk, 0); pthread_cond_init(&w->cv, 0); w->gen = 0; w->nsleep = 0; }
+ static inline uint32_t kz3_kwake_gen(kz3_kwake* w) { return __atomic_load_n(&w->gen, __ATOMIC_ACQUIRE); }
+ static inline void kz3_kwake_signal(kz3_kwake* w)
+ {
+-    pthread_mutex_lock(&w->lk); __atomic_add_fetch(&w->gen, 1, __ATOMIC_ACQ_REL); pthread_cond_broadcast(&w->cv);
+-    pthread_mutex_unlock(&w->lk);
++    __atomic_add_fetch(&w->gen, 1, __ATOMIC_SEQ_CST);
++    if (__atomic_load_n(&w->nsleep, __ATOMIC_SEQ_CST) == 0) return;
++    pthread_mutex_lock(&w->lk); pthread_cond_broadcast(&w->cv); pthread_mutex_unlock(&w->lk);
+ }
++static inline long kz3_kwake_spin_ns(void)
++{
++    static long s_ns = -1;
++    if (s_ns < 0) { const char* e = getenv("KZ2_KWAKE_SPIN_US"); s_ns = (e ? atol(e) : 20) * 1000L; if (s_ns < 0) s_ns = 0; }
++    return s_ns;
++}
+ static inline int kz3_kwake_wait(kz3_kwake* w, uint32_t seen, unsigned ms)
+ {
++    const long spin = kz3_kwake_spin_ns();
++    if (spin) {
++        struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
++        for (unsigned i = 0;; i++) {
++            if (__atomic_load_n(&w->gen, __ATOMIC_ACQUIRE) != seen) return 1;
++#if defined(__aarch64__)
++            __asm__ __volatile__("yield");
++#elif defined(__x86_64__) || defined(__i386__)
++            __asm__ __volatile__("pause");
++#endif
++            if ((i & 31) == 31) {
++                clock_gettime(CLOCK_MONOTONIC, &b);
++                if ((b.tv_sec - a.tv_sec) * 1000000000L + (b.tv_nsec - a.tv_nsec) >= spin) break;
++            }
++        }
++    }
+     int woke = 1;
+     pthread_mutex_lock(&w->lk);
+-    if (w->gen == seen) {
++    __atomic_add_fetch(&w->nsleep, 1, __ATOMIC_SEQ_CST);
++    if (__atomic_load_n(&w->gen, __ATOMIC_SEQ_CST) == seen) {
+         struct timespec t; clock_gettime(CLOCK_REALTIME, &t);
+         t.tv_sec += ms / 1000; t.tv_nsec += (long)(ms % 1000) * 1000000L;
+         if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+         while (w->gen == seen && pthread_cond_timedwait(&w->cv, &w->lk, &t) == 0) {}
+         woke = w->gen != seen;
+     }
++    __atomic_sub_fetch(&w->nsleep, 1, __ATOMIC_SEQ_CST);
+     pthread_mutex_unlock(&w->lk);
+     return woke;
+ }

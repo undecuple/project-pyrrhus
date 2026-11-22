@@ -36,6 +36,9 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   /* _NSGetExecutablePath: macOS has no /proc */
+#endif
 #endif
 
 #ifndef KZ2_FIOS_PRINTF
@@ -85,6 +88,9 @@ static int kz2_fs_stamp_text_memo(char* out, size_t cap, const char* memo)
 #ifdef _WIN32
         DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
         if (n == 0 || n >= sizeof exe) exe[0] = 0;
+#elif defined(__APPLE__)
+        uint32_t n = (uint32_t)sizeof exe;
+        if (_NSGetExecutablePath(exe, &n) != 0) exe[0] = 0;
 #else
         ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
         exe[n > 0 ? (size_t)n : 0] = 0;
