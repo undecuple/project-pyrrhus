@@ -11,6 +11,12 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - **Website:** the project page is now a game-style menu (arrow keys, Enter and Esc, or a game pad) with an in-page screenshot viewer (previous and next, swipe, Esc to close); it works without scripts, and a plain page (`plain.html`) carries the same content. The page's only script is its own and uses no network or storage.
 - **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
 
+### Fixed
+- **macOS boot stall (patch 6089):** lightweight condition variables (`sys_lwcond`) now wait and wake on every host. Their wait and signal used to compile only on Windows: elsewhere a wait returned at once without releasing its mutex, so the game's file-streaming threads deadlocked on the first read and the screen stayed black.
+- **macOS fonts (patch 6085):** the system fontset now finds `fonts/` next to the executable on macOS, where there is no `/proc/self/exe`; the FIOS cache stamp reads the executable path the same way.
+- **macOS speed, frame thread (patch 6087):** the frame thread's sleep between FIFO passes was a no-op everywhere but Windows, so it spun at the outer loop's full rate -- ~35k message pumps a second, each a dispatch to the main queue, and a busy core. It sleeps 4 ms like the Windows build now (`nanosleep`, which takes waits past one second; host test `test_posix_sleep_ms.py`): pumps dropped 122x (in the contributor's 400 s scripted session, ~280 per 10 s; it was ~34,600).
+- **POSIX SPURS kernel wake (patch 7046):** the SPURS kernel threads signal each other without the lock when nobody sleeps, and a waiter watches for new work for 20 us (`KZ2_KWAKE_SPIN_US`, 0 = off) before it sleeps. Windows keeps its own path. Host test `test_kwake_posix.py` checks that no signal is lost.
+
 ## [0.1.13] - 2026-11-13 (pre-release)
 
 ### Added

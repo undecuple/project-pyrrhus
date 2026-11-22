@@ -1,0 +1,64 @@
+KZ2 patch 6087: the frame thread sleeps on POSIX hosts.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+cellGcm_walker_wait was a no-op everywhere but Windows -- (void)ms; return 0; -- so
+on the Mac route the frame thread spun at the outer loop's full rate: ~8 kHz drain
+passes, ~35k message pumps a second (each a dispatch_sync to the main queue; that
+was the dominant stack of every walker sample), a busy core and main-queue
+contention, all for a loop whose design cadence is one pass per 4 ms. Sleep like
+the Windows build does. The acquire fast path (patch 6082's label re-check) needs
+no event; a park ends within the sleep exactly as the Windows build's did before
+patch 6038 gave it one.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 2eba5a7..65b1810 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -14,6 +14,7 @@
+ #include "gcm_fifo_word.h"   /* KZ2 patch 6026: old- and new-form JUMP decode */
+ #include "cellGcmSys.h"
+ #include "../../runtime/platform/win32_compat.h"
++#include "../../runtime/platform/posix_sleep_ms.h"   /* KZ2 patch 6087: the frame thread's POSIX sleep */
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_write32 (translate + byte-swap, OOB-safe) */
+ #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
+ #include "../../runtime/spu/spu_coherency.h" /* the blit row copy's reservation bookkeeping */
+@@ -1221,7 +1222,15 @@ int cellGcm_walker_wait(unsigned ms)
+     }
+     return WaitForSingleObject(s_walker_wake, ms) == WAIT_OBJECT_0;
+ #else
+-    (void)ms;
++    /* The POSIX hosts slept not at all here: the frame thread spun at the
++     * outer loop's full rate (~8 kHz passes, ~35k message pumps a second),
++     * burning a whole core and contending the main queue for nothing. Sleep
++     * like the Windows build does; the acquire fast path needs no event, and
++     * a park ends within the sleep, as the Windows build's did before patch
++     * 6038 gave it an event. */
++    const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
++    if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
++    if (ms) posix_sleep_ms(ms);   /* nanosleep: usleep past 1 s is unspecified */
+     return 0;
+ #endif
+ }
+diff --git a/runtime/platform/posix_sleep_ms.h b/runtime/platform/posix_sleep_ms.h
+new file mode 100644
+index 0000000..81bd0f9
+--- /dev/null
++++ b/runtime/platform/posix_sleep_ms.h
+@@ -0,0 +1,15 @@
++/* KZ2 patch 6087: a millisecond sleep for POSIX hosts. nanosleep, not usleep: usleep's argument above one second
++ * (1 000 000 us) is unspecified by POSIX, and the frame thread's waits are plain millisecond counts. A signal that
++ * interrupts the sleep (EINTR) resumes it for the time left. Host test: tools/runtime/test_posix_sleep_ms.py. */
++#ifndef POSIX_SLEEP_MS_H
++#define POSIX_SLEEP_MS_H
++#ifndef _WIN32
++#include <errno.h>
++#include <time.h>
++static inline void posix_sleep_ms(unsigned ms)
++{
++    struct timespec t = { (time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L };
++    while (nanosleep(&t, &t) == -1 && errno == EINTR) {}
++}
++#endif
++#endif
