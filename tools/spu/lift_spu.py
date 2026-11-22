@@ -31,6 +31,7 @@ CODE_END = {}
 # SPURS policy module: raw LS image the SPURS kernel loads at LS 0xA00 and enters at 0xA00 (cellSpursModuleEntry).
 # 0xA2C is its interrupt handler (the entry stores `bra 0xA2C` at LS 0; nothing branches there).
 PM_BASE = 0xA00
+AMADEUS_PLUGIN_LSA = 0x8400   # where the Amadeus job loads its plugin modules (see job_modules)
 PM_SEEDS = [0xA2C]
 
 
@@ -73,7 +74,17 @@ def job_modules(d, rows):
         inside = any(0 < s - e < 0x200 for e in aud)
         meta = dict(file_offset=s, entry_off=ent, footprint=foot, w3=w3, w4=w4, w9=w9, hdr_base=base,
                     flags=flags, inside_elf=inside, reg_name=r.get("reg_name", ""))
-        out.append((r["name"], raw, base or 0x4000, ent, meta))
+        # The Amadeus audio plugin modules (header base 0, flags bit 31) are loaded by the Amadeus job at LS 0x8400,
+        # not 0x4000: every [spu-ovl-map] line for them in first-mission runs (images 229, 230, 235, wid 6
+        # jm_amadeus) says "-> LS 0x08400". Lifted at 0x4000 their code was never used and Amadeus ran them in the SPU
+        # interpreter, 25-30 M steps/s and 13 % of all process samples on an Apple M4 Pro. Lifted where they run, the
+        # runtime's resident-code check (memcmp of the lifted bytes at the load address) still decides per load.
+        # Opt-in (KZ2_SPU_AMADEUS_PLUGINS=1, set by tools/lift-kz2-macos.py) until the x86 lift is checked with it.
+        if not base and flags & 0x80000000 and os.environ.get("KZ2_SPU_AMADEUS_PLUGINS") == "1":
+            ls = AMADEUS_PLUGIN_LSA
+        else:
+            ls = base or 0x4000
+        out.append((r["name"], raw, ls, ent, meta))
     return out
 
 
@@ -399,7 +410,17 @@ def main():
     from wrap_spu_elf import wrap
     from lift_jobmods import manual_link_targets, switch_table_targets
 
-    cov = {}  # no RPCS3 coverage seeds for KZ2 yet (KZ3 re/data/spu_coverage_seeds.tsv)
+    # Extra entries seen in the SPU interpreter at run time (re/spu_entry_seeds_v<VER>.tsv: name, lsa, evidence),
+    # in place of KZ3's RPCS3 coverage seeds (re/data/spu_coverage_seeds.tsv). Opt-in (KZ2_SPU_ENTRY_SEEDS=1, set by
+    # tools/lift-kz2-macos.py) until the x86 lift is checked with them: they add lifted functions on every host.
+    cov = {}
+    seeds_tsv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "re", f"spu_entry_seeds_v{kz2ver.VER}.tsv")
+    if os.environ.get("KZ2_SPU_ENTRY_SEEDS") == "1" and os.path.exists(seeds_tsv):
+        for line in open(seeds_tsv):
+            if not line.strip() or line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t")
+            cov.setdefault(f[0], []).append(int(f[1], 16))
     kinds = set(a.kinds.split(","))
     d, rows = census()
     AUDIO_ELFS = audio_elfs(rows)

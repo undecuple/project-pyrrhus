@@ -118,3 +118,4 @@ bash tools/test_safe_rm.sh
 nix develop .#re --command python3 tools/runtime/test_sync_mutex_semantics.py
 nix develop .#re --command python3 tools/runtime/test_spu_helpers_sse_vs_scalar.py
 nix develop .#re --command python3 tools/runtime/test_spu_neon_coverage.py
+nix develop .#re --command python3 tools/runtime/test_spu_pool_portability.py

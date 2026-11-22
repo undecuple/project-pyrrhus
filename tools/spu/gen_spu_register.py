@@ -33,6 +33,9 @@ PM_ENTRY = 0xA00
 RESERVED = {1, 22, 23, 100} | set(range(60, 66))
 
 
+AMADEUS_PLUGIN_LSA = 0x8400   # tools/spu/lift_spu.py: where the Amadeus job loads its plugin modules
+
+
 def be16(b, o): return (b[o] << 8) | b[o + 1]
 def be32(b, o): return struct.unpack_from(">I", b, o)[0]
 
@@ -130,7 +133,7 @@ def main():
 
     for i, r in enumerate(jobs):
         raw = eboot[r["file_offset"]:r["file_offset"] + r["size"]]
-        images.append(dict(name=r["name"], kind="job", image_id=JOB_IMAGE_BASE + i, sig=raw[:16].hex(),
+        images.append(dict(name=r["name"], kind="job", image_id=JOB_IMAGE_BASE + i, sig=raw[:16].hex(), raw=raw,
                            size=len(raw), ea=r["file_offset"] + 0x10000, base=r["base"],
                            hdr_base=r["hdr_base"], flags=r["flags"], entry=r["base"] + r["entry_off"],
                            entry_sym=f"{r['name']}_spu_func_{r['base'] + r['entry_off']:08X}"))
@@ -185,6 +188,7 @@ def main():
          "#endif",
          "extern void spu_begin_image(int image_id);",
          "extern void spu_overlay_register_sig(const uint8_t sig[16], int image_id);",
+         '#include "spu_overlay_residency.h"   /* the Amadeus plugins: spu_overlay_register_verified_region */',
          ""]
     for m in images:
         L.append(f"extern void {m['name']}_spu_recomp_register(void);")
@@ -208,7 +212,21 @@ def main():
         if m.get("text_fp") is not None:
             L.append(f"    spu_workload_register_img(0x{m['text_fp']:016X}ULL, {m['entry_sym']}, "
                      f"{m['image_id']}, \"{m['name']}.text\");")
-        if m["kind"] == "job":
+        if m["kind"] == "job" and m.get("base") == AMADEUS_PLUGIN_LSA and m.get("flags", 0) & 0x80000000:
+            # An Amadeus audio plugin (lift_spu.py lifts them at the LS address Amadeus loads them to). Registered
+            # as a verified code region keyed by its header signature (patch 7043; Amadeus DMAs a heap copy, never
+            # the image's EA): a resident-code slot of its own, so the plugin's
+            # lifted functions are found while the Amadeus job module stays the resident overlay. The runtime
+            # compares these bytes with local store at the first dispatch after each load and falls back to the
+            # interpreter if they differ.
+            arr = ",".join(f"0x{x:02X}" for x in m["raw"])
+            L.append(f"    {{ static const uint8_t code[{len(m['raw'])}] = {{{arr}}};")
+            L.append(f"      static const spu_overlay_code_segment seg = {{ 0x{m['base']:X}u, {len(m['raw'])}u, code }};")
+            sig = ",".join(f"0x{x:02X}" for x in bytes.fromhex(m["sig"]))
+            L.append(f"      static const uint8_t sig[16] = {{{sig}}};")
+            L.append(f"      spu_overlay_register_verified_sig(sig, 0x{m['base']:X}u, {len(m['raw'])}u, "
+                     f"{m['image_id']}, &seg, 1u); }}")
+        elif m["kind"] == "job":
             arr = ",".join(f"0x{x:02X}" for x in bytes.fromhex(m["sig"]))
             L.append(f"    {{ static const uint8_t sig[16] = {{{arr}}};")
             L.append(f"      spu_overlay_register_sig(sig, {m['image_id']}); }}")
@@ -233,7 +251,8 @@ def main():
         for k in ("fp", "text_fp"):
             if m.get(k) is not None:
                 m[k] = f"0x{m[k]:016X}"
-    json.dump(images, open(os.path.join(a.lift, "kz2_spu_manifest.json"), "w"), indent=1)
+    json.dump([{k: v for k, v in m.items() if k != "raw"} for m in images],
+              open(os.path.join(a.lift, "kz2_spu_manifest.json"), "w"), indent=1)
     n = {k: sum(1 for m in images if m["kind"] == k) for k in ("pm", "elf", "job", "elfseg")}
     print(f"registered {len(images) - n['elfseg']} images: {n['pm']} policy module(s), {n['elf']} ELFs, "
           f"{n['job']} job modules; {n['elfseg']} extra ELF code segment(s)")
