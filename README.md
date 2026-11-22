@@ -9,7 +9,7 @@
 An unofficial fan port by static recompilation.</p>
 
 <p align="center">
-  <a href="https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/undecuple/project-pyrrhus/ci.yml?label=CI&style=flat-square&labelColor=17130f"></a> <!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13"><img alt="pre-release 0.1.13" src="https://img.shields.io/badge/pre--release-0.1.13-b4500f?style=flat-square&labelColor=17130f"></a><!-- /version -->
+  <a href="https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml/badge.svg"></a> <!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13"><img alt="pre-release 0.1.13" src="https://img.shields.io/badge/pre--release-0.1.13-b4500f?style=flat-square&labelColor=17130f"></a><!-- /version -->
   <a href="https://github.com/undecuple/project-pyrrhus/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/undecuple/project-pyrrhus/total?style=flat-square&color=b4500f&labelColor=17130f"></a>
   <a href="https://github.com/undecuple/project-pyrrhus/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/undecuple/project-pyrrhus?style=flat-square&color=b4500f&labelColor=17130f"></a>
 </p>
@@ -32,7 +32,7 @@ An unofficial fan port by static recompilation.</p>
   <b><a href="docs/BUILDING.md">Build from source</a></b>
 </p>
 
-<p align="center"><img src="assets/divider-frame.png" width="900" alt=""></p>
+---
 
 **Project Pyrrhus** is an unofficial fan port of Killzone 2 (PS3) to Windows x64. The game's own code is recompiled ahead of time to a native program, and the setup builds it on your PC from your own copy.
 
@@ -40,7 +40,7 @@ An unofficial fan port by static recompilation.</p>
 > need your own Killzone 2 disc dump, its 1.29 update and the decrypted EBOOT made from your copy
 > ([what each must contain](docs/GETTING-FILES.md)).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Status
 
@@ -55,6 +55,7 @@ One row per setup. *Verified* means we ran it on that setup. *Implemented* means
 | Platform | How it runs | Renderer | State | Tested on |
 |---|---|---|---|---|
 | Windows 11 | native exe | Direct3D 12 | players report playing (issue #13); not run by us | a player's laptop: RTX 4070 Laptop GPU (21-28 fps in the first part of the first level, their report) |
+| macOS (Apple silicon, experimental developer build) | native ARM64 | Metal | synthetic boot only: 3 frames, threads, vblank and exit; Killzone 2 untested | Apple M4 Pro; [build instructions](docs/BUILDING.md#building-on-macos) |
 | Windows 10 | native exe, in a virtual machine | Direct3D 12 | installer, first-run build and uninstall verified; the game starts and stops at its graphics device (no GPU there) | 6 cores, 8 GB, no GPU, 2026-10-27 and 2026-10-28 |
 | Linux | the Windows exe under Proton | Direct3D 12 | verified: the first level loads and plays in our scripted runs, about 23 fps over one 330 s run (2026-10-22) and a median of 32.6 fps in short turn-and-walk windows (2026-10-29), against the PS3's 30; hand play is not measured | GE-Proton11-7, i7-12700KF, RTX 4060 |
 
@@ -65,7 +66,7 @@ Optional features, in the same three states (both new in 0.1.7):
 | Options > Display: field of view (45-75, 45 is the original), first-person only | verified in play under Proton (45, 60, 75) | GE-Proton11-7, RTX 4060 |
 | Options > Display: upscaling (Off / FSR 1) and sharpness | implemented; drawn in the menu under Proton, not yet checked in play; adds about 0.4-1.3 ms of graphics time per frame at 2560x1440 in our tests | GE-Proton11-7, RTX 4060 |
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Download and play
 
@@ -91,13 +92,13 @@ If setup fails or the game does not start, see [docs/TROUBLESHOOTING.md](docs/TR
 
 **Linux:** run the same Windows download under Proton, for example as a non-Steam game in Steam. The installer and the zip are made for Windows and not checked under Proton. We test the built game under GE-Proton ([known issues](docs/KNOWN_ISSUES.md)).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## What goes online and where your data goes
 
 Nothing, unless you ask: the port starts no connection of its own. The optional check for new versions and the update download are described in [docs/PRIVACY.md](docs/PRIVACY.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## What makes it different
 
@@ -109,7 +110,7 @@ Nothing, unless you ask: the port starts no connection of its own. The optional 
 | Shaders built during the load from a shipped list: pauses over 0.1 s in the first minute fell from 18-20 to 2 in paired scripted runs (not yet measured in an installed copy) | [Known issues](docs/KNOWN_ISSUES.md#frame-rate) |
 | The setup checks your files before building and names what is wrong | [Getting your files](docs/GETTING-FILES.md#what-the-first-run-check-can-print) |
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Settings and controllers
 
@@ -117,49 +118,49 @@ Nothing, unless you ask: the port starts no connection of its own. The optional 
 - **Settings files:** `keybinds.ini` and `gameplay.ini` are in `%APPDATA%\Project Pyrrhus`, or next to `kz2.exe` in the portable zip. `gameplay.ini` is created with its defaults on the first start, and an existing one is never changed.
 - More: [features](docs/FEATURES.md) and [accessibility](docs/ACCESSIBILITY.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Known issues
 
 The main ones: speed is not yet a steady 30 frames per second, and only the first level has been played. Sound is stereo only. Shaders compile on first use, which stutters the first minute of each area. The full list is [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Troubleshooting and reporting bugs
 
 Problems are listed by what you see, with the cause, the fix and the log paths, in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). To report a bug, [open an issue](https://github.com/undecuple/project-pyrrhus/issues/new/choose). The form asks for your system and the newest log file.
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Building
 
 You can build the port yourself. It needs a lot of memory and about 18 minutes with four jobs. Steps: [docs/BUILDING.md](docs/BUILDING.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## How it works
 
 The game's PPU and SPU code is recompiled ahead of time to native x64. The graphics commands are translated to Direct3D 12 at run time. The system libraries are reimplemented on PC APIs. Details: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Roadmap
 
 Not done yet, and said openly: a steady 30 frames per second, the campaign past the first level, and loading checkpoint saves back. Also 5.1 surround sound, and multiplayer (offline bots and self-hosted online). Where each stands: [roadmap](docs/ROADMAP.md) and [feature table](docs/FEATURES.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Contributing
 
 Pull requests are welcome: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md). People whose pull requests were merged are named in [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## How AI was used
 
 This project is developed by one person with AI coding agents, with the maintainer reviewing and merging their work: [docs/AI.md](docs/AI.md).
 
-<p align="center"><img src="assets/divider-hazard.png" width="900" alt=""></p>
+---
 
 ## Licence and disclaimer
 
@@ -169,7 +170,7 @@ The port's own code, tools and documentation: [MIT](LICENSE). Third-party compon
 
 **You need your own copy of the game.** This repository contains only the port: source code, patches to the recompiler, tools and documentation. It contains no game code, data, assets, keys or firmware, and it never will. Killzone 2 is © Sony Interactive Entertainment.
 
-<p align="center"><img src="assets/divider-rule.png" width="900" alt=""></p>
+---
 
 ## Related projects, credits and official channels
 
@@ -179,6 +180,6 @@ The port's own code, tools and documentation: [MIT](LICENSE). Third-party compon
 
 This port currently supports Direct3D 12 only. For a Vulkan version of a Killzone 2 port, please use [Tokisaki Port](https://github.com/YYOzcan/tokisaki-port), which is developed separately by its own author.
 
-Project Pyrrhus is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple), Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440) and the [undecuple Discord server](https://discord.gg/W8fMT78Q7k) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&labelColor=17130f&logo=discord&logoColor=white)](https://discord.gg/W8fMT78Q7k) (unofficial fan work), which has a Project Pyrrhus forum. Builds and fixes come only from this repository's [GitHub Releases](https://github.com/undecuple/project-pyrrhus/releases). We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or donations in this project's name is not us.
+Project Pyrrhus is made by **undecuple**: GitHub [@undecuple](https://github.com/undecuple), Reddit [u/RelationshipNo4440](https://www.reddit.com/user/RelationshipNo4440) and the [undecuple Discord server](https://discord.gg/W8fMT78Q7k) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8fMT78Q7k) (unofficial fan work), which has a Project Pyrrhus forum. Builds and fixes come only from this repository's [GitHub Releases](https://github.com/undecuple/project-pyrrhus/releases). We never ask anyone to paste a command into PowerShell or a terminal. Anyone else offering builds, "fixes" or donations in this project's name is not us.
 
 More pages: [Features](docs/FEATURES.md) · [Screenshots](docs/SCREENSHOTS.md) · [Requirements](docs/requirements.md) · [Release criteria](docs/RELEASE-CRITERIA.md) · [Changelog](CHANGELOG.md)
