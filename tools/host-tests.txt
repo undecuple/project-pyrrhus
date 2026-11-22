@@ -114,3 +114,4 @@ nix develop --command tools/sandbox.sh -- tools/spu/test_native_vjnorm.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_native_ctr.sh
 nix develop --command tools/sandbox.sh -- tools/spu/test_spu_pcguess.sh
 bash tools/test_safe_rm.sh
+nix develop .#re --command python3 tools/runtime/test_sync_mutex_semantics.py
