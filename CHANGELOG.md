@@ -11,6 +11,9 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 - **Website:** the project page is now a game-style menu (arrow keys, Enter and Esc, or a game pad) with an in-page screenshot viewer (previous and next, swipe, Esc to close); it works without scripts, and a plain page (`plain.html`) carries the same content. The page's only script is its own and uses no network or storage.
 - **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
 
+### Fixed
+- **SPU math on ARM64 (patch 6086):** `fma`, `fms` and `fnms` now flush subnormal results to zero on hosts without SSE4.1, as the Windows build does. A new host test runs all 150 SPU helpers on both paths and found these three the only ones that differed; all now match bit for bit.
+
 ## [0.1.13] - 2026-11-13 (pre-release)
 
 ### Added
