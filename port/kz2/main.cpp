@@ -48,6 +48,13 @@
 #include <string.h>
 #include <ctype.h>
 #include <string>
+#include <atomic>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
+#ifdef __APPLE__
+#include "kz2_macos_host.h"
+#endif
 #ifdef _WIN32
 #include <direct.h>
 #endif
@@ -76,6 +83,28 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
+
+/* Keep the CRT-specific path and environment calls out of shared boot code. */
+static int kz2_host_putenv(const char* assignment)
+{
+#ifdef _WIN32
+    return _putenv(assignment);
+#else
+    const char* equal = strchr(assignment, '=');
+    if (!equal) return -1;
+    const std::string name(assignment, equal);
+    return setenv(name.c_str(), equal + 1, 1);
+#endif
+}
+static int kz2_host_mkdir(const char* path)
+{
+#ifdef _WIN32
+    return _mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
+}
+extern "C" int kz2_skip_intro_enabled(void);
 
 /* ---------------------------------------------------------------------------
  * What the scaffold gives this file
@@ -306,7 +335,21 @@ static void kz2_rsx_present(void)
     if (s_rsx_live) rsx_live_draw_present(cellGcmGetCurrentDisplayBufferId());
     else            rsx_backend_present();
 }
-static int kz2_rsx_pump(void) { return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump(); }
+static std::atomic<bool> s_close_requested{false};
+static int kz2_rsx_pump(void) {
+    if (s_close_requested.load(std::memory_order_acquire)) return 1;
+    return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump();
+}
+
+[[noreturn]] static void kz2_host_terminate(unsigned code)
+{
+    fflush(NULL);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), code);
+#endif
+    // Other guest threads may hold C-runtime locks. Do not run exit handlers.
+    _Exit((int)code);
+}
 
 /* Window closed (X button, Alt+F4, a scripted WM_CLOSE such as tools/release/shaders.py's): end the
  * process cleanly from the frame thread, which owns the window and the live-draw walker. Live-draw shutdown first
@@ -323,7 +366,7 @@ static DWORD WINAPI kz2_close_watchdog(LPVOID)
     KZ2_LOGE("exit", "window-close shutdown did not finish in %d s: terminating (exit code 3)", s);
     kz2_log_shutdown();
     fflush(NULL);
-    TerminateProcess(GetCurrentProcess(), 3);
+    kz2_host_terminate(3);
     return 0;
 }
 static void kz2_exit_on_window_close(void)
@@ -338,11 +381,12 @@ static void kz2_exit_on_window_close(void)
     KZ2_LOGI("exit", "clean exit after %.0f ms (exit code 0)", (double)(t1.QuadPart - t0.QuadPart) * 1e3 / (double)f.QuadPart);
     kz2_log_shutdown();
     fflush(NULL);
-    TerminateProcess(GetCurrentProcess(), 0);
+    kz2_host_terminate(0);
 }
 
 /* KZ2_TEST_CLOSE=<s>: after s seconds, post WM_CLOSE to every top-level window of this process, as
  * tools/release/shaders.py's close_politely does from outside (Proton test of the clean exit). */
+#ifdef _WIN32
 static BOOL CALLBACK kz2_test_close_enum(HWND h, LPARAM n)
 {
     DWORD pid = 0;
@@ -350,23 +394,27 @@ static BOOL CALLBACK kz2_test_close_enum(HWND h, LPARAM n)
     if (pid == GetCurrentProcessId()) { PostMessageW(h, WM_CLOSE, 0, 0); ++*(int*)n; }
     return TRUE;
 }
+#endif
 /* the menu's EXIT TO DESKTOP (gModule:ExitAll("pc:exit"), kz2_menu_pages.cpp) closes the game the way the
  * window's close button does: WM_CLOSE to this process's windows, then kz2_exit_on_window_close on the frame thread
  * (clean shutdown, exit code 0). */
 extern "C" void kz2_request_close(const char* why)
 {
+#ifdef _WIN32
     int n = 0;
     EnumWindows(kz2_test_close_enum, (LPARAM)&n);
     KZ2_LOGI("exit", "%s: WM_CLOSE posted to %d window(s)", why ? why : "close requested", n);
+#else
+    s_close_requested.store(true, std::memory_order_release);
+    KZ2_LOGI("exit", "%s: close requested", why ? why : "close requested");
+#endif
 }
 static DWORD WINAPI kz2_test_close(LPVOID)
 {
     const char* e = getenv("KZ2_TEST_CLOSE");
     Sleep((DWORD)(atoi(e) * 1000));
     kz2_log_set_thread_label("test");
-    int n = 0;
-    EnumWindows(kz2_test_close_enum, (LPARAM)&n);
-    KZ2_LOGI("test", "KZ2_TEST_CLOSE=%s: WM_CLOSE posted to %d window(s)", e, n);
+    kz2_request_close("KZ2_TEST_CLOSE");
     return 0;
 }
 
@@ -387,14 +435,16 @@ static void present_guest_frame(void)
  * runs), the log flushed, exit code 2. TerminateProcess as on window close: guest threads may hold CRT locks. */
 static void kz2_no_renderer_exit(void)
 {
-    fprintf(stderr, "[rsx] ERROR: no Direct3D 12 device (see the [d3d12] lines above): exiting with code 2\n");
+    fprintf(stderr, "[rsx] ERROR: no %s graphics device: exiting with code 2\n", RSX_BACKEND_NAME);
     kz2_log_shutdown();
+#ifdef _WIN32
     const char* q = getenv("KZ2_NO_ERROR_DIALOG");
     if (!(q && q[0] == '1'))
         MessageBoxW(NULL, L"Project Pyrrhus could not start: no Direct3D 12 graphics device was found.\n\n"
                           L"Please install or update the graphics driver. The log folder next to kz2.exe has the details.",
                     L"Project Pyrrhus", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-    TerminateProcess(GetCurrentProcess(), 2);
+#endif
+    kz2_host_terminate(2);
 }
 
 /* The game ended itself (public #49): its abort() (kz2_ppu_overrides.cpp) is a store to address 0
@@ -405,12 +455,14 @@ extern "C" void kz2_guest_fatal_exit(const char* what)
 {
     fprintf(stderr, "[guest-fatal] the game stopped itself (%s): exiting with code 5\n", what ? what : "?");
     kz2_log_shutdown();
+#ifdef _WIN32
     const char* q = getenv("KZ2_NO_ERROR_DIALOG");
     if (!(q && q[0] == '1'))
         MessageBoxW(NULL, L"Killzone 2 stopped with an internal error (the game called abort).\n\n"
                           L"The log folder next to kz2.exe has the details; please attach the newest log to a bug report.",
                     L"Project Pyrrhus", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-    TerminateProcess(GetCurrentProcess(), 5);
+#endif
+    kz2_host_terminate(5);
 }
 
 /* The message pump inside the vblank catch-up loop. From Project Helghast (the Killzone 3 PC port)
@@ -516,7 +568,7 @@ static DWORD WINAPI frame_clock(LPVOID)
 
     int rsx_ok = (kz2_rsx_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
-            rsx_ok ? "OK -- window open" : "FAILED");
+            rsx_ok ? "OK" : "FAILED");
     if (!rsx_ok) kz2_no_renderer_exit();
 
     unsigned  last_flip = 0;
@@ -742,14 +794,14 @@ static void setup_update_dir(void)
     const char* hdd0 = getenv("PS3_HDD0_ROOT");
     if ((!hdd0 || !*hdd0) && n > tl && strcmp(s_update_dir + n - tl, tail) == 0) {
         snprintf(s_hdd0_env, sizeof s_hdd0_env, "PS3_HDD0_ROOT=%.*s", (int)(n - tl), s_update_dir);
-        _putenv(s_hdd0_env);
+        kz2_host_putenv(s_hdd0_env);
         printf("[boot] update: %s (PS3_HDD0_ROOT=%s)\n", s_update_dir, s_hdd0_env + 14);
     } else {
         printf("[boot] update: %s (VFS miss hook%s)\n", s_update_dir, hdd0 && *hdd0 ? "; PS3_HDD0_ROOT already set" : "");
     }
     g_ps3_vfs_miss_hook = update_miss_hook;
     /* cellGameBootCheck reports the PATCH attribute, as for a PS3 title booted from its update (patch 6007). */
-    if (!getenv("PS3_GAME_ATTR_PATCH")) _putenv("PS3_GAME_ATTR_PATCH=1");
+    if (!getenv("PS3_GAME_ATTR_PATCH")) kz2_host_putenv("PS3_GAME_ATTR_PATCH=1");
     struct stat st;
     if (stat(s_update_dir, &st) != 0) printf("[boot] update: %s does not exist\n", s_update_dir);
     /* An earlier change (D53): the disc's and the update's title ids. Each region's 1.29 update belongs to its own disc (the
@@ -776,9 +828,9 @@ static void kz2_mkdirs(const char* path)   /* mkdir -p; existing parts are fine 
     for (char* p = b + 1; *p; p++) {
         if (*p != '/') continue;
         if (p[-1] == ':') continue;   /* "C:/" */
-        *p = 0; _mkdir(b); *p = '/';
+        *p = 0; kz2_host_mkdir(b); *p = '/';
     }
-    _mkdir(b);
+    kz2_host_mkdir(b);
 }
 
 static void kz2_split_roots(void)   /* after setup_update_dir: an RPCS3 update tree's PS3_HDD0_ROOT wins */
@@ -787,8 +839,22 @@ static void kz2_split_roots(void)   /* after setup_update_dir: an RPCS3 update t
                                                  getenv("PS3_HDD0_ROOT"), getenv("PS3_GAMEDATA_ROOT"));
     if (!p.split) return;
     kz2_mkdirs(p.cache);
-    if (p.hdd1[0]) { snprintf(s_hdd1_env, sizeof s_hdd1_env, "PS3_HDD1_ROOT=%s", p.hdd1); _putenv(s_hdd1_env); }
-    if (p.hdd0[0]) { snprintf(s_hdd0_env2, sizeof s_hdd0_env2, "PS3_HDD0_ROOT=%s", p.hdd0); _putenv(s_hdd0_env2); }
+#if defined(__APPLE__)
+    /* The Metal pipeline record (patch 2181): the workers rebuild the recorded set at
+     * boot, before the game draws it, so first-seen pipeline builds never run on the
+     * drawing thread for content the player has already seen. The archive of patch 2173
+     * is off by default now -- Metal's archive files grow super-linearly (1.17 GB over
+     * ten sessions, then 168 MB in one), and the record achieves the warm start without
+     * a write-back that stalls the walker. Explicit PS3RECOMP_METAL_PSO_ARCHIVE (or the
+     * record =0) still wins. */
+    if (!getenv("PS3RECOMP_METAL_PSO_RECORD")) {
+        static char rec_env[1200];
+        snprintf(rec_env, sizeof rec_env, "PS3RECOMP_METAL_PSO_RECORD=%s/metal-pso-record.txt", p.cache);
+        kz2_host_putenv(rec_env);
+    }
+#endif
+    if (p.hdd1[0]) { snprintf(s_hdd1_env, sizeof s_hdd1_env, "PS3_HDD1_ROOT=%s", p.hdd1); kz2_host_putenv(s_hdd1_env); }
+    if (p.hdd0[0]) { snprintf(s_hdd0_env2, sizeof s_hdd0_env2, "PS3_HDD0_ROOT=%s", p.hdd0); kz2_host_putenv(s_hdd0_env2); }
     const char* h1 = getenv("PS3_HDD1_ROOT");
     const char* h0 = getenv("PS3_HDD0_ROOT");
     printf("[boot] cache root (all writes): %s; game folder read in place: %s; /dev_hdd1 -> %s, /dev_hdd0 -> %s\n",
@@ -838,12 +904,12 @@ static bool alloc_guest_vm(void)
         vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, MEM_RESERVE, PAGE_READWRITE);
     ppu_vm_size = 0;              /* the whole space is backed; no OOB guard needed */
 #else
-    /* No vectored exception handlers off Windows, so the arena is committed up
-     * front and lazily backed by the OS: only pages the title touches cost
-     * anything. It stops below the 0xE0000000 mark, so ppu_vm_size arms the
-     * loader's bounds check for what is left. */
-    vm_base = (uint8_t*)calloc(1, 0xE0000000u);
-    ppu_vm_size = 0xE0000000u;
+    /* Anonymous VM is zero-filled and backed only as pages are touched.
+     * Match Windows' full guest address space, including high thread stacks. */
+    void* arena = mmap(nullptr, VM_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    vm_base = arena == MAP_FAILED ? nullptr : static_cast<uint8_t*>(arena);
+    ppu_vm_size = 0;
 #endif
     return vm_base != nullptr;
 }
@@ -1097,7 +1163,7 @@ int main(int argc, char** argv)
     for (const auto& e : kz2_env) {
         if (getenv(e[0])) continue;
 #ifdef _WIN32
-        char kv[64]; snprintf(kv, sizeof kv, "%s=%s", e[0], e[1]); _putenv(kv);
+        char kv[64]; snprintf(kv, sizeof kv, "%s=%s", e[0], e[1]); kz2_host_putenv(kv);
 #else
         setenv(e[0], e[1], 0);
 #endif
@@ -1157,7 +1223,11 @@ int main(int argc, char** argv)
 
     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n", entry, STACK_TOP);
     if (getenv("KZ3_WAIT_ACCT")) kz3_wacct_name("ppu:main");   /* the thread that runs the guest entry */
+#ifdef __APPLE__
+    int rc = kz2_macos_run_guest(entry, STACK_TOP, ppu_run);
+#else
     int rc = ppu_run(entry, STACK_TOP);
+#endif
     printf("\n[boot] ppu_run returned %d (entry function unwound)\n", rc);
     kz2_log_shutdown();
     return g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;

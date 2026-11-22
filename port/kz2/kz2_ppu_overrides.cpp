@@ -120,16 +120,34 @@ static int kz2_poststage_should_log(uint32_t* count)
  * vector pass @0x544D18 and the mask-1 SPU jobs HBlur, Upsample, MotionBlur), 2 = depth of field (DoF GPU passes,
  * DepthOfField/DepthToFuzzy jobs), 0x14 bloom, 8 grain, 0x10 ILR/vignette. The field's owner rewrites it, so the bits
  * are cleared at every Render entry. Motion blur is off by default (it doubles moving images at a few frames per
- * second): KZ2_MOTION_BLUR=1 keeps it. Depth of field stays on: KZ2_DOF=0 switches it off (speed option). */
+ * second): KZ2_MOTION_BLUR=1 keeps it. Depth of field stays on: KZ2_DOF=0 switches it off (speed option).
+ * Native macOS on ARM64 has no x86 native post jobs, and the lifted DepthOfField path there draws the whole picture as
+ * horizontal smears (first mission, Apple M4 Pro; clean with KZ2_DOF=0). Until that is found, depth of field starts off
+ * on Apple ARM64; KZ2_DOF=1 turns it back on for testing. */
 static uint32_t kz2_post_clear_mask(void)
 {
     static int m = -1;
     if (m < 0) {
         const char* mb = getenv("KZ2_MOTION_BLUR");
         const char* dof = getenv("KZ2_DOF");
+#if defined(__APPLE__) && defined(__aarch64__)
+        const int dof_default = 0;
+#else
+        const int dof_default = 1;
+#endif
         int v = 0;
         if (!(mb && atoi(mb) != 0)) v |= 0x1;
-        if (dof && *dof && atoi(dof) == 0) v |= 0x2;
+        if (dof && *dof ? atoi(dof) == 0 : !dof_default) v |= 0x2;
+        /* KZ2_POST_CLEAR=<mask>: clear further effect bits too (0x04/0x10 bloom and ILR/vignette, 0x08 grain).
+         * On Apple ARM64 they start cleared (0x1C), like depth of field: the SPU post chain reads its inputs from guest
+         * memory the Metal renderer does not keep up to date, and bloom/ILR smeared and washed out whole scenes (the
+         * cruiser's bright interiors white-pink; clean with all three off). KZ2_POST_CLEAR=0 keeps them for testing. */
+        const char* pc = getenv("KZ2_POST_CLEAR");
+#if defined(__APPLE__) && defined(__aarch64__)
+        v |= (pc && *pc) ? (int)(strtoul(pc, NULL, 0) & 0x1Fu) : 0x1C;
+#else
+        if (pc && *pc) v |= (int)(strtoul(pc, NULL, 0) & 0x1Fu);
+#endif
         m = v;
     }
     return (uint32_t)m;
@@ -845,7 +863,8 @@ void func_000732D8(ppu_context* ctx)
     }
     if (kf_log()) fprintf(stderr, "[kz2-fiber] S=0x%08X finish slot %u (#%llu)\n", S, cur, g_kf_finishes);
     fs->dead = guest_fiber_current();
-    guest_fiber_switch(fs->home);
+    /* Back to home as the job's end: the fiber (created by home) parks for reuse on POSIX hosts (guest_fiber_exit). */
+    guest_fiber_exit();
     fprintf(stderr, "[kz2-fiber] finished fiber resumed (S=0x%08X)\n", S);
     abort();
 }
@@ -2002,6 +2021,16 @@ static void kz2_mouse_dump(const char* why, uint32_t E, double t)
     fprintf(stderr, "%s\n", line);
 }
 
+static bool kz2_anchor_exists(const char* path)
+{
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat info;
+    return stat(path, &info) == 0;
+#endif
+}
+
 static void kz2_mouse_pre(ppu_context* ctx)
 {
     static int s_init, s_nev, s_send, s_log, s_dump;
@@ -2029,7 +2058,7 @@ static void kz2_mouse_pre(ppu_context* ctx)
     static double s_anchor_next;
     if (s_anchor && *s_anchor && now >= s_anchor_next) {
         s_anchor_next = now + 0.5;
-        if (GetFileAttributesA(s_anchor) != INVALID_FILE_ATTRIBUTES) {
+        if (kz2_anchor_exists(s_anchor)) {
             s_t0 = now; s_anchor = nullptr;
             fprintf(stderr, "[mouse] script clock starts (anchor found)\n");
             if (kz2_mouse_env_on("KZ2_MOUSE_DUMP")) kz2_mouse_dump("start", vm_read32((uint32_t)ctx->gpr[3] + 0x10), 0.0);
@@ -2136,6 +2165,7 @@ static void kz2_mouse_pre(ppu_context* ctx)
  * Test input KZ2_KEY_SCRIPT="T:KEY:SEC ..." (KEY = Mouse1, Mouse2, a letter or 0xVK): SendInput presses KEY for SEC
  * seconds, T seconds after the first look update or after KZ2_MOUSE_ANCHOR appears (the mouse script's clock). */
 extern "C" void pad_kb_set_roles(const unsigned short out[16], unsigned valid_ms);   /* cellPad.c (patch 6050) */
+#ifdef _WIN32
 static void kz2_key_send(unsigned vk, int down)
 {
     INPUT in; memset(&in, 0, sizeof in);
@@ -2148,6 +2178,7 @@ static void kz2_key_send(unsigned vk, int down)
     }
     SendInput(1, &in, sizeof in);
 }
+#endif
 static void kz2_keys_tick(void)
 {
     const uint32_t prof = vm_read32(0x011B0540u + 0x240u);
@@ -2166,6 +2197,7 @@ static void kz2_keys_tick(void)
         }
         pad_kb_set_roles(out, 300);
     }
+#ifdef _WIN32
     static int s_init, s_n; static double s_t0;
     static struct { double t, sec; unsigned vk; int state; } s_ev[16];
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -2190,7 +2222,7 @@ static void kz2_keys_tick(void)
     if (!s_n) return;
     static const char* s_anchor = getenv("KZ2_MOUSE_ANCHOR");
     if (s_anchor && *s_anchor) {
-        if (GetFileAttributesA(s_anchor) == INVALID_FILE_ATTRIBUTES) return;
+        if (!kz2_anchor_exists(s_anchor)) return;
         s_anchor = nullptr; s_t0 = now;
     }
     const double t = now - s_t0;
@@ -2203,6 +2235,7 @@ static void kz2_keys_tick(void)
             fprintf(stderr, "[keys] test t=%.2f: 0x%02X up\n", t, s_ev[i].vk); fflush(stderr);
         }
     }
+#endif
 }
 [[maybe_unused]] static void kz2_update_look(ppu_context* ctx, void (*lifted)(ppu_context*))
 {
@@ -2250,7 +2283,9 @@ void func_0015A7F0(ppu_context* ctx) { kz2_view_setter(ctx, func_0015A7F0__lifte
 #include "kz2_motion.h"
 extern "C" int  pad_motion_port(unsigned port, unsigned char* rx);   /* cellPad.c (patch 6049) */
 extern "C" void pad_motion_set_mode(int mode);
+#ifdef _WIN32
 extern "C" void pad_motion_tilt_note(void);   /* cellPad.c (patch 6060): the tilt keys act while this is fresh */
+#endif
 extern "C" void pad_dsu_set_port(unsigned port);   /* cellPad.c (patch 6062): DSU motion client, 0 = off */
 static int kz2_motion_log_on(void)
 {
@@ -2295,7 +2330,9 @@ extern "C" void kz2_motion_init(void)   /* main.cpp, before the game runs */
     unsigned char rx = 128;
     const int live = pad_motion_port(0, &rx);
     if (!kz2_motion_feed(kz2_gameplay_get()->motion, live)) return;
+#ifdef _WIN32
     pad_motion_tilt_note();   /* a valve or charge reads the tilt now (keyboard tilt keys, patch 6060) */
+#endif
     const float s = kz2_motion_unit(rx), deg = kz2_motion_deg(s);
     float v[3];
     kz2_motion_vec(deg, v);

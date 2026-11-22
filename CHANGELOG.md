@@ -7,9 +7,15 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 ## [Unreleased]
 
 ### Added
+- **Experimental macOS developer build:** native ARM64/Metal build script, a Cocoa run-loop bridge and portable runtime fixes. The synthetic boot passes on an Apple M4 Pro offscreen and in a window. With the LGPL-only FFmpeg that `tools/runtime/ffmpeg-lgpl-macos.sh` builds, Killzone 2 1.29 runs on that Mac through the movies, the menu and into the first mission, in the contributor's scripted runs (no physical controller); the SPU post effects start off there and other gaps are in [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). See [the Mac build instructions](docs/BUILDING.md#building-on-macos).
 - **README:** badges and section dividers restyled in the site's colours; the divider images are drawn by a small generator and checked by a test
 - **Website:** the project page is now a game-style menu (arrow keys, Enter and Esc, or a game pad) with an in-page screenshot viewer (previous and next, swipe, Esc to close); it works without scripts, and a plain page (`plain.html`) carries the same content. The page's only script is its own and uses no network or storage.
 - **Setup and launcher:** a [troubleshooting page](docs/TROUBLESHOOTING.md) organised by what you see (setup or build fails, black screen or nothing on Play, a stop at the menu, a pad not detected, slow or stuttering), with where the logs are and what to attach to an issue; the [FAQ](docs/FAQ.md) now says what installing an update keeps and what it rebuilds, and says that only the DualShock 4 has been hand-tested (other pads are untested).
+
+### Fixed
+- **macOS fibers:** a finished job fiber of the game's scheduler is reused instead of freed. Each new fiber had a 32 MiB stack that macOS's `makecontext` zeroed, 3.7 % of all samples.
+- **macOS washed-out and smeared scenes:** bloom, ILR/vignette and grain start off on Apple ARM64, like depth of field, until the Metal renderer keeps the SPU post chain's inputs in memory. Bright interiors were drawn white-pink and smeared. `KZ2_POST_CLEAR=0` keeps them for testing.
+- **macOS picture smears in play:** depth of field starts off on Apple ARM64, where the SPU post chain reads inputs the Metal renderer does not yet keep in memory and the whole picture was drawn as horizontal smears. `KZ2_DOF=1` turns it back on for testing.
 
 ## [0.1.13] - 2026-11-13 (pre-release)
 

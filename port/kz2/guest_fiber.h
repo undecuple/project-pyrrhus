@@ -27,6 +27,10 @@ typedef void (*guest_fiber_body)(void* ctx, void* arg);
 guest_fiber* guest_fiber_self(void* ctx, size_t ctx_size);
 /* A new suspended fiber that runs body(ctx, arg) when first switched to. stack_bytes 0 = 32 MiB reserve. */
 guest_fiber* guest_fiber_create(guest_fiber_body body, void* arg, size_t stack_bytes);
+/* End the running created fiber as if its body had returned: back to its creator, never to run that body again.
+ * On POSIX the fiber's stack is unwound to its start (no destructors run on the frames skipped) and the fiber is kept
+ * for a later guest_fiber_create once guest_fiber_destroy has been called on it; on Windows it is a plain switch. */
+void guest_fiber_exit(void);
 /* The register block `to` starts or resumes with (valid while `to` is suspended). */
 void* guest_fiber_state(guest_fiber* f);
 /* Save the shared block into the current fiber, switch to `to`, and reload the block when switched back. */
