@@ -1,0 +1,100 @@
+KZ2 patch 7041: SPU shufb, shufb1 and the hoisted shufb1 decode in NEON on ARM64.
+
+Written for the Pyrrhus native Mac performance work; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE). The scheme is KZ3 patches 1041/1082/1108 (host byte order, a
+16-entry table for the special selectors) expressed with TBL; NEON shufb on the SPU was
+also done in the author's inFAMOUS 2 macOS port and by Noah Peterson's ps3recomp PR #287,
+whose code is not used here (their helpers keep a different byte model).
+A Time Profiler capture of 15 s of the first mission on an Apple M4 Pro put 35.7 % of all
+process samples in spu_shufb's scalar byte loop: ARM64 builds never reach the SSE4.1 paths.
+shufb is now and/eor/TBL2/ushr/TBL1/cmlt/bit (about 8 instructions), shufb1 one TBL fewer,
+and the hoisted decode TBL+ORR per use. Bit-identical to the SSE4.1 paths (all 150 helpers,
+3,000,000 cases, tools/runtime/test_spu_helpers_sse_vs_scalar.py) and to the byte loop, which
+stays as spu_shufb_ref (600,000 comparisons covering every control value in every lane).
+
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -739,6 +739,43 @@
+         r._u8[SPU_W(t)] = v;
+     }
+     return r;
++}
++#elif defined(__aarch64__) && defined(__ARM_NEON)
++/* KZ2 patch 7041: shufb, shufb1 and the hoisted shufb1 decode in NEON on ARM64. A profile of the first mission on an
++ * Apple M4 Pro had 35.7 % of all process samples in the scalar byte loop of spu_shufb (the SSE4.1 paths above never
++ * run on ARM). Same host-byte-order scheme as KZ3 patches 1041/1082/1108: result host byte h takes its control from
++ * host byte h of c; t = (control & 0x1F) ^ 3 indexes the 32-byte table {a, b} (TBL with two registers; bit 4 picks
++ * b), and controls with bit 7 set take the special byte from a 16-entry table on the high nibble. Bit-identical to
++ * the SSE4.1 paths (tools/runtime/test_spu_helpers_sse_vs_scalar.py) and to the byte loop, kept as spu_shufb_ref. */
++static inline u128 spu_shufb_ref(u128 a, u128 b, u128 c) {
++    /* shufb is defined on SPU byte positions. Our u128 is host-native LE, so SPU
++     * byte P lives at _u8[SPU_W(P)]; map every access (the concat source, the
++     * control, and the result) through SPU_W so a control supplied as an immediate
++     * (ila/il) or an LS-loaded constant -- already in true SPU byte order -- is
++     * interpreted correctly. The cbd/chd/cwd/cdd generators below produce true
++     * SPU-byte-order selectors to match. */
++    uint8_t cat[32];
++    for (int j=0;j<16;j++) cat[j]    = a._u8[SPU_W(j)];   /* concat SPU byte j  = a SPU byte j */
++    for (int j=0;j<16;j++) cat[16+j] = b._u8[SPU_W(j)];   /* concat SPU byte 16+j = b SPU byte j */
++    u128 r;
++    for (int t=0;t<16;t++) {                              /* result SPU byte t */
++        uint8_t s = c._u8[SPU_W(t)];                      /* control SPU byte t */
++        uint8_t v;
++        if      ((s & 0xE0)==0xE0) v=0x80;
++        else if ((s & 0xC0)==0xC0) v=0xFF;
++        else if ((s & 0xC0)==0x80) v=0x00;
++        else                       v=cat[s & 0x1F];       /* concat SPU byte (s & 0x1F) */
++        r._u8[SPU_W(t)] = v;
++    }
++    return r;
++}
++SPU_HOT u128 spu_shufb(u128 a, u128 b, u128 c) {
++    static const uint8_t lut[16] = { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0xFF,0xFF,0x80,0x80 };
++    const uint8x16x2_t ab = { { vld1q_u8(a._u8), vld1q_u8(b._u8) } };
++    const uint8x16_t C = vld1q_u8(c._u8);
++    const uint8x16_t r = vqtbl2q_u8(ab, veorq_u8(vandq_u8(C, vdupq_n_u8(0x1F)), vdupq_n_u8(3)));
++    const uint8x16_t sp = vqtbl1q_u8(vld1q_u8(lut), vshrq_n_u8(C, 4));
++    u128 out; vst1q_u8(out._u8, vbslq_u8(vcltzq_s8(vreinterpretq_s8_u8(C)), sp, r)); return out;
+ }
+ #else
+ static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
+@@ -779,6 +816,14 @@
+     r = _mm_blendv_epi8(r, sp, C);
+     u128 out; memcpy(&out, &r, 16); return out;
+ }
++#elif defined(__aarch64__) && defined(__ARM_NEON)
++SPU_HOT u128 spu_shufb1(u128 a, u128 c) {   /* KZ2 patch 7041: one TBL on (c & 0x0F) ^ 3, as 1082 */
++    static const uint8_t lut[16] = { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0xFF,0xFF,0x80,0x80 };
++    const uint8x16_t C = vld1q_u8(c._u8);
++    const uint8x16_t r = vqtbl1q_u8(vld1q_u8(a._u8), veorq_u8(vandq_u8(C, vdupq_n_u8(0x0F)), vdupq_n_u8(3)));
++    const uint8x16_t sp = vqtbl1q_u8(vld1q_u8(lut), vshrq_n_u8(C, 4));
++    u128 out; vst1q_u8(out._u8, vbslq_u8(vcltzq_s8(vreinterpretq_s8_u8(C)), sp, r)); return out;
++}
+ #else
+ static inline u128 spu_shufb1(u128 a, u128 c) { return spu_shufb(a, a, c); }
+ #endif
+@@ -809,6 +854,23 @@
+     __m128i A; memcpy(&A, &a, 16);
+     __m128i r = _mm_or_si128(_mm_shuffle_epi8(A, d.idx), d.sp);
+     u128 out; memcpy(&out, &r, 16); return out;
++}
++#  define SPU_SHUFB1_DEC(n) const spu_shufb1_d spu__sd##n = spu_shufb1_dec(ctx->gpr[n]);
++#elif SPU_SHUFB_HOIST && defined(__aarch64__) && defined(__ARM_NEON)
++/* KZ2 patch 7041: the 1108 decode in NEON. TBL yields 0 for an index >= 16, as pshufb does for bit 7, so
++ * idx = (c & 0x8F) ^ 3 zeroes a special selector's lane and sp supplies its byte: TBL + ORR per use. */
++typedef struct { uint8x16_t idx, sp; } spu_shufb1_d;
++SPU_HOT spu_shufb1_d spu_shufb1_dec(u128 c) {
++    static const uint8_t lut[16] = { 0,0,0,0, 0,0,0,0, 0,0,0,0, 0xFF,0xFF,0x80,0x80 };
++    const uint8x16_t C = vld1q_u8(c._u8);
++    spu_shufb1_d d;
++    d.idx = veorq_u8(vandq_u8(C, vdupq_n_u8(0x8F)), vdupq_n_u8(3));
++    d.sp  = vqtbl1q_u8(vld1q_u8(lut), vshrq_n_u8(C, 4));
++    return d;
++}
++SPU_HOT u128 spu_shufb1_h(u128 a, spu_shufb1_d d, u128 c) {
++    (void)c;
++    u128 out; vst1q_u8(out._u8, vorrq_u8(vqtbl1q_u8(vld1q_u8(a._u8), d.idx), d.sp)); return out;
+ }
+ #  define SPU_SHUFB1_DEC(n) const spu_shufb1_d spu__sd##n = spu_shufb1_dec(ctx->gpr[n]);
+ #else
