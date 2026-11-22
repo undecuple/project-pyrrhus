@@ -1,0 +1,106 @@
+KZ2 patch 7044: SPU exponent-255 lane masks with a zero fast path, three and four words at once (ARM64).
+
+Written for the Pyrrhus native Mac performance work; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+After 7041/7042, spu__xr_mask was the largest single leaf of a first-mission profile on an
+Apple M4 Pro (6.2 % of all samples): every float helper asks it for its operands and its
+result, and the 7042 form ended in an add-across. Now the lane compare is narrowed to one
+64-bit word and returns 0 at once in the usual case (no exponent-255 word); the lane bits are
+gathered only otherwise. spu__xr_mask3 gets a NEON body and spu__xr_mask4 is new, so
+fma/fms/fnms and the other three- and four-word tests OR the compares and test once. The
+call sites that ORed single masks now call mask3/mask4, the same value on every host (SSE2's
+mask3 is that OR). Bit-identical: tools/runtime/test_spu_helpers_sse_vs_scalar.py, all 150
+helpers, 3,000,000 cases.
+
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -230,6 +230,15 @@
+     if (m < ((uint64_t)1 << 32)) { m <<= 1; if (--exp == 0) return 0; }
+     return sign | ((uint32_t)exp << 23) | (uint32_t)((m >> 9) & 0x7FFFFFu);
+ }
++#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__SSE2__)
++/* KZ2 patch 7044: lanes all-ones where the word has biased exponent 255, and those lanes as bits 0..3. */
++#  define SPU__XRC(v) vceqq_u32(vandq_u32(vld1q_u32((v)._u32), vdupq_n_u32(0x7F800000u)), vdupq_n_u32(0x7F800000u))
++static inline __attribute__((always_inline)) unsigned spu__xr_bits(uint32x4_t c) {
++    const uint64_t n = vget_lane_u64(vreinterpret_u64_u16(vmovn_u32(c)), 0);
++    if (__builtin_expect(n == 0, 1)) return 0;
++    return (unsigned)((n & 1u) | ((n >> 15) & 2u) | ((n >> 30) & 4u) | ((n >> 45) & 8u));
++}
++#endif
+ /* Bit i set when word i has biased exponent 255. */
+ static inline unsigned spu__xr_mask(u128 v) {
+ #if defined(__SSE2__)
+@@ -237,10 +246,9 @@
+     const __m128i e = _mm_set1_epi32(0x7F800000);
+     return (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(_mm_and_si128(V, e), e)));
+ #elif defined(__aarch64__) && defined(__ARM_NEON)
+-    /* KZ2 patch 7042: compare, keep bit i of lane i, add across (7.6 % of a first-mission profile as the loop) */
+-    static const uint32_t bit[4] = { 1u, 2u, 4u, 8u };
+-    const uint32x4_t e = vdupq_n_u32(0x7F800000u);
+-    return (unsigned)vaddvq_u32(vandq_u32(vceqq_u32(vandq_u32(vld1q_u32(v._u32), e), e), vld1q_u32(bit)));
++    /* KZ2 patch 7044 (was 7042's add-across): compare, narrow the lane masks to one 64-bit word and return 0 at once
++     * in the usual case; the lane bits are only gathered when some lane has exponent 255. */
++    return spu__xr_bits(SPU__XRC(v));
+ #else
+     unsigned m = 0; for (int i = 0; i < 4; i++) m |= ((v._u32[i] & 0x7F800000u) == 0x7F800000u) << i; return m;
+ #endif
+@@ -249,7 +257,7 @@
+     if (__builtin_expect(_m != 0, 0) && g_kz3_spu_xr) for (int _i = 0; _i < 4; _i++) if (_m >> _i & 1) { \
+         const uint32_t x = (a)._u32[_i], y = (b)._u32[_i]; (void)x; (void)y; (r)._u32[_i] = (expr); } } while (0)
+ /* float result: an exponent-255 operand or result lane is recomputed */
+-#define SPU_XR_FIX2(r, a, b, expr) SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(r), r, a, b, expr)
++#define SPU_XR_FIX2(r, a, b, expr) SPU_XR_FIXM(spu__xr_mask3(a, b, r), r, a, b, expr)
+ 
+ /* ---- KZ3 patch 1079: the float ops inline, the 1071 recompute out of line ----
+  * A KZ3 level profile had spu_fm (3.2 %) and spu_fa (1.7 % of the SPU samples) as out-of-line calls: with the
+@@ -273,7 +281,7 @@
+ extern int g_kz3_xr_stats;
+ void kz3_spu_xr_note(int op, unsigned m, const uint32_t* a, const uint32_t* b, const uint32_t* c, const uint32_t* r,
+                      const void* ra);
+-/* Bit i set when word i of a, b or c has biased exponent 255 (spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c)). */
++/* Bit i set when word i of a, b or c has biased exponent 255 (spu__xr_mask3(a, b, c)). */
+ static inline unsigned spu__xr_mask3(u128 a, u128 b, u128 c) {
+ #if defined(__SSE2__)
+     __m128i A, B, C; memcpy(&A, &a, 16); memcpy(&B, &b, 16); memcpy(&C, &c, 16);
+@@ -281,8 +289,18 @@
+     const __m128i m = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi32(_mm_and_si128(A, e), e), _mm_cmpeq_epi32(_mm_and_si128(B, e), e)),
+                                    _mm_cmpeq_epi32(_mm_and_si128(C, e), e));
+     return (unsigned)_mm_movemask_ps(_mm_castsi128_ps(m));
++#elif defined(__aarch64__) && defined(__ARM_NEON)
++    return spu__xr_bits(vorrq_u32(vorrq_u32(SPU__XRC(a), SPU__XRC(b)), SPU__XRC(c)));   /* KZ2 patch 7044 */
+ #else
+     return spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c);
++#endif
++}
++/* KZ2 patch 7044: the same for four words (fma/fms/fnms test a, b, c and the result). */
++static inline unsigned spu__xr_mask4(u128 a, u128 b, u128 c, u128 d) {
++#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__SSE2__)
++    return spu__xr_bits(vorrq_u32(vorrq_u32(SPU__XRC(a), SPU__XRC(b)), vorrq_u32(SPU__XRC(c), SPU__XRC(d))));
++#else
++    return spu__xr_mask3(a, b, c) | spu__xr_mask(d);
+ #endif
+ }
+ /* The lanes of r selected by m, recomputed exactly (the expressions of the 1071 macros, x = a lane, y = b lane). */
+@@ -1103,7 +1121,7 @@
+     for (int i = 0; i < 4; i++)
+         r._f32[i] = spu__fmaf(a._f32[i], negb ? -b._f32[i] : b._f32[i], negc ? -c._f32[i] : c._f32[i]);
+     /* patch 1071: the fast path above never takes an exponent-255 operand (it reads as Inf/NaN in double) */
+-    SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b,
++    SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b,
+                 spu__fma_lane(x, y, c._u32[_i], negb ? 0x80000000u : 0u, negc ? 0x80000000u : 0u));
+     if (cgm == 0)
+         for (int i = 0; i < 4; i++)
+@@ -1284,9 +1302,9 @@
+ #endif
+ #define SPU__FMA_FTZ(r) do { if (g_kz3_spu_slowcg == 0) for (int i_ = 0; i_ < 4; i_++) \
+         if ((r)._f32[i_] != 0.0f && __builtin_fabsf((r)._f32[i_]) < 0x1p-126f) (r)._u32[i_] &= 0x80000000u; } while (0)
+-SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(C, A, B), spu__fmaf(a._f32[i], b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); SPU__FMA_FTZ(r); return r; }
+-SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(vnegq_f32(C), A, B), spu__fmaf(a._f32[i], b._f32[i], -c._f32[i])); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); SPU__FMA_FTZ(r); return r; }
+-SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; SPU__FMA_V(r, a, b, c, vfmsq_f32(C, A, B), spu__fmaf(a._f32[i], -b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask(a) | spu__xr_mask(b) | spu__xr_mask(c) | spu__xr_mask(r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); SPU__FMA_FTZ(r); return r; }
++SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(C, A, B), spu__fmaf(a._f32[i], b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); SPU__FMA_FTZ(r); return r; }
++SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(vnegq_f32(C), A, B), spu__fmaf(a._f32[i], b._f32[i], -c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); SPU__FMA_FTZ(r); return r; }
++SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; SPU__FMA_V(r, a, b, c, vfmsq_f32(C, A, B), spu__fmaf(a._f32[i], -b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); SPU__FMA_FTZ(r); return r; }
+ #endif
+ /* patch 1079: forced inline; an exponent-255 operand lane is recomputed in spu__xr_fix (a twice = no result term) */
+ #if defined(__SSE2__)

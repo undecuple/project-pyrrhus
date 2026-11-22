@@ -1,0 +1,79 @@
+KZ2 patch 7045: the LS-access debug gate as one load once its inputs are settled
+off, and the SPU fma flush in NEON.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+Every lifted SPU function opens with SPU_LS_LOCALS, which calls
+spu_ls_dbg_armed: five loads of weak (so GOT-indirect) gates and their tests,
+~30 instructions before the function's first own instruction. In a KZ2 combat
+profile that was 1.5 % of all process samples. The gates' inputs are environment
+switches the probes read lazily; spu_hop_init (run before the first lifted call)
+now reads them all and sets g_spu_ls_dbg_off when every one is off, and the gate
+returns at that one load. With any of SPU_LS_LOWREAD, SPU_SMC_WATCH,
+SPU_WWS_PROBE or SPU_LS_WATCH set, nothing changes.
+
+fma/fms/fnms flushed subnormal results to zero (patch 6086) with a loop of four
+lane tests after the vector fma. On ARM64 it is now an absolute compare, an and
+and a select over the vector: the same lanes (|r| < 2^-126 keeps its sign, a
+zero is unchanged by that, a NaN is never flushed), no branches.
+
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -675,6 +675,9 @@
+ SPU_GATE SPU_READ_MOSTLY int g_spu_ls_rdiag   = -1;  /* any read diagnostic armed (see above)   */
+ SPU_GATE SPU_READ_MOSTLY int g_spu_ls_wdiag   = -1;  /* any write diagnostic armed              */
+ SPU_GATE SPU_READ_MOSTLY int g_spu_wws_probe  = -1;  /* SPU_WWS_PROBE: the WWS buffer/code logs */
++/* KZ2 patch 7045: 1 once spu_hop_init has read every input of spu_ls_dbg_armed and found them all off (no
++ * SPU_LS_LOWREAD, SPU_SMC_WATCH, SPU_WWS_PROBE or SPU_LS_WATCH); none of them is ever turned on after that. */
++SPU_GATE SPU_READ_MOSTLY int g_spu_ls_dbg_off = 0;
+ static inline int spu_ls_wws_probe_on(void)
+ {
+     if (g_spu_wws_probe < 0) g_spu_wws_probe = getenv("SPU_WWS_PROBE") ? 1 : 0;
+@@ -890,6 +893,10 @@
+  * fast path, now without the range tests: the probes they guarded would have done nothing. */
+ static inline int spu_ls_dbg_armed(void)
+ {
++    /* KZ2 patch 7045: every lifted function entry ran the five loads below (each through the GOT: the gates are
++     * weak) and their tests, ~30 instructions -- 1.5 % of all samples in a KZ2 combat profile. With every input
++     * settled off it is one load. */
++    if (__builtin_expect(g_spu_ls_dbg_off, 1)) return 0;
+     const int w = g_spu_ls_watch_n != 0;
+     /* v0.18.0 (#445): the WWS probes only run with SPU_WWS_PROBE (g_spu_wws_probe, -1 until read), so their
+      * caps arm the gate only then; otherwise every LS access of every lifted function took the gated path. */
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -802,6 +802,13 @@
+       const int pon = g_spu_ib_guess > 0 && p && p[0] == '1';
+       if (g_spu_hop_on < 0) fprintf(stderr, "[spu] link-register hop guesses %s (KZ2 patch 7022)\n", pon ? "on" : "off");
+       g_kz2_pcguess = pon; }
++    /* KZ2 patch 7045: settle the LS-access gates' lazy inputs (the probes read their switches on first use) and
++     * let spu_ls_dbg_armed skip them when all are off. */
++    { int wn = 0;
++      if (g_spu_ls_probe < 0) g_spu_ls_probe = getenv("SPU_LS_LOWREAD") ? 1 : 0;
++      if (g_spu_smc_watch < 0) g_spu_smc_watch = getenv("SPU_SMC_WATCH") ? 1 : 0;
++      (void)spu_ls_watch_list(&wn);
++      g_spu_ls_dbg_off = !g_spu_ls_probe && !g_spu_smc_watch && !spu_ls_wws_probe_on() && !wn; }
+     g_spu_hop_on = on;
+ }
+ 
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -1300,8 +1300,17 @@
+ #else
+ #  define SPU__FMA_V(r, a, b, c, vexpr, lane) do { for (int i = 0; i < 4; i++) (r)._f32[i] = lane; } while (0)
+ #endif
++#if defined(__aarch64__) && defined(__ARM_NEON)
++/* KZ2 patch 7045: the flush as three vector instructions instead of four branchy lane tests. A lane with
++ * |r| < 2^-126 keeps only its sign; a zero lane is unchanged by that, a NaN fails the compare -- the lanes the
++ * loop below changes, and no other. */
++#  define SPU__FMA_FTZ(r) do { if (g_kz3_spu_slowcg == 0) { const float32x4_t R_ = vld1q_f32((r)._f32); \
++        const uint32x4_t U_ = vreinterpretq_u32_f32(R_); \
++        vst1q_u32((r)._u32, vbslq_u32(vcaltq_f32(R_, vdupq_n_f32(0x1p-126f)), vandq_u32(U_, vdupq_n_u32(0x80000000u)), U_)); } } while (0)
++#else
+ #define SPU__FMA_FTZ(r) do { if (g_kz3_spu_slowcg == 0) for (int i_ = 0; i_ < 4; i_++) \
+         if ((r)._f32[i_] != 0.0f && __builtin_fabsf((r)._f32[i_]) < 0x1p-126f) (r)._u32[i_] &= 0x80000000u; } while (0)
++#endif
+ SPU_HOT u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(C, A, B), spu__fmaf(a._f32[i], b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0)); SPU__FMA_FTZ(r); return r; }
+ SPU_HOT u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; SPU__FMA_V(r, a, b, c, vfmaq_f32(vnegq_f32(C), A, B), spu__fmaf(a._f32[i], b._f32[i], -c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0, 0x80000000u)); SPU__FMA_FTZ(r); return r; }
+ SPU_HOT u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; SPU__FMA_V(r, a, b, c, vfmsq_f32(C, A, B), spu__fmaf(a._f32[i], -b._f32[i], c._f32[i])); SPU_XR_FIXM(spu__xr_mask4(a, b, c, r), r, a, b, spu__fma_lane(x, y, c._u32[_i], 0x80000000u, 0)); SPU__FMA_FTZ(r); return r; }

@@ -14,6 +14,12 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 ### Fixed
 - **Synchronization:** preserve the recursive attribute when creating a lightweight mutex, return “busy” for a contended nonblocking lock attempt, and reject misaligned cellSync mutexes before touching their memory. Adapted from ps3recomp PR #621 by Max Leiter; covered by host regression tests without game data. No game run was performed for these changes.
 - **SPU math on ARM64 (patch 6086):** `fma`, `fms` and `fnms` now flush subnormal results to zero on hosts without SSE4.1, as the Windows build does. A new host test runs all 150 SPU helpers on both paths and found these three the only ones that differed; all now match bit for bit. On builds without SSE4.1 only, the double-precision helpers (`dfa`, `dfs`, `dfm` and the four fused forms) now pick the NaN a result keeps by the x86 rule, step by step in written order, instead of leaving it to the compiler's operand order (found by the same test in CI: `dfma` and `dfnma` differed when two inputs of a lane were NaN); builds with SSE4.1, the Windows build included, compile the same code as before.
+- **macOS speed, SPU (patches 7041, 7042):** on Apple ARM64 the SPU helpers that dominated a first-mission profile now run as NEON, bit for bit the same as the Windows build's SSE4.1 paths (all 150 helpers, 3,000,000 cases):
+  - `shufb` and its `ra == rb` and hoisted forms took 35.7 % of all process samples as a byte loop;
+  - `xr_mask`, the quadword byte permutes (`rotqby` and the rest) and `fma`/`fms`/`fnms` came next.
+  In the contributor's scripted runs on an Apple M4 Pro (60 s windows of the first mission) gameplay went from about 5 to 24-27 frames per second. Host test `test_spu_neon_coverage.py` covers every `shufb` control byte and every byte-permute shift.
+- **macOS speed, SPU masks (patch 7044):** the exponent-255 lane test every float helper runs now returns at once in the usual case and tests three or four words in one go. It had been the largest single item of the profile.
+- **SPU entry gate and fma flush (patch 7045):** every lifted SPU function no longer re-tests five debug switches on entry: once spu_hop_init has read them all off, the gate is one load (on every host; with any of `SPU_LS_LOWREAD`, `SPU_SMC_WATCH`, `SPU_WWS_PROBE` or `SPU_LS_WATCH` set nothing changes). On ARM64 the `fma` subnormal flush is three vector instructions instead of four branchy lane tests, the same lanes as before.
 
 ## [0.1.13] - 2026-11-13 (pre-release)
 
