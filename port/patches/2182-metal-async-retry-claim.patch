@@ -1,0 +1,63 @@
+KZ2 patch 2182: a background pipeline build and its walker retry never build the
+same entry at once.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+The worker of patch 2179 read "not being built inline" under the build lock,
+let the lock go and started compiling without saying so. A re-request from the
+walker more than 5 s after the insert saw neither flag, marked itself the
+builder and compiled the same entry. When the worker finished first it freed
+the two HLSL texts while the walker was still translating them: the walker's
+build failed on a garbage string ("HLSL parse: ERROR: 0:1: '<bad token>'") and
+then stored 0 over the worker's good result. From then on every draw with that
+pipeline was dropped, for the rest of the session -- ten entries in one
+cruiser run, scene parts missing.
+
+The worker now claims the entry (worker_building) in the same locked section in
+which it checks for an inline build, and a retry only builds inline an entry no
+worker has claimed; otherwise it returns 0 for this draw and the worker's
+result serves the next one.
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index ddd28dd..f9725a2 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3212,6 +3212,7 @@ static int eng_stage_copy(const void* src, u32 bytes, u32* out_off)
+     u32 result;                 /* 0 while in flight, the handle once done */
+     int done;
+     int inline_building;        /* a retry built it on the walker; the worker skips */
++    int worker_building;        /* patch 2182: the worker took it; a retry waits for its result */
+     uint64_t queued_us;         /* ps3_ft_now() at insert, for the retry age gate */
+     char* vs_hlsl;              /* the worker's own copies; freed on its way out */
+     char* ps_hlsl;
+@@ -3747,14 +3748,18 @@ static void eng_async_insert(u64 key, const char* vs_hlsl, const char* ps_hlsl,
+             pthread_mutex_lock(&s_eng_build_lock);
+             const int done = b->done;
+             const int inline_bld = b->inline_building;
+-            pthread_mutex_unlock(&s_eng_build_lock);
+             if (done) {
++                pthread_mutex_unlock(&s_eng_build_lock);
+                 free(b->vs_hlsl); b->vs_hlsl = NULL;
+                 free(b->ps_hlsl); b->ps_hlsl = NULL;
+                 dispatch_semaphore_signal(s_eng_build_slots);
+                 return;
+             }
+-            if (!inline_bld) break;
++            /* Patch 2182: claim the build under the lock, so a retry seen after
++             * this point leaves it to the worker instead of compiling the same
++             * texts the worker frees when it finishes. */
++            if (!inline_bld) { b->worker_building = 1; pthread_mutex_unlock(&s_eng_build_lock); break; }
++            pthread_mutex_unlock(&s_eng_build_lock);
+             usleep(1000);
+         }
+         const u32 handle = eng_pipeline_create_sync(NULL, b->vs_hlsl, b->ps_hlsl,
+@@ -3896,7 +3901,7 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+             pthread_mutex_unlock(&s_eng_build_lock);
+             return result;
+         }
+-        if (!e->inline_building) {
++        if (!e->inline_building && !e->worker_building) {
+             /* A re-request of a pipeline whose first draw was dropped. The
+              * worker clears the ordinary bursts (four builds at a time), so
+              * inline building is reserved for entries it has still not

@@ -1,0 +1,177 @@
+KZ2 patch 2183: a pipeline whose background build is still in flight is asked
+for once a frame; a pipeline that failed to build is remembered, as before 2179.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+Patch 2179 stopped memoizing a 0 from pipeline_create, so a pipeline still
+building in the background is picked up as soon as it lands. But each ask
+decompiles the vertex and fragment programs to HLSL, applies the text passes
+and hashes both texts -- for every draw of that pipeline, hundreds a frame, on
+the FIFO walker that bounds the frame rate (a Metal gameplay profile had the
+walker 78 % busy, its largest items strstr 14 %, snprintf 12 % and fnv1a64 9 %
+from that path) -- and a pipeline that failed for good paid it, and logged it,
+on every draw for the rest of the session.
+
+The backend now says which 0 it gave: the optional pipeline_pending query
+(rsx_draw_engine.h) is 1 while a build of that pipeline is in flight. Such a
+key is asked again once a frame (a small lossy table of keys and frames); any
+other 0 is memoized as before 2179, so a failed pipeline is neither rebuilt nor
+logged again. The log names the two cases ("building" / "FAILED").
+
+Backends: only Metal implements pipeline_pending (only it builds in the
+background). On Vulkan, the other user of the draw engine, the query is NULL,
+every 0 is final and the engine behaves as before patch 2179. D3D12 does not use
+the draw engine.
+
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 753563d..a398f2d 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -1946,6 +1946,20 @@ static u32 eng_user_clip_key(void)
+  * RSX_FP_DEBUG matches in the decompiler. Unlike a backend pipeline handle it
+  * does not depend on the order programs are first drawn in, so a program
+  * found in one run is named the same in the next. 0 for the built-in one. */
++/* Patch 2183: pipelines whose build is still in flight (pipeline_pending), with
++ * the frame they were last asked for. Patch 2179 stopped memoizing a 0 so a
++ * background build is picked up when it lands, but each ask decompiles both
++ * programs to text and hashes them, for every draw of the pipeline -- hundreds
++ * a frame on the FIFO walker that bounds the frame rate (strstr, snprintf and
++ * fnv1a64 were its largest items in a Metal gameplay profile). A pending key
++ * is asked again once a frame; a final 0 is memoized as before 2179, so a
++ * pipeline that fails to build is neither retried nor logged per draw. On a
++ * backend without pipeline_pending (Vulkan) every 0 is final, as before 2179.
++ * Lossy: a collision only costs an ask. */
++#define ENG_MISS_SLOTS 1024u
++static struct { u64 key; u32 frame; u32 used; } s_eng_miss[ENG_MISS_SLOTS];
++static u32 eng_miss_slot(u64 key) { return (u32)(key ^ (key >> 32) ^ (key >> 17)) & (ENG_MISS_SLOTS - 1u); }
++
+ static u64 eng_fp_debug_hash(const u8* fp_uc, u32 fp_size)
+ {
+     return fp_uc && fp_size
+@@ -2150,6 +2164,15 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+         }
+     }
+     if (g.n_pipelines >= ENG_MAX_PIPELINES) return 0;
++    {
++        const u32 ms = eng_miss_slot(key);
++        if (s_eng_miss[ms].used && s_eng_miss[ms].key == key && s_eng_miss[ms].frame == g.frames) {
++            *out_tex_used = fixed ? 0xFFFFu : 0u;
++            *out_fp_hash = fixed ? 0 : eng_fp_debug_hash(fp_uc, fp_size);
++            *out_fixed = fixed;
++            return 0;   /* still building, asked this frame already: the draw drops as it would */
++        }
++    }
+ 
+     u32 handle = 0;
+     int vi = 1, fi = 1;
+@@ -2234,18 +2257,23 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+             }
+         }
+     }
++    const int pending = !handle && vi > 0 && fi > 0 && g.be->pipeline_pending &&
++                        g.be->pipeline_pending(g.be->user);   /* patch 2183 */
+     { static u32 logs = 0; if (PS3_LOG_FIRST(logs, 32))
+         fprintf(stderr, "[rsx engine] pipeline %016llx: %s vp %d, fp %d,"
+                         " %u constants, fp %016llx -> %s\n",
+                 (unsigned long long)key, fixed ? "built-in" : "guest",
+                 vi, fi, nconst, (unsigned long long)fp_hash,
+-                handle ? "ok" : "FAILED (draw dropped)"); }
++                handle ? "ok" : pending ? "building (draw dropped)" : "FAILED (draw dropped)"); }
+ 
+     /* Patch 2179: a miss is not memoized. The backend answers 0 for a build
+      * still in flight (or one that failed hard, which it answers forever),
+      * and the next draw asks again; memoizing the miss would freeze the
+-     * pipeline's draws at one dropped attempt. */
+-    if (handle) {
++     * pipeline's draws at one dropped attempt. Patch 2183: that holds only
++     * while pipeline_pending says a build is in flight; a final 0 (a failed
++     * build, or any 0 from a backend without the query) is memoized, as before
++     * patch 2179, so it is neither rebuilt nor logged again. */
++    if (!pending) {
+         g.pipelines[g.n_pipelines].key = key;
+         g.pipelines[g.n_pipelines].fp_hash = fp_hash;
+         g.pipelines[g.n_pipelines].handle = handle;
+@@ -2259,6 +2287,8 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+     } else {
+         *out_tex_used = (u16)(fixed ? 0xFFFFu : dbz_bit);
+         *out_fp_hash = fp_hash;
++        const u32 ms = eng_miss_slot(key);
++        s_eng_miss[ms].key = key; s_eng_miss[ms].frame = g.frames; s_eng_miss[ms].used = 1;
+     }
+     *out_fixed = fixed;
+     return handle;
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+index dd0f681..8c119f5 100644
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -188,6 +188,12 @@ typedef struct rsx_draw_backend {
+                             u32 vertex_stride, rsx_be_format rt_fmt,
+                             u32 rt_count);
+     void (*pipeline_release)(void* user, u32 pipeline);
++    /* Optional (KZ2 patch 2183; NULL = never pending). After pipeline_create
++     * returned 0: 1 when a build of it is still in flight, so the engine asks
++     * again on a later frame; 0 when the 0 is final, so the engine remembers
++     * the failure and drops that pipeline's draws without asking again. Only
++     * the Metal backend builds in the background (patch 2179). */
++    int  (*pipeline_pending)(void* user);
+ 
+     /* Per-draw binding. The backend owns every ring the D3D12 engine used to
+      * own itself, so the engine hands over CPU-side arrays and never mentions
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 535caea..e787deb 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3879,6 +3879,12 @@ static u32 eng_pipeline_create_sync(void* user, const char* vs_hlsl, const char*
+                                     u32 vertex_stride, rsx_be_format rt_fmt,
+                                     u32 rt_count);
+ 
++/* Patch 2183: 1 when the last eng_pipeline_create that returned 0 left a build in
++ * flight (the engine asks again next frame), 0 when that 0 is final (a failed
++ * build, a full table). Only the walker calls eng_pipeline_create. */
++static int s_eng_last_pending;
++static int eng_pipeline_pending(void* user) { (void)user; return s_eng_last_pending; }
++
+ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_hlsl,
+                                const rsx_be_render_state* rs,
+                                const rsx_vertex_layout_plan* layout,
+@@ -3886,6 +3892,7 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+                                u32 rt_count)
+ {
+     (void)user;
++    s_eng_last_pending = 0;
+     if (!s_dev || !s_guest_shaders || !vertex_stride) return 0;
+     if (!rt_count) rt_count = 1;
+     if (rt_count > RSX_BE_MAX_COLOR_TARGETS) rt_count = RSX_BE_MAX_COLOR_TARGETS;
+@@ -3921,6 +3928,7 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+                 if (now - e->queued_us < 5000000ull ||   /* young: the worker has it */
+                     now - s_last_inline_us < 100000ull) {  /* one at a time */
+                     pthread_mutex_unlock(&s_eng_build_lock);
++                    s_eng_last_pending = 1;
+                     return 0;
+                 }
+                 s_last_inline_us = now;
+@@ -3941,6 +3949,7 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+             return handle;
+         }
+         pthread_mutex_unlock(&s_eng_build_lock);
++        s_eng_last_pending = 1;   /* a worker or an inline retry has it */
+         return 0;
+     }
+     if (s_eng_build_count >= ENG_ASYNC_MAX || s_eng_pipe_count >= ENG_MAX_PIPES) {
+@@ -3950,6 +3959,7 @@ static u32 eng_pipeline_create(void* user, const char* vs_hlsl, const char* ps_h
+     /* Patch 2181: the record happened above (sync or async alike); hand the
+      * build to a worker. The lock is eng_async_insert's contract. */
+     eng_async_insert(key, vs_hlsl, ps_hlsl, rs, layout, vertex_stride, rt_fmt, rt_count);
++    s_eng_last_pending = 1;
+     return 0;
+ }
+ 
+@@ -5256,6 +5266,7 @@ static int eng_depth_readback(void* user, u32 depth, u32 x, u32 y, u32 w, u32 h,
+     .color_snapshot       = eng_color_snapshot,
+     .depth_as_color       = eng_depth_as_color,
+     .pipeline_create      = eng_pipeline_create,
++    .pipeline_pending     = eng_pipeline_pending,   /* patch 2183 */
+     .pipeline_release     = eng_pipeline_release,
+     .bind_targets         = eng_bind_targets,
+     .bind_pipeline        = eng_bind_pipeline,

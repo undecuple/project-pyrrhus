@@ -1,0 +1,93 @@
+KZ2 patch 2180: the pipeline archive is bounded and self-healing.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+The archive of patch 2173 grew without bound: Metal stores each recorded
+pipeline's functions with their reflection data and rewrites the whole file on
+every serialize, and ten sessions took it from 10 MB to 1.17 GB -- every
+write-back after that cost more than the pipelines it saved, and the walker
+waited on the archive's lock through them (the 14-15 s drains returned with the
+6087 sleep timing). The R3 lesson (handoff, section 4) said as much: bound the
+file, never let one grow.
+
+An archive over 64 MB is discarded at load (the pipelines rebuild, on the
+worker, once); recording stops at 512 pipeline function sets; the write-back
+is every 64 adds instead of 16. PS3RECOMP_METAL_PSO_ARCHIVE=0 keeps the plain
+build of today, as before.
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -134,12 +134,27 @@
+     NSError* err = nil;
+     MTLBinaryArchiveDescriptor* d = [MTLBinaryArchiveDescriptor new];
+     s_pso_archive_url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:e]];
++    /* A past run can leave an archive that grew past any sane bound (the R3
++     * lesson: Metal's archive files grow super-linearly; one here reached
++     * 1.17 GB, and every serialize after that wrote the whole thing back
++     * while the walker waited on the archive's lock). Over the size cap the
++     * file is discarded and rebuilt; the pipelines compile once more, on
++     * the worker. */
+     d.url = s_pso_archive_url;
+     s_pso_archive = [s_dev newBinaryArchiveWithDescriptor:d error:&err];
+     int fresh = 0;
++    if (s_pso_archive) {
++        NSDictionary* at = [[NSFileManager defaultManager]
++            attributesOfItemAtPath:[NSString stringWithUTF8String:e] error:NULL];
++        if (at && [(NSNumber*)at[NSFileSize] unsignedLongLongValue] > 64ull * 1024ull * 1024ull) {
++            s_pso_archive = nil;   /* over the cap: start over */
++            fresh = 1;
++        }
++    }
+     if (!s_pso_archive) {
+-        /* Not there yet, unreadable, or from another GPU/OS: delete it, so the next
+-         * serialize starts the file over instead of growing a dead one. */
++        /* Not there yet, unreadable, oversized, or from another GPU/OS: delete
++         * it, so the next serialize starts the file over instead of growing a
++         * dead one. */
+         [[NSFileManager defaultManager] removeItemAtURL:s_pso_archive_url error:NULL];
+         d.url = nil;
+         s_pso_archive = [s_dev newBinaryArchiveWithDescriptor:d error:NULL];
+@@ -148,7 +163,7 @@
+             fprintf(stderr, "[pso-archive] '%s' cannot be opened and an empty archive cannot be created\n", e);
+             return;
+         }
+-        fresh = 1;
++        if (!fresh) fresh = 1;
+     }
+     s_pso_archive_lock = dispatch_semaphore_create(1);
+     s_pso_archive_new = s_pso_archive_added = 0;
+@@ -156,11 +171,17 @@
+     fprintf(stderr, "[pso-archive] %s'%s'\n", fresh ? "starting " : "loaded ", e);
+ }
+ 
+-/* Serialize what the archive has gathered. Under the lock: shutdown may be waiting. */
++/* Serialize what the archive has gathered. Under the lock: shutdown may be waiting.
++ * Bounded: past ENG_PSO_ARCHIVE_MAX_SETS recorded sets no further functions are
++ * added (the walker still builds, just without recording), and the write-back is
++ * every 64 adds -- Metal rewrites the whole file each time, and with a file that
++ * had grown past a gigabyte each write cost more than the pipelines it saved. */
++enum { ENG_PSO_ARCHIVE_MAX_SETS = 512, ENG_PSO_ARCHIVE_WRITE_EVERY = 64 };
+ static void eng_pso_archive_write(const char* why)
+ {
+     if (!s_pso_archive || !s_pso_archive_url) return;
+     if (!s_pso_archive_new && s_pso_archive_writes) return;
++    if (s_pso_archive_added >= ENG_PSO_ARCHIVE_MAX_SETS) { s_pso_archive_new = 0; return; }
+     NSError* err = nil;
+     if ([s_pso_archive serializeToURL:s_pso_archive_url error:&err]) {
+         s_pso_archive_new = 0;
+@@ -207,11 +228,11 @@
+     pd.binaryArchives = nil;
+     if (!pso) return nil;   /* the caller logs *err and drops the draw as before */
+     dispatch_semaphore_wait(s_pso_archive_lock, DISPATCH_TIME_FOREVER);
+-    if (s_pso_archive) {
++    if (s_pso_archive && s_pso_archive_added < ENG_PSO_ARCHIVE_MAX_SETS) {
+         if ([s_pso_archive addRenderPipelineFunctionsWithDescriptor:pd error:NULL]) {
+             s_pso_archive_new++;
+             s_pso_archive_added++;
+-            if (s_pso_archive_new >= 16) eng_pso_archive_write("every 16");
++            if (s_pso_archive_new >= ENG_PSO_ARCHIVE_WRITE_EVERY) eng_pso_archive_write("periodic");
+         }
+     }
+     dispatch_semaphore_signal(s_pso_archive_lock);

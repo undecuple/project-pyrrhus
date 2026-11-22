@@ -1,0 +1,183 @@
+KZ2 patch 2178: a drawable prefetcher keeps the FIFO walker off the compositor.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+CAMetalLayer.nextDrawable blocks until the compositor returns one, and a fully
+occluded window gets none. The walker called it inline in the present, so while
+the game window sat covered -- the scripted runs open on a working desktop -- the
+walker held the FIFO drain for exactly as long as the window stayed that way:
+drains of 26-56 s, the GPU idle, [pump] gap == the drain span, and a close
+request could not run (one run ignored SIGTERM and was killed). The same
+scripted session headless, no compositor at all, never drained longer than
+961 ms, against the windowed runs of the same evening. The stalls the BUILDING note attributed to depth readbacks on the
+mission load were measured windowed and are occlusion: the largest readback
+any ftrace window measured was 12.8 ms.
+
+One host thread now stays one drawable ahead. The walker's present becomes a
+try-take: an empty mailbox skips the frame -- the compositor is then owed one
+it was not showing anyway -- and presents resume on uncover. The blocking
+nextDrawable call lives on the prefetcher thread alone. Headless and
+host-surface paths are untouched, and PS3RECOMP_METAL_DRAWABLE_AHEAD=0
+restores the inline call of today.
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -218,6 +218,94 @@
+     return pso;
+ }
+ 
++/* ---- drawable prefetcher (KZ2 patch 2178) ----------------------------------
++ * CAMetalLayer.nextDrawable blocks until the compositor returns one, and a fully
++ * occluded window gets none: the FIFO walker sat inside the in-drain present for
++ * as long as the window stayed covered (26-56 s in the windowed scripted runs,
++ * the GPU idle the whole time; the same session headless -- no compositor --
++ * never drained longer than 961 ms, in the same scripted session). One
++ * host thread stays one drawable ahead, so the walker's present becomes a
++ * try-take: an empty mailbox skips the frame -- the compositor is then owed one
++ * it was not showing anyway -- and the walker never blocks on the window again.
++ * PS3RECOMP_METAL_DRAWABLE_AHEAD=0 restores the inline call of today. */
++static id<CAMetalDrawable> s_drawable_next;      /* the mailbox: 0 or 1 drawable */
++static dispatch_semaphore_t s_drawable_ready;   /* its count is the mailbox state */
++static dispatch_semaphore_t s_drawable_free;    /* the presenter may refill it */
++static volatile int s_presenter_running;
++static pthread_t s_presenter_thread;
++
++static int eng_drawable_ahead_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3RECOMP_METAL_DRAWABLE_AHEAD");
++                  on = (e && e[0] == '0' && !e[1]) ? 0 : 1; }
++    return on;
++}
++
++static void* eng_drawable_presenter_main(void* arg)
++{
++    (void)arg;
++    for (;;) {
++        dispatch_semaphore_wait(s_drawable_free, DISPATCH_TIME_FOREVER);
++        if (!s_presenter_running) break;
++        @autoreleasepool {
++            /* The blocking call lives here, off the walker: while the window is
++             * occluded this thread alone waits; the game runs on. */
++            id<CAMetalDrawable> d = [s_layer nextDrawable];
++            if (!d) {   /* Metal gave up (a very long occlusion): try again shortly */
++                dispatch_semaphore_signal(s_drawable_free);
++                usleep(10000);
++                continue;
++            }
++            s_drawable_next = d;
++            dispatch_semaphore_signal(s_drawable_ready);
++        }
++    }
++    return NULL;
++}
++
++static void eng_drawable_presenter_start(void)
++{
++    if (!s_layer || !eng_drawable_ahead_on()) return;
++    s_drawable_ready = dispatch_semaphore_create(0);
++    s_drawable_free  = dispatch_semaphore_create(1);   /* the mailbox is empty: prefetch now */
++    s_drawable_next  = nil;
++    s_presenter_running = 1;
++    if (pthread_create(&s_presenter_thread, NULL, eng_drawable_presenter_main, NULL) != 0) {
++        s_presenter_running = 0;
++        s_drawable_ready = nil;
++        s_drawable_free = nil;
++        fprintf(stderr, "[RSX metal] drawable prefetcher not started; presents wait inline\n");
++    }
++}
++
++static void eng_drawable_presenter_stop(void)
++{
++    if (!s_presenter_running) return;
++    s_presenter_running = 0;
++    /* Release it wherever it waits -- the mailbox's refill permit, or a drawable
++     * it posted that nobody takes -- then drop whatever is still in the mailbox. */
++    dispatch_semaphore_signal(s_drawable_free);
++    dispatch_semaphore_signal(s_drawable_ready);
++    pthread_join(s_presenter_thread, NULL);
++    s_drawable_next = nil;
++    s_drawable_ready = nil;
++    s_drawable_free = nil;
++}
++
++/* The walker's present takes the prefetched drawable without ever waiting for
++ * the compositor. Returns it, or nil when none is ready (the caller skips the
++ * frame exactly as a failed inline call does). */
++static id<CAMetalDrawable> eng_drawable_take(void)
++{
++    if (!s_presenter_running) return nil;
++    if (dispatch_semaphore_wait(s_drawable_ready, DISPATCH_TIME_NOW) != 0) return nil;
++    id<CAMetalDrawable> d = s_drawable_next;
++    s_drawable_next = nil;
++    dispatch_semaphore_signal(s_drawable_free);   /* prefetch the next one now */
++    return d;
++}
++
+ /* Each initialization owns its counters. A drawable callback retained by the
+  * compositor can outlive shutdown without writing into a later session. */
+ #if !TARGET_OS_IPHONE
+@@ -4486,9 +4574,29 @@
+         const u32 host_gen = s_host_gen;
+         const int windowed_present = (present_dst && !s_headless);
+         { const uint64_t w0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+-          if (windowed_present) dispatch_semaphore_wait(s_inflight, DISPATCH_TIME_FOREVER);
++          int took = 0;
++          if (windowed_present) {
++              /* Patch 2178: the in-flight bound keeps normal pacing -- a few
++               * ms while the GPU and the compositor are a frame or two behind
++               * -- but never wedges the walker again: a drawable an occluded
++               * compositor never returns also holds the command buffer that
++               * presented it, so the slots can stop coming back for as long
++               * as the window stays covered (a 21 s drain, run 234110).
++               * After PS3RECOMP_METAL_PRESENT_WAIT_MS (default 100 ms; -1 is
++               * yesterday's wait-forever) the frame is skipped instead. */
++              static int64_t wait_ms = -2;
++              if (wait_ms == -2) { const char* e = getenv("PS3RECOMP_METAL_PRESENT_WAIT_MS");
++                                   const int64_t v = e ? (int64_t)atoi(e) : 100;
++                                   wait_ms = (v < -1) ? 100 : v; }
++              if (wait_ms < 0)
++                  took = !dispatch_semaphore_wait(s_inflight, DISPATCH_TIME_FOREVER);
++              else
++                  took = !dispatch_semaphore_wait(s_inflight,
++                      dispatch_time(DISPATCH_TIME_NOW, wait_ms * 1000000ll));
++          }
+           if (w0 && windowed_present) { const uint64_t w1 = ps3_ft_now();
+-              if (w1 - w0 >= ps3_ft_min_ns()) ps3_ft_span(PS3_FT_GPU_WAIT, 0, 2, 0, w0, w1); } }
++              if (w1 - w0 >= ps3_ft_min_ns()) ps3_ft_span(PS3_FT_GPU_WAIT, 0, 2, 0, w0, w1); }
++          if (windowed_present && !took) return;   /* no slot in time: skip the frame */ }
+         if (present_dst) {
+             if (s_headless) {
+                 dst = s_offscreen;
+@@ -4500,7 +4608,12 @@
+                 }
+                 dst = s_host_tex[host_slot];
+             } else {
+-                drawable = [s_layer nextDrawable];
++                /* Patch 2178: try-take the prefetched drawable; an occluded
++                 * window makes the mailbox empty, which skips this frame --
++                 * the walker never waits on the compositor. */
++                drawable = eng_drawable_take();
++                if (!drawable && !s_presenter_running)
++                    drawable = [s_layer nextDrawable];   /* AHEAD=0: today's inline call */
+                 if (!drawable) {           /* compositor is busy; skip */
+                     dispatch_semaphore_signal(s_inflight);
+                     return;
+@@ -4780,6 +4893,7 @@
+             fprintf(stderr, "[RSX metal] surface creation failed\n");
+             return -1;
+         }
++        if (!s_headless && !s_host) eng_drawable_presenter_start();   /* patch 2178 */
+         if (create_depth() != 0) {
+             fprintf(stderr, "[RSX metal] depth/stencil buffer creation failed\n");
+             return -1;
+@@ -4879,6 +4993,7 @@
+         s_guest_draws = s_last_guest_draws = 0;
+         clear_caches();
+         release_surfaces();
++        eng_drawable_presenter_stop();   /* patch 2178: before the layer goes */
+         eng_pso_archive_shutdown();
+         s_shader_lib = nil;
+         s_null_tex   = nil;
