@@ -13,6 +13,7 @@ port is a pre-release (partly playable): see [RELEASE-CRITERIA.md](docs/RELEASE-
 
 ### Fixed
 - **Synchronization:** preserve the recursive attribute when creating a lightweight mutex, return “busy” for a contended nonblocking lock attempt, and reject misaligned cellSync mutexes before touching their memory. Adapted from ps3recomp PR #621 by Max Leiter; covered by host regression tests without game data. No game run was performed for these changes.
+- **SPU math on ARM64 (patch 6086):** `fma`, `fms` and `fnms` now flush subnormal results to zero on hosts without SSE4.1, as the Windows build does. A new host test runs all 150 SPU helpers on both paths and found these three the only ones that differed; all now match bit for bit.
 
 ## [0.1.13] - 2026-11-13 (pre-release)
 
