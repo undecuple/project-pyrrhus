@@ -12,6 +12,43 @@ cd "$ROOT"
 SUB=third_party/ps3recomp
 PT="${KZ2_PATCHED_DIR:-${KZ2_OUT:-work}/ps3recomp-patched}"   # override for tests only
 
+# Scratch listing mode (v0.19.0 bump round): `tools/ps3recomp-patched.sh --list-failures TREE` takes a toolkit tree TREE
+# (a checkout of the target ref, under work/), copies it to a scratch tree, applies every port/patches/*.patch in name
+# order with the same git apply flags plus --reject (hunks that pass are applied, so later patches see them; a failing
+# patch may therefore be half applied, as in a real rebase attempt), and prints one line per failing patch with its failing
+# files, then "N of M patches fail". Touches neither third_party/ps3recomp nor $PT; exit 0 when the listing ran.
+# Scratch: work/patch-failure-list.scratch (override KZ2_PATCH_LIST_SCRATCH, for tests). Normal mode is untouched.
+if [[ "${1:-}" == "--list-failures" ]]; then
+  TREE="${2:-}"
+  [[ $# -eq 2 && -d "$TREE" ]] || { echo "usage: tools/ps3recomp-patched.sh --list-failures TREE   (TREE: toolkit checkout under work/)" >&2; exit 2; }
+  TREE="$(cd "$TREE" && pwd -P)"
+  WORKDIR="$(cd work 2>/dev/null && pwd -P)" || { echo "ps3recomp-patched: no work/ directory" >&2; exit 2; }
+  case "$TREE/" in "$WORKDIR"/*) ;; *) echo "ps3recomp-patched: TREE must be under $WORKDIR" >&2; exit 2;; esac
+  [[ "$TREE" != "$ROOT/$SUB" ]] || { echo "ps3recomp-patched: refusing the submodule as TREE" >&2; exit 2; }
+  SCR="${KZ2_PATCH_LIST_SCRATCH:-$WORKDIR/patch-failure-list.scratch}"
+  case "$SCR" in "$WORKDIR"/*) ;; *) echo "ps3recomp-patched: scratch must be under $WORKDIR" >&2; exit 2;; esac
+  [[ "$TREE" != "$WORKDIR" ]] || { echo "ps3recomp-patched: TREE must be below $WORKDIR, not work/ itself" >&2; exit 2; }
+  case "$SCR/" in "$TREE"/*) echo "ps3recomp-patched: TREE must not contain the scratch $SCR" >&2; exit 2;; esac
+  if [[ -e "$SCR" ]]; then "$ROOT/tools/safe_rm.sh" "$SCR"; fi
+  mkdir -p "$SCR"
+  tar -C "$TREE" --exclude=.git -cf - . | tar -C "$SCR" -xmf -
+  fail=0; total=0
+  for p in port/patches/*.patch; do
+    [[ -e "$p" ]] || continue
+    total=$((total + 1))
+    rc=0
+    out="$(git apply --reject --verbose --whitespace=nowarn --directory="${SCR#"$ROOT"/}" "$p" 2>&1)" || rc=$?
+    if (( rc == 0 )) && grep -q "^Applied patch .* cleanly" <<<"$out"; then continue; fi
+    fail=$((fail + 1))
+    # "error: patch failed: PATH:LINE" and "error: PATH: patch does not apply / No such file ..." name the files.
+    files="$(sed -n -e 's/^error: patch failed: \(.*\):[0-9]*$/\1/p' -e 's/^error: \([^ ]*\): .*$/\1/p' <<<"$out" | sed "s#^${SCR#"$ROOT"/}/##" | sort -u | paste -sd, -)"
+    echo "FAIL $p: ${files:-(no file named; see git apply output)}"
+  done
+  echo "$fail of $total patches fail"
+  "$ROOT/tools/safe_rm.sh" "$SCR"
+  exit 0
+fi
+
 # Line endings (issue #9): with Git for Windows' default core.autocrlf=true the submodule's files are stored with LF but
 # checked out with CRLF, and the patches' LF context then stops applying part-way through the series (patch 1041 was the
 # first). The submodule's own .gitattributes come from upstream, so the check is here: count the files whose index copy is
