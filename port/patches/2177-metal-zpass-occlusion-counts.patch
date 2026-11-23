@@ -1,0 +1,389 @@
+KZ2 patch 2177: measure ZPASS occlusion counts on the Metal draw engine (light coronas).
+
+Written for the Pyrrhus native Mac lighting work. The slot-per-draw visibility buffer, the
+query/ticket ranges and CLEAR_REPORT_VALUE handling follow the author's Resistance 3 macOS
+port (rsx_draw_engine_zpass_*, eng_set_occlusion, MIT, Erik Martins); the per-commit buffer,
+the completion-handler harvest and the never-waiting report path are new here. No RPCS3 code.
+On Metal every GET_REPORT(ZPASS_PIXEL_CNT) answered 0xFFFF ("visible"): only the D3D12 live
+draw measured it (KZ3 patch 2027). Killzone 2 sizes and fades its light coronas by these
+counts, so on the Mac every corona showed as a hard dot at full strength, through walls.
+Now each counted draw gets a slot in its commit's MTLVisibilityResultModeCounting buffer; the
+command buffer's completion handler sums them per query; the report is answered at once with
+the last count its area received and the real count is written there once the GPU is done
+(the title reads it a frame later, as with 2027). Nothing waits on the GPU.
+PS3RECOMP_ENG_ZPASS=0 restores the constant answer; GCM_ZPASS_LOG=<n> prints the first counts.
+
+Backends: the draw-engine queries and cellGcmSys.c's report path act only when the backend has
+set_occlusion and occlusion_result (rsx_draw_engine_zpass_supported), which only Metal does;
+everywhere else GET_REPORT(ZPASS) answers as before. The queue's clock is ps3_ms_now (QPC on
+Windows, CLOCK_MONOTONIC elsewhere).
+
+diff --git a/libs/video/rsx_draw_engine.h b/libs/video/rsx_draw_engine.h
+--- a/libs/video/rsx_draw_engine.h
++++ b/libs/video/rsx_draw_engine.h
+@@ -300,6 +300,12 @@
+                                      float depth_value, u8 stencil,
+                                      u32 x, u32 y, u32 w, u32 h);
+ 
++    /* KZ2 patch 2177: ZPASS sample counting (NV4097 SET_ZPASS_PIXEL_COUNT_ENABLE / GET_REPORT type 1). The engine
++     * names the query the next draws count into (0: none) before each draw; occlusion_result returns 1 and the summed
++     * samples once every draw of that query has finished on the GPU, 0 while some are still recorded or in flight,
++     * -1 when the query is unknown or a count was lost. It never waits. Left NULL, reports keep the constant answer. */
++    void (*set_occlusion)(void* user, u32 query);
++    int  (*occlusion_result)(void* user, u32 query, unsigned long long* samples);
+ } rsx_draw_backend;
+ 
+ /* ---- the engine --------------------------------------------------------- */
+@@ -348,6 +354,13 @@
+  * rsx_draw_engine_present() without presenting now. */
+ void rsx_draw_engine_note_flip(u32 buffer_id);
+ 
++/* KZ2 patch 2177: ZPASS reports measured on the host GPU (PS3RECOMP_ENG_ZPASS=0 turns it off). zpass_report hands out
++ * a ticket for "every sample counted since the last CLEAR_REPORT_VALUE(ZPASS)" at the report's place in the stream;
++ * zpass_result polls it without waiting: 1 and *value when known, 0 not yet, -1 never (unknown ticket, lost count). */
++int rsx_draw_engine_zpass_supported(void);
++u32 rsx_draw_engine_zpass_report(void);
++int rsx_draw_engine_zpass_result(u32 ticket, u32* value);
++
+ /* Guest memory and the surfaces the engine renders on the host GPU, kept
+  * coherent around a 2D transfer (NV3089) that the FIFO walker performs on
+  * guest memory. A title copies its rendered scene out to main memory for
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -204,6 +204,11 @@
+     u32 last_present_surface;
+     u32 last_flip_buffer;
+     u64 write_serial;       /* orders colour and depth writes to one address */
++    /* KZ2 patch 2177: ZPASS queries, numbered from 1: zp_query the one draws count into now (0: none open), zp_last
++     * the last handed out, zp_first the first since the last CLEAR_REPORT_VALUE(ZPASS). A report's ticket keeps the
++     * range [first, last] it sums. */
++    u32 zp_query, zp_last, zp_first, zp_ticket;
++    struct { u32 ticket, first, last; } zp_tickets[1024];
+ 
+     /* staging: decoded texture levels, the constant blocks, the index list */
+     u8* tex_staging;
+@@ -216,6 +221,7 @@
+ 
+     rsx_fp_constant_block fp_constants;
+ } g;
++static u32 eng_zpass_query(void);   /* patch 2177 */
+ 
+ /* The decompilers' HLSL. The VP decompiler builds bodies up to 192 KB. */
+ static char s_vs_hlsl[256 * 1024];
+@@ -3352,6 +3358,7 @@
+     }
+ 
+     const u32 uploaded = indexed ? dc.n_verts : n_draw;
++    if (g.be->set_occlusion) g.be->set_occlusion(g.be->user, eng_zpass_query());   /* patch 2177 */
+     g.be->draw(g.be->user, topology, dc.verts, uploaded, layout.stride,
+                indexed ? g.indices : NULL, indexed ? n_draw : 0);
+     /* Counted only when the draw ran the guest's OWN programs, which is what
+@@ -3622,9 +3629,65 @@
+      * (0xE9xx, 0xEBxx) encode the subchannel bits as part of the address;
+      * preserve them with the wider mask. */
+     u32 m = (method >= 0xE000u) ? (method & 0xFFFCu) : (method & 0x1FFCu);
++    /* KZ2 patch 2177: CLEAR_REPORT_VALUE(ZPASS_PIXEL_CNT) restarts the count; the next draw opens a new query. */
++    if (m == 0x17C8u && arg == 1u) { g.zp_query = 0; g.zp_first = g.zp_last + 1u; }
+     rsx_dispatch_method(&g.rsx, m, arg);
+ }
+ 
++/* ---- KZ2 patch 2177: ZPASS counting --------------------------------------------------------------------------
++ * The rules follow the author's Resistance 3 macOS port (rsx_draw_engine_zpass_*, MIT, Erik Martins); the result
++ * side never waits for the GPU (that port's waits cost 84 -> 50 fps there): a report the GPU has not finished keeps
++ * its earlier value until it has (cellGcmSys.c). Killzone 2 sizes and fades its light coronas by these counts; the
++ * constant "visible" answer drew every corona at full strength, through walls. */
++int rsx_draw_engine_zpass_supported(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3RECOMP_ENG_ZPASS"); on = !(e && *e && atoi(e) == 0); }
++    return on && g.ready && g.be && g.be->set_occlusion && g.be->occlusion_result;
++}
++
++static u32 eng_zpass_query(void)
++{
++    if (!(rsx_dsp_reg(&g.rsx, 0x17CCu) & 1u) || !rsx_draw_engine_zpass_supported()) return 0;
++    if (!g.zp_query) {
++        g.zp_query = ++g.zp_last;
++        if (!g.zp_query) g.zp_query = g.zp_last = g.zp_first = 1u;   /* wrapped */
++    }
++    return g.zp_query;
++}
++
++u32 rsx_draw_engine_zpass_report(void)
++{
++    if (!rsx_draw_engine_zpass_supported()) return 0;
++    u32 t = ++g.zp_ticket;
++    if (!t) t = g.zp_ticket = 1u;
++    const u32 i = t % 1024u;
++    g.zp_tickets[i].ticket = t;
++    g.zp_tickets[i].first  = g.zp_first ? g.zp_first : 1u;
++    g.zp_tickets[i].last   = g.zp_last;
++    g.zp_query = 0;   /* later draws count into a query of their own; the next report sums both until a clear */
++    return t;
++}
++
++int rsx_draw_engine_zpass_result(u32 ticket, u32* value)
++{
++    if (!ticket || !rsx_draw_engine_zpass_supported()) return -1;
++    const u32 i = ticket % 1024u;
++    if (g.zp_tickets[i].ticket != ticket) return -1;
++    const u32 first = g.zp_tickets[i].first, last = g.zp_tickets[i].last;
++    if (last < first) { *value = 0; return 1; }   /* nothing drawn since the clear */
++    if (last - first >= 256u) return -1;
++    unsigned long long sum = 0;
++    for (u32 q = first; q <= last; q++) {
++        unsigned long long n = 0;
++        const int r = g.be->occlusion_result(g.be->user, q, &n);
++        if (r <= 0) return r;
++        sum += n;
++    }
++    *value = sum > 0xFFFFFFFFull ? 0xFFFFFFFFu : (u32)sum;
++    return 1;
++}
++
+ void rsx_draw_engine_set_display_buffer(u32 buffer_id, u32 location, u32 offset,
+                                         u32 pitch, u32 width, u32 height)
+ {
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2760,6 +2760,8 @@
+     /* Polygon offset in Metal's terms (setDepthBias:slopeScale:clamp:),
+      * dynamic encoder state like the stencil reference. */
+     float depth_bias, depth_slope;
++    u32   vis_query;            /* patch 2177: the ZPASS query this draw counts into (0 none) */
++    u32   vis_slot;             /* ...its slot in this commit's visibility buffer, plus 1 (0 none) */
+ } EngRecord;
+ 
+ static EngRecord s_eng_rec[ENG_MAX_RECORDS];
+@@ -3838,7 +3840,95 @@
+     s_eng_pending.depth_slope = slope;
+     s_eng_pending.depth_bias  = depth_bits == 16u ? units * 256.0f : units;
+ }
++
++/* ---- KZ2 patch 2177: ZPASS occlusion counting -------------------------------------------------------------------
++ * A draw that counts gets a slot of its own in its commit's visibility-result buffer and is encoded with
++ * MTLVisibilityResultModeCounting at that slot; a query is the sum of its draws' slots. The command buffer's completion
++ * handler adds each slot to its query and lowers the query's outstanding count; eng_occlusion_result only looks, so
++ * nothing here ever waits for the GPU. Slot-per-draw and the result table follow the author's Resistance 3 port (MIT,
++ * Erik Martins); the per-commit buffer and the completion-handler harvest are this port's. */
++#define ENG_VIS_Q 4096u
++typedef struct { u32 query, outstanding, lost; unsigned long long samples; } EngVisQ;
++static EngVisQ s_visq[ENG_VIS_Q];
++static pthread_mutex_t s_visq_lock = PTHREAD_MUTEX_INITIALIZER;
++static id<MTLBuffer> s_vis_buf;          /* this commit's, while it is encoded */
++static u32* s_vis_slot_query;            /* slot -> query, this commit's */
++static u32 s_vis_nslots, s_vis_used;
+ 
++static void eng_set_occlusion(void* user, u32 query)
++{
++    (void)user;
++    s_eng_pending.vis_query = query;
++    if (!query) return;
++    pthread_mutex_lock(&s_visq_lock);
++    EngVisQ* q = &s_visq[query % ENG_VIS_Q];
++    if (q->query != query) { memset(q, 0, sizeof *q); q->query = query; }
++    pthread_mutex_unlock(&s_visq_lock);
++}
++
++static int eng_occlusion_result(void* user, u32 query, unsigned long long* samples)
++{
++    (void)user;
++    int r;
++    pthread_mutex_lock(&s_visq_lock);
++    const EngVisQ* q = &s_visq[query % ENG_VIS_Q];
++    if (!query || q->query != query || q->lost) r = -1;
++    else if (q->outstanding) r = 0;
++    else { *samples = q->samples; r = 1; }
++    pthread_mutex_unlock(&s_visq_lock);
++    return r;
++}
++
++/* A counted draw recorded, or one that will never reach the GPU (lost = 1). */
++static void eng_vis_note(u32 query, int add, int lost, unsigned long long samples)
++{
++    pthread_mutex_lock(&s_visq_lock);
++    EngVisQ* q = &s_visq[query % ENG_VIS_Q];
++    if (q->query == query) {
++        if (add) q->outstanding++;
++        else { if (q->outstanding) q->outstanding--; q->samples += samples; if (lost) q->lost = 1; }
++    }
++    pthread_mutex_unlock(&s_visq_lock);
++}
++
++/* Before a commit's encoding: a buffer with one zeroed slot per counted draw. */
++static void eng_vis_begin_commit(void)
++{
++    s_vis_buf = nil; s_vis_slot_query = NULL; s_vis_nslots = s_vis_used = 0;
++    u32 n = 0;
++    for (u32 i = 0; i < s_eng_rec_count; i++) {
++        s_eng_rec[i].vis_slot = 0;
++        if (s_eng_rec[i].kind == ENG_REC_DRAW && s_eng_rec[i].vis_query) n++;
++    }
++    if (!n || !s_dev) return;
++    s_vis_buf = [s_dev newBufferWithLength:(NSUInteger)n * sizeof(u64) options:MTLResourceStorageModeShared];
++    s_vis_slot_query = (u32*)calloc(n, sizeof(u32));
++    if (!s_vis_buf || !s_vis_slot_query) { s_vis_buf = nil; free(s_vis_slot_query); s_vis_slot_query = NULL; return; }
++    memset([s_vis_buf contents], 0, (size_t)n * sizeof(u64));
++    s_vis_nslots = n;
++}
++
++/* After encoding: the slots go to the completion handler; counted draws that got no slot are lost. */
++static void eng_vis_end_commit(id<MTLCommandBuffer> cb)
++{
++    for (u32 i = 0; i < s_eng_rec_count; i++) {
++        const EngRecord* r = &s_eng_rec[i];
++        if (r->kind == ENG_REC_DRAW && r->vis_query && !r->vis_slot) eng_vis_note(r->vis_query, 0, 1, 0);
++    }
++    if (!s_vis_buf) return;
++    id<MTLBuffer> buf = s_vis_buf;
++    u32* map = s_vis_slot_query;
++    const u32 used = s_vis_used;
++    s_vis_buf = nil; s_vis_slot_query = NULL; s_vis_nslots = s_vis_used = 0;
++    if (!cb) { for (u32 k = 0; k < used; k++) eng_vis_note(map[k], 0, 1, 0); free(map); return; }
++    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
++        const int ok = [done status] == MTLCommandBufferStatusCompleted;
++        const u64* v = (const u64*)[buf contents];
++        for (u32 k = 0; k < used; k++) eng_vis_note(map[k], 0, !ok, ok ? v[k] : 0);
++        free(map);
++    }];
++}
++
+ static void eng_draw(void* user, rsx_topology topology, const void* vertices,
+                      u32 vertex_count, u32 stride, const u32* indices,
+                      u32 index_count)
+@@ -3855,6 +3945,7 @@
+     EngRecord* r = &s_eng_rec[s_eng_rec_count++];
+     *r = s_eng_pending;
+     r->kind         = ENG_REC_DRAW;
++    if (r->vis_query) eng_vis_note(r->vis_query, 1, 0, 0);   /* patch 2177 */
+     r->topology     = topo_to_metal(topology);
+     r->vb_off       = vb_off;
+     r->stride       = stride;
+@@ -4335,6 +4426,7 @@
+             rp.renderTargetWidth  = [zbuf width];
+             rp.renderTargetHeight = [zbuf height];
+         }
++        if (s_vis_buf) rp.visibilityResultBuffer = s_vis_buf;   /* patch 2177 */
+ 
+         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+         /* A draw's pipeline declares as many colour attachments as its record
+@@ -4352,7 +4444,16 @@
+                eng_record_targets_are(&s_eng_rec[i], rt, nrt) &&
+                (s_eng_rec[i].depth == depth ||
+                 (!s_eng_rec[i].depth && zbuf == s_depth))) {
+-            eng_encode_draw(enc, &s_eng_rec[i], stage);
++            EngRecord* dr = &s_eng_rec[i];
++            const int counted = dr->vis_query && s_vis_buf && s_vis_used < s_vis_nslots;   /* patch 2177 */
++            if (counted) {
++                s_vis_slot_query[s_vis_used] = dr->vis_query;
++                dr->vis_slot = ++s_vis_used;
++                [enc setVisibilityResultMode:MTLVisibilityResultModeCounting
++                                      offset:(NSUInteger)(dr->vis_slot - 1u) * sizeof(u64)];
++            }
++            eng_encode_draw(enc, dr, stage);
++            if (counted) [enc setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
+             i++;
+         }
+         [enc endEncoding];
+@@ -4511,7 +4612,9 @@
+         }
+         const uint64_t ft_e0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+         const u32 ft_nrec = s_eng_rec_count;
++        eng_vis_begin_commit();                       /* patch 2177 */
+         eng_encode_records(cb, stage);
++        eng_vis_end_commit(cb);
+         if (present_dst && dst) eng_blit_to_display(cb, present_dst, dst);
+         if (drawable) { fps_track_drawable(drawable); [cb presentDrawable:drawable]; }
+         if (ft_e0) ps3_ft_span(PS3_FT_GPU_ENCODE, 0, present_dst ? 1u : 0u, ft_nrec, ft_e0, ps3_ft_now());
+@@ -4699,6 +4802,8 @@
+     .depth_target_release = eng_obj_release,
+     .depth_snapshot       = eng_depth_snapshot,
+     .depth_readback       = eng_depth_readback,
++    .set_occlusion        = eng_set_occlusion,      /* patch 2177 */
++    .occlusion_result     = eng_occlusion_result,
+     .color_snapshot       = eng_color_snapshot,
+     .depth_as_color       = eng_depth_as_color,
+     .pipeline_create      = eng_pipeline_create,
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -385,6 +385,58 @@
+ /* Report data area (256 slots, each 16 bytes) */
+ static CellGcmReportData s_report_data[CELL_GCM_MAX_REPORT_COUNT];
+ 
++/* ---- KZ2 patch 2177: ZPASS reports measured by the Metal draw engine -------------------------------------------
++ * A GET_REPORT(ZPASS) gets a ticket (rsx_draw_engine_zpass_report) and is answered at once with the last count that
++ * report area received (0xFFFF, "visible", before the first); the ticket waits here and, once the engine says its
++ * draws have finished on the GPU (never waiting for it), the real count is written into the report's value word.
++ * The title reads it a frame later, as KZ3 patch 2027 does for the D3D12 path. A ticket older than 2 s is dropped. */
++#define GCM_ZQ_LEN 1024u
++static struct { u32 ticket, off; u64 t_ms; } s_zq[GCM_ZQ_LEN];
++static u32 s_zq_head, s_zq_tail;
++#define GCM_ZLAST 4096u
++static struct { u32 off, val; } s_zlast[GCM_ZLAST];   /* report offset -> last count (val + 1; 0 = none) */
++static u32 gcm_io2ea(u32 io_off);
++static u64 gcm_zq_now_ms(void) { return ps3_ms_now(); }   /* QPC on Windows, CLOCK_MONOTONIC elsewhere (below) */
++static u32* gcm_zlast_slot(u32 off)
++{
++    u32 h = (off / 16u) % GCM_ZLAST;
++    for (u32 k = 0; k < 8u; k++, h = (h + 1u) % GCM_ZLAST)
++        if (!s_zlast[h].val || s_zlast[h].off == off) { s_zlast[h].off = off; return &s_zlast[h].val; }
++    s_zlast[(off / 16u) % GCM_ZLAST].off = off;   /* full neighbourhood: take the home slot */
++    s_zlast[(off / 16u) % GCM_ZLAST].val = 0;
++    return &s_zlast[(off / 16u) % GCM_ZLAST].val;
++}
++static u32 gcm_zpass_queue(u32 off, u32 ticket, u32 dflt)
++{
++    u32* last = gcm_zlast_slot(off);
++    if (ticket) {
++        if (s_zq_tail - s_zq_head >= GCM_ZQ_LEN) s_zq_head++;   /* oldest dropped */
++        const u32 i = s_zq_tail++ % GCM_ZQ_LEN;
++        s_zq[i].ticket = ticket; s_zq[i].off = off; s_zq[i].t_ms = gcm_zq_now_ms();
++    }
++    return *last ? *last - 1u : dflt;
++}
++static void gcm_zpass_pump(void)
++{
++    if (s_zq_head == s_zq_tail) return;
++    const u64 now = gcm_zq_now_ms();
++    static int log_n = -1;
++    if (log_n < 0) { const char* e = getenv("GCM_ZPASS_LOG"); log_n = e ? atoi(e) : 0; }
++    while (s_zq_head != s_zq_tail) {
++        const u32 i = s_zq_head % GCM_ZQ_LEN;
++        u32 n = 0;
++        const int r = rsx_draw_engine_zpass_result(s_zq[i].ticket, &n);
++        if (r == 0 && now - s_zq[i].t_ms < 2000u) break;   /* in order: later ones are not done either */
++        if (r == 1) {
++            const u32 ea = gcm_io2ea(s_zq[i].off);
++            if (ea) vm_write32(ea + 8u, n);
++            *gcm_zlast_slot(s_zq[i].off) = n + 1u > n ? n + 1u : n;
++            if (log_n > 0) { log_n--; fprintf(stderr, "[GET_REPORT] zpass off=0x%X ticket %u: %u samples\n", s_zq[i].off, s_zq[i].ticket, n); }
++        }
++        s_zq_head++;
++    }
++}
++
+ /* NV4097_SET_CONTEXT_DMA_REPORT (0x1A8): where NV4097_GET_REPORT writes.
+  * Local (0xFEED0000, the default): the s_report_data slots above, read back
+  * through cellGcmGetReport* / cellGcmGetReportDataAddress. Main memory
+@@ -3035,6 +3087,7 @@
+      * reports "visible" -- the conservative answer; reading 0
+      * tells the title every queried object is occluded. */
+     if (m == 0x1A8) s_report_dma = v;
++    if (m == 0x1800) gcm_zpass_pump();   /* patch 2177: counts that have landed since the last report */
+     if (m == 0x1800) {
+         const u32 off = v & 0xFFFFFFu, idx = off / 16u;
+         u32 val = (v >> 24) == 1u ? 0xFFFFu : 0u;
+@@ -3043,6 +3096,10 @@
+         /* KZ3 patch 2027: ZPASS counts from the live engine's occlusion queries (0 / last count
+          * now, the real count a frame later); 0xFFFF stays when it has none. */
+         if (main_mem && (v >> 24) == 1u && rsx_live_draw_enabled()) val = rsx_live_draw_report_value(off, val);
++        /* KZ2 patch 2177: the Metal draw engine measures ZPASS too (rsx_draw_engine_zpass_*): the last count this
++         * report area got now, the new one written there once the GPU has finished (gcm_zpass_pump). */
++        else if (main_mem && (v >> 24) == 1u && rsx_draw_engine_enabled() && rsx_draw_engine_zpass_supported())
++            val = gcm_zpass_queue(off, rsx_draw_engine_zpass_report(), val);
+         { static int rn = 0; if (PS3_LOG_FIRST(rn, 6)) printf("[GET_REPORT] type=%u off=0x%X dma=0x%08X%c", v >> 24, off, s_report_dma, 10); }
+         if (main_mem) {
+             /* CellGcmReportData, big-endian: u64 timer, u32 value, u32 padding. */

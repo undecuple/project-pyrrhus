@@ -1,0 +1,49 @@
+KZ2 patch 2184: a shader's Metal compile runs outside the translator lock.
+
+Written for the Pyrrhus native Mac bring-up; no game code or RPCS3 code used.
+Licence: MIT (project LICENSE).
+
+eng_function held s_eng_translate_lock (patch 2179: the HLSL->MSL translator
+and its scratch buffers are not reentrant) across compile_guest_function too,
+i.e. across newLibraryWithSource, tens of milliseconds a shader. The four build
+workers -- with the 256 pipelines the boot prewarm of patch 2181 queues -- took
+turns on that lock for whole compiles, and the FIFO walker, when it needed a
+pipeline at once (the 2179 retry of an entry older than 5 s), queued behind
+them on a mutex that is not fair. A wall-clock sample of the walker in gameplay
+(RSX_WALKER_PROF) had 41.9 % of its time in __psynch_mutexwait under
+eng_function; the log showed drains of 1-3 s with no build "waited for".
+
+The translation stays under the lock; the compile runs on a private copy of the
+MSL text after it is released. Two builders that compile the same text at once
+keep the first entry (a duplicate compile, never a lost or wrong function).
+
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 3ffb64b..cb4b887 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3592,7 +3592,24 @@ static u32 eng_depth_as_color(void* user, u32 depth, u32 w, u32 h, u32 rsx_fmt)
+         snprintf(name, sizeof name, "%s_%016llx.msl", what, (unsigned long long)hash);
+         dump_shader(name, s_msl);
+         snprintf(name, sizeof name, "%s %016llx", what, (unsigned long long)hash);
+-        fn = compile_guest_function(s_msl, name);
++        /* KZ2 patch 2184: only the translator and its scratch buffers need the lock. The Metal compile
++         * (tens of ms) ran under it too, so the four build workers -- 256 of them queued by the boot prewarm --
++         * took turns on it for the whole compile, and a walker that needed one pipeline now (the 2179 retry)
++         * waited behind them on a mutex that is not fair: 42 % of the walker's wall time in a gameplay
++         * sample, drains of 1-3 s. The compile now runs on a private copy of the text, outside the lock. */
++        char* const msl = strdup(s_msl);
++        pthread_mutex_unlock(&s_eng_translate_lock);
++        if (msl) { fn = compile_guest_function(msl, name); free(msl); }
++        pthread_mutex_lock(&s_eng_translate_lock);
++        /* Another builder may have compiled the same text meanwhile: keep the first entry. */
++        for (u32 i = 0; i < s_eng_func_count; i++)
++            if (s_eng_func[i].hash == hash) {
++                const id<MTLFunction> hit = s_eng_func[i].fn ? s_eng_func[i].fn : fn;
++                s_eng_func[i].fn = hit;
++                pthread_mutex_unlock(&s_eng_translate_lock);
++                return hit;
++            }
++        if (s_eng_func_count >= ENG_MAX_FUNCS) { pthread_mutex_unlock(&s_eng_translate_lock); return fn; }
+     }
+     s_eng_func[s_eng_func_count].hash = hash;
+     s_eng_func[s_eng_func_count].fn   = fn;
