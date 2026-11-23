@@ -1,4 +1,5 @@
-/* Host coroutines for guest context switches (see guest_fiber.h). Upstream candidate. From Project Helghast port/spu/guest_fiber.c (unchanged). */
+/* Host coroutines for guest context switches (see guest_fiber.h). Upstream candidate. From Project Helghast port/spu/guest_fiber.c;
+ * KZ2: the POSIX path keeps finished fibers for reuse (gf_run, t_pool). */
 #include "guest_fiber.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #  include <time.h>
 #  include <pthread.h>
 #  include <ucontext.h>
+#  include <setjmp.h>
 #endif
 
 struct guest_fiber {
@@ -28,6 +30,9 @@ struct guest_fiber {
 #else
     ucontext_t uc;
     void* stack;
+    size_t stack_bytes;
+    jmp_buf top;             /* gf_run's loop, for guest_fiber_exit */
+    int finished;            /* body returned; parked in gf_run, reusable (KZ2: the POSIX fiber pool) */
 #endif
 };
 
@@ -58,12 +63,30 @@ static void gf_die(const char* what)
 
 static void gf_run(guest_fiber* f)
 {
+#ifdef _WIN32
     /* guest_fiber_switch already loaded this fiber's block into ctx. */
     f->body(f->ctx, f->arg);
     /* The body returned: go back to the creator. Nobody may resume this fiber again. */
     guest_fiber_switch(f->creator);
     gf_die("finished fiber resumed");
+#else
+    /* KZ2 (native macOS): a finished fiber parks here and guest_fiber_create may hand it out again with a new body.
+     * makecontext on macOS zeroes the whole stack: with the 32 MiB default that was 3.7 % of all process samples in
+     * the first mission (a fiber per job of the game's fiber scheduler, func_00072FB0), page faults included. */
+    for (;;) {
+        if (!_setjmp(f->top)) f->body(f->ctx, f->arg);   /* guest_fiber_exit lands here too */
+        f->finished = 1;
+        guest_fiber_switch(f->creator);   /* resumed only by a reuse, which set body/arg/creator again */
+        if (f->finished) gf_die("finished fiber resumed");
+    }
+#endif
 }
+
+#ifndef _WIN32
+#define GF_POOL 8
+static __thread guest_fiber* t_pool[GF_POOL];
+static __thread int t_pool_n;
+#endif
 
 #ifdef _WIN32
 static void WINAPI gf_entry(void* p) { gf_run((guest_fiber*)p); }
@@ -100,6 +123,18 @@ guest_fiber* guest_fiber_create(guest_fiber_body body, void* arg, size_t stack_b
     guest_fiber* cur = t_cur;
     if (!cur) gf_die("guest_fiber_create before guest_fiber_self");
     if (!stack_bytes) stack_bytes = (size_t)32 << 20;
+#ifndef _WIN32
+    for (int i = t_pool_n - 1; i >= 0; i--) {
+        guest_fiber* f = t_pool[i];
+        if (f->stack_bytes != stack_bytes || f->ctx_size != cur->ctx_size) continue;
+        t_pool[i] = t_pool[--t_pool_n];
+        f->ctx = cur->ctx; f->body = body; f->arg = arg; f->creator = cur;
+        memset(f->locals, 0, sizeof f->locals);
+        memcpy(f->saved, f->ctx, f->ctx_size);
+        f->finished = 0;
+        return f;
+    }
+#endif
     guest_fiber* f = (guest_fiber*)calloc(1, sizeof *f);
     if (!f) gf_die("out of memory");
     f->ctx = cur->ctx; f->ctx_size = cur->ctx_size; f->body = body; f->arg = arg; f->creator = cur;
@@ -114,6 +149,7 @@ guest_fiber* guest_fiber_create(guest_fiber_body body, void* arg, size_t stack_b
     if (!f->stack || getcontext(&f->uc)) gf_die("fiber stack");
     f->uc.uc_stack.ss_sp = f->stack;
     f->uc.uc_stack.ss_size = stack_bytes;
+    f->stack_bytes = stack_bytes;
     f->uc.uc_link = NULL;
     uintptr_t p = (uintptr_t)f;
     makecontext(&f->uc, (void (*)(void))gf_entry, 2, (unsigned)(p & 0xFFFFFFFFu), (unsigned)(p >> 32));
@@ -122,6 +158,18 @@ guest_fiber* guest_fiber_create(guest_fiber_body body, void* arg, size_t stack_b
 }
 
 void* guest_fiber_state(guest_fiber* f) { return f->saved; }
+
+void guest_fiber_exit(void)
+{
+    guest_fiber* f = t_cur;
+    if (!f || f->is_thread) gf_die("guest_fiber_exit outside a created fiber");
+#ifdef _WIN32
+    guest_fiber_switch(f->creator);
+    gf_die("finished fiber resumed");
+#else
+    _longjmp(f->top, 1);   /* unwind this fiber's own stack to gf_run, which parks it for reuse */
+#endif
+}
 
 void guest_fiber_switch(guest_fiber* to)
 {
@@ -151,6 +199,7 @@ void guest_fiber_destroy(guest_fiber* f)
 #ifdef _WIN32
     DeleteFiber(f->h);
 #else
+    if (f->finished && t_pool_n < GF_POOL) { t_pool[t_pool_n++] = f; return; }   /* parked in gf_run: reuse */
     free(f->stack);
 #endif
     free(f->saved);
