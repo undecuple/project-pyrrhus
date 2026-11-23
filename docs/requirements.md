@@ -1,5 +1,10 @@
 # Requirements
 
+An experimental native Apple-silicon developer build is described in [BUILDING.md](BUILDING.md#building-on-macos).
+It has been run on one Mac only (an Apple M4 Pro), where it boots to the menu and plays into the first mission; other
+Macs and their requirements are untested. It needs Apple Clang, Python 3.11+, CMake/Ninja, SDL2/SDL3 and the
+glslang/SPIRV-Tools/SPIRV-Cross shader toolchain.
+
 What you need to play and to build Project Pyrrhus. The game does not run at full speed yet (about 20-35 frames per
 second in the first level on the machines tried, the PS3 runs it at 30) and hand play is not measured, so every
 hardware figure below is provisional: a measurement is named as one, anything else is an estimate. Measured values
