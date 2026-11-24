@@ -1,0 +1,266 @@
+KZ2 6084: LD_TEX_SKIP, the live draw's 16-unit texture resolution reused from the previous draw
+when everything it reads is unchanged. An earlier change's counters (2158, RSX_PERF_TEXREG) found 56 % of heavy-view draws
+with all 16 units' registers unchanged from the draw before (91 % of units unchanged); the loop decodes each unit,
+scans the sampler cache, the colour surfaces and the zetas for it, then calls texture_srv_slot. The reuse rule is in
+libs/video/rsx_tex_skip.h (new): the 16 x 9 raw words, the fragment program's unit mask, the colour-surface and zeta
+generations (g_ld_surf_gen / g_ld_zgen, bumped where surface_get and the zeta creation set an address and size) and
+the device are equal, and the recording draw resolved every bound unit on the plain texture path with no colour
+surface and no zeta at any bound address. A reuse takes the decoded units, unit mask and sampler slots (the sampler
+cache is append-only) from the memo and still calls texture_srv_slot for every bound unit, so content coherence
+(write watch, per-frame hash, re-decode, LRU) is unchanged. LD_TEX_SKIP=1 reuses, LD_TEX_SKIP=verify runs the loop on
+every draw and counts a memo answer that differs as bad; "[tex-skip]" every 600 frames. Default off; off whenever
+LD_UNITS, LD_PS1_BUF0, LD_UVDBG, LD_ALIAS_DBG, the upload check (6032), the zeta probe, the alias-size log or the
+a010 probe is on. Host test: tools/runtime/test_tex_skip.sh (the rule with a negative control, and the wiring).
+Review fix: a draw whose run-time diagnostic gate is on (zeta probe gate, a010 probe, upload check,
+alias-size log) drops the memo (ld_tsk_begin) and keeps no decoded units (g_ld_tsk_t is written only when the skip
+is on for the draw), and verify also compares the memo's decoded units with the fresh decode (ld_tsk_units_same).
+
+--- a6084/libs/video/rsx_live_draw.c	2026-11-13 15:09:41.361181947 -0600
++++ b6084/libs/video/rsx_live_draw.c	2026-11-13 15:11:04.162034704 -0600
+@@ -668,6 +668,8 @@
+ 
+ static int g_ld_dred_dumped = 0;
+ static u32 g_ld_frames = 0;
++/* KZ2 patch 6084 (LD_TEX_SKIP): bumped wherever a colour surface or a zeta gets a location, offset or size */
++static u32 g_ld_surf_gen = 1, g_ld_zgen = 1;
+ static ID3D12InfoQueue* g_ld_info_queue = NULL;
+ static int g_ld_debug_layer_enabled = 0;
+ 
+@@ -6582,6 +6584,7 @@
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
+     s->phys_w = phys.w; s->phys_h = phys.h;   /* KZ2 patch 2300 */
++    g_ld_surf_gen++;   /* KZ2 patch 6084 */
+     s->fmt = want_fmt;
+     s->colour_gen = 0;   /* patch 2044: a new resource holds no colour yet */
+ #if !defined(YZ_PERF_CLEAN)
+@@ -7465,6 +7468,7 @@
+     z->w = want_w;
+     z->h = want_h;
+     z->phys_w = zphys.w; z->phys_h = zphys.h;   /* KZ2 patch 2300 */
++    g_ld_zgen++;   /* KZ2 patch 6084 */
+     z->had_write = 0;
+     z->snapshot_valid = 0;
+     z->snapshot_w = rt_w ? rt_w : want_w;
+@@ -14567,6 +14571,48 @@
+     memset(&g_ld_trg, 0, sizeof g_ld_trg);
+ }
+ 
++/* KZ2 patch 6084: LD_TEX_SKIP, the texture loop skipped for a draw whose 16 texture units, fragment
++ * unit mask, surface and zeta generations equal the previous draw's (rsx_tex_skip.h has the rule and why it is exact).
++ * LD_TEX_SKIP=1 reuses; LD_TEX_SKIP=verify runs the loop on every draw and counts a memo answer that differs as bad.
++ * Default off. Off whenever a diagnostic that reads or rewrites units in the loop is on. "[tex-skip]" every 600 frames. */
++#include "rsx_tex_skip.h"
++static ld_tsk_memo g_ld_tsk;
++static rsx_dsp_texture g_ld_tsk_t[LD_TSK_UNITS];
++static int ld_tsk_mode(void)
++{
++    static int m = -1;
++    if (m < 0) {
++        const char* e = getenv("LD_TEX_SKIP");
++        m = !e ? 0 : !strcmp(e, "verify") ? 2 : atoi(e) != 0;
++        if (m && (getenv("LD_UNITS") || getenv("LD_PS1_BUF0") || getenv("LD_UVDBG") || getenv("LD_ALIAS_DBG"))) {
++            fprintf(stderr, "[tex-skip] off: a texture-loop diagnostic is set\n"); m = 0;
++        }
++        if (m) fprintf(stderr, "[tex-skip] %s (LD_TEX_SKIP=%s, patch 6084)\n", m == 2 ? "verify" : "on", e);
++    }
++    return m;
++}
++/* 1 = no colour surface and no zeta sits at this address */
++static int ld_tsk_addr_clear(u32 location, u32 offset)
++{
++    for (u32 i = 0; i < g.n_surfaces; i++)
++        if (g.surfaces[i].location == location && g.surfaces[i].offset == offset) return 0;
++    for (u32 i = 0; i < g.n_zdepths; i++)
++        if (g.zdepths[i].location == location && g.zdepths[i].offset == offset) return 0;
++    return 1;
++}
++static void ld_tsk_report(void)
++{
++    static u32 last;
++    if (g_ld_frames - last < 600u) return;
++    last = g_ld_frames;
++    const u64 n = g_ld_tsk.hits + g_ld_tsk.misses;
++    fprintf(stderr, "[tex-skip] frame %u: %s %llu of %llu draws (%.1f%%), recorded-not-plain %llu, verify bad %llu\n",
++            g_ld_frames, ld_tsk_mode() == 2 ? "would skip" : "skipped", (unsigned long long)g_ld_tsk.hits,
++            (unsigned long long)n, n ? 100.0 * (double)g_ld_tsk.hits / (double)n : 0.0,
++            (unsigned long long)g_ld_tsk.unrecordable, (unsigned long long)g_ld_tsk.verify_bad);
++    g_ld_tsk.hits = g_ld_tsk.misses = g_ld_tsk.unrecordable = 0;
++}
++
+ /* Patch 2160, from Killzone 3 patch 2160 (port/patches/2160-perf-vtxreg-vertex-input-reuse.patch, same
+  * owner; adapted: the glue is named ld_vreg_* here because KZ2's 6079/6080 use ld_vr_* for the resident streams, and
+  * the written test builds an ld_vc_span, which in KZ2 carries an extra hash field, instead of casting). RSX_PERF_VTXREG=1,
+@@ -15105,6 +15151,29 @@
+           }
+       } }
+     ld_trg_draw();   /* patch 2158: counters only */
++    /* KZ2 patch 6084 (LD_TEX_SKIP): the previous draw's resolution when every input of it is unchanged */
++    /* a run-time diagnostic gate on for this draw: full loop, nothing kept, and the memo is dropped (ld_tsk_begin) */
++    const int tsk = ld_tsk_begin(&g_ld_tsk, ld_tsk_mode(), ld_upchk_on() || ld_zp_active() || ld_alias_size_log_n() ||
++                                                         rsx_live_draw_a010_probe_active());
++    u32 tsk_raw[LD_TSK_UNITS][LD_TSK_WORDS]; int tsk_hit = 0, tsk_plain = 1;
++    rsx_dsp_texture tsk_prev[LD_TSK_UNITS];   /* verify: the memo's units, before the full loop rewrites them */
++    if (tsk) {
++        for (u32 u = 0; u < LD_TSK_UNITS; u++) ld_trg_raw(u, tsk_raw[u]);
++        tsk_hit = ld_tsk_match(&g_ld_tsk, tsk_raw, g_ld_fp_units_cur, g_ld_surf_gen, g_ld_zgen, g.dev);
++        if (tsk_hit && tsk == 2) memcpy(tsk_prev, g_ld_tsk_t, sizeof tsk_prev);
++    }
++    if (tsk_hit && tsk == 1) {
++        texture_mask = g_ld_tsk.mask;
++        for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
++            if (!((texture_mask >> u) & 1u)) continue;
++            smp_slots[u] = g_ld_tsk.smp[u];
++            LDW_T0(tex_t0);
++            slots[u] = texture_srv_slot(&g_ld_tsk_t[u]);   /* content coherence exactly as without the skip */
++            LDW_ADD(RSX_PERF_W_TEX_T, tex_t0);
++            if (slots[u] == SRV_WHITE) g_ld_bind_white++; else g_ld_bind_real++;
++        }
++        g_ld_tsk.hits++;
++    } else
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
+         rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
+         /* LD_PS1_BUF0=1 -- DIAGNOSTIC, not a fix. Force a 24-bit PS1 VRAM
+@@ -15329,9 +15398,11 @@
+         if (sampled < 0 && !zeta_pref && g.surfaces[target].location == t.location &&
+             g.surfaces[target].offset == t.offset) {
+             /* Reads its own render target: sample a copy of it. */
++            tsk_plain = 0;   /* KZ2 patch 6084 */
+             slots[u] = surface_feedback_srv(target);
+             g_ld_bind_surf++;
+         } else if (sampled >= 0) {
++            tsk_plain = 0;   /* KZ2 patch 6084 */
+             if (g_gv_on) { ld_gv_drain(); ld_gv_validate((u32)sampled); }   /* patch 2017 */
+             /* LD_ALIAS_DBG also reports the HIT. A texture that aliases a render
+              * surface when it should not is exactly as interesting as one that
+@@ -15414,6 +15485,7 @@
+                 ld_zp_note(u, &t, zi, why);
+             }
+             if (sampled_depth >= 0) {
++                tsk_plain = 0;   /* KZ2 patch 6084 */
+                 const int zw = zdepth_window((u32)sampled_depth, t.width, t.height);   /* patch 2063 */
+                 slots[u] = zw >= 0 ? (u32)zw : SRV_ZDEPTH_BASE + sampled_depth;
+                 g_ld_zdepth_srv_binds++;
+@@ -15427,12 +15499,31 @@
+                 LDW_T0(tex_t0);
+                 if (ld_upchk_on()) ld_upchk_depth_bind(&t, UPCHK_DECODE);   /* patch 6032 */
+                 slots[u] = texture_srv_slot(&t);
++                if (tsk) g_ld_tsk_t[u] = t;   /* KZ2 patch 6084: what a reuse decodes to (only from a draw that may record) */
+                 LDW_ADD(RSX_PERF_W_TEX_T, tex_t0);
+                 if (slots[u] == SRV_WHITE) g_ld_bind_white++; else g_ld_bind_real++;
+             }
+         }
+     }
+ 
++    if (tsk && !(tsk_hit && tsk == 1)) {   /* KZ2 patch 6084: record (and, verify, compare) after the full loop */
++        for (u32 u = 0; tsk_plain && u < SRV_TABLE_SIZE; u++)
++            if (((texture_mask >> u) & 1u) && !ld_tsk_addr_clear(g_ld_tsk_t[u].location, g_ld_tsk_t[u].offset)) tsk_plain = 0;
++        if (tsk_hit) {
++            if (ld_tsk_same(&g_ld_tsk, texture_mask, smp_slots, tsk_plain) &&
++                ld_tsk_units_same(tsk_prev, g_ld_tsk_t, (u32)sizeof(rsx_dsp_texture), texture_mask)) g_ld_tsk.hits++;
++            else {
++                static u32 nb;
++                g_ld_tsk.verify_bad++;
++                if (nb++ < 16)
++                    fprintf(stderr, "[tex-skip] verify: frame %u memo mask 0x%04X loop mask 0x%04X plain %d\n",
++                            g_ld_frames, g_ld_tsk.mask, texture_mask, tsk_plain);
++            }
++        } else g_ld_tsk.misses++;
++        ld_tsk_record(&g_ld_tsk, tsk_raw, g_ld_fp_units_cur, g_ld_surf_gen, g_ld_zgen, g.dev, tsk_plain, texture_mask,
++                      smp_slots);
++    }
++    if (tsk) ld_tsk_report();
+     const u32 vtex_mask = vertex_texture_mask();
+     u32 vtex_slots[SRV_TABLE_SIZE];
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++)
+--- /dev/null	2026-11-01 09:32:34.550103552 -0600
++++ b6084/libs/video/rsx_tex_skip.h	2026-11-13 15:11:04.156963588 -0600
+@@ -0,0 +1,88 @@
++/* rsx_tex_skip.h - KZ2 patch 6084: skip the live draw's 16-unit texture resolution when nothing it
++ * reads has changed since the draw that recorded it (LD_TEX_SKIP=1; =verify runs the loop anyway and compares).
++ *
++ * The walker's texture loop (rsx_live_draw.c, after the LD_UNITS block) decodes each of the 16 units from its 9 raw
++ * registers (0x1A00 + u*0x20 .. +0x1C and SIZE1 0x1840 + u*4: they fully determine rsx_dsp_texture), skips the units
++ * the fragment program does not use (patch 2045's unit mask), then resolves each: sampler key and slot (linear scan of
++ * the sampler cache), zeta-alias kind, the colour-surface scan, the zeta scan, and at last texture_srv_slot. An earlier change
++ * measured 56 % of heavy-view draws with all 16 units' registers unchanged from the draw before.
++ *
++ * A memo of the previous draw's resolution is reused when ALL of these hold:
++ *   - the 16 x 9 raw words are equal and the fragment program's unit mask is the same;
++ *   - the colour-surface and zeta generations are the same (bumped wherever a surface or a zeta gets a location,
++ *     offset or size) and the device is the same;
++ *   - the recording draw resolved every bound unit on the plain texture path, and no colour surface and no zeta sat at
++ *     any bound unit's address (so the surface scan, the feedback copy, the zeta snapshot and the window paths cannot
++ *     apply to any target, depth state or snapshot state while the generations stand).
++ * On a reuse the decoded units, the unit mask and the sampler slots (the sampler cache is append-only, so a key's
++ * slot never changes) come from the memo, and texture_srv_slot still runs for every bound unit: content coherence
++ * (write watch, per-frame hash, re-decode, LRU) is exactly as with the skip off.
++ *
++ * Pure C, no D3D12: rsx_live_draw.c and the host test tools/runtime/test_tex_skip.sh use it. */
++#ifndef RSX_TEX_SKIP_H
++#define RSX_TEX_SKIP_H
++#include <stdint.h>
++#include <string.h>
++
++#define LD_TSK_UNITS 16u
++#define LD_TSK_WORDS 9u
++
++typedef struct ld_tsk_memo {
++    int       valid;
++    const void* dev;                         /* the device the slots belong to */
++    uint32_t  fp_units;                      /* the fragment program's used-unit mask at record time */
++    uint32_t  surf_gen, zgen;                /* colour-surface and zeta generations at record time */
++    uint32_t  raw[LD_TSK_UNITS][LD_TSK_WORDS];
++    uint32_t  mask;                          /* units bound (texture_mask) */
++    uint32_t  smp[LD_TSK_UNITS];             /* sampler slots of the bound units */
++    uint64_t  hits, misses, unrecordable, verify_bad;
++} ld_tsk_memo;
++
++/* The per-draw switch: mode = LD_TEX_SKIP (0 off, 1 on, 2 verify); gated_off = a diagnostic that can change at run
++ * time (the zeta probe's gate, the a010 probe, the upload check, the alias-size log) is on for this draw. Such a draw
++ * runs the full loop unrecorded and keeps no units, so the memo it would leave stale is dropped here. */
++static inline int ld_tsk_begin(ld_tsk_memo* m, int mode, int gated_off)
++{
++    if (mode && gated_off) { m->valid = 0; return 0; }
++    return mode;
++}
++
++/* verify: 1 = the memo's decoded units equal the ones the full loop decoded, for every bound unit */
++static inline int ld_tsk_units_same(const void* memo_units, const void* fresh_units, uint32_t unit_size, uint32_t mask)
++{
++    const unsigned char* a = (const unsigned char*)memo_units; const unsigned char* b = (const unsigned char*)fresh_units;
++    for (uint32_t u = 0; u < LD_TSK_UNITS; u++)
++        if (((mask >> u) & 1u) && memcmp(a + (size_t)u * unit_size, b + (size_t)u * unit_size, unit_size) != 0) return 0;
++    return 1;
++}
++
++/* 1 = the memo applies to this draw */
++static inline int ld_tsk_match(const ld_tsk_memo* m, const uint32_t raw[LD_TSK_UNITS][LD_TSK_WORDS], uint32_t fp_units,
++                               uint32_t surf_gen, uint32_t zgen, const void* dev)
++{
++    return m->valid && m->dev == dev && m->fp_units == fp_units && m->surf_gen == surf_gen && m->zgen == zgen &&
++           memcmp(m->raw, raw, sizeof m->raw) == 0;
++}
++
++/* Record the draw just resolved. plain = every bound unit took the plain texture path and no colour surface or zeta
++ * sits at any bound unit's address; otherwise the memo is dropped (nothing reusable). */
++static inline void ld_tsk_record(ld_tsk_memo* m, const uint32_t raw[LD_TSK_UNITS][LD_TSK_WORDS], uint32_t fp_units,
++                                 uint32_t surf_gen, uint32_t zgen, const void* dev, int plain, uint32_t mask,
++                                 const uint32_t smp[LD_TSK_UNITS])
++{
++    if (!plain) { m->valid = 0; m->unrecordable++; return; }
++    memcpy(m->raw, raw, sizeof m->raw);
++    m->fp_units = fp_units; m->surf_gen = surf_gen; m->zgen = zgen; m->dev = dev; m->mask = mask;
++    for (uint32_t u = 0; u < LD_TSK_UNITS; u++) m->smp[u] = ((mask >> u) & 1u) ? smp[u] : 0u;
++    m->valid = 1;
++}
++
++/* verify: 1 = the memo's answer equals what the full loop resolved (mask, sampler slots of bound units, all plain) */
++static inline int ld_tsk_same(const ld_tsk_memo* m, uint32_t mask, const uint32_t smp[LD_TSK_UNITS], int plain)
++{
++    if (!plain || m->mask != mask) return 0;
++    for (uint32_t u = 0; u < LD_TSK_UNITS; u++)
++        if (((mask >> u) & 1u) && m->smp[u] != smp[u]) return 0;
++    return 1;
++}
++#endif

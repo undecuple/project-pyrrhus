@@ -8,13 +8,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$ROOT"
 O=work/runtime/test; mkdir -p "$O"
 "${CC:-cc}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined tools/runtime/test_pump_tick.c -lm -o "$O/test_pump_tick"
 "$O/test_pump_tick"
-# Wiring: inside frame_clock's `while (... fired < 240)` loop, after the drain and before next_tick advances, a pump
+# Wiring: inside frame_clock's `while (... fired < 240)` loop, after the drain and before the vblank clock advances (kz2_vbclock_advance), a pump
 # guarded by kz2_pump_tick_on(); the outer pump is followed by kz2_pump_note.
 python3 - port/kz2/main.cpp <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()
 f = s[s.index("static DWORD WINAPI frame_clock(LPVOID)"):]
-inner = f[f.index("fired < 240) {"):f.index("next_tick += 16;")]
+inner = f[f.index("fired < 240) {"):f.index("kz2_vbclock_advance(&vbc);")]
 ok = "kz2_pump_tick_on()" in inner and "kz2_rsx_pump()" in inner and "kz2_pump_note(fired + 1)" in inner
 outer = f[f.index("if (fired >= 240)"):]
 # (the pump call is timed, `const int pr = kz2_rsx_pump(); ... if (pr != 0) {`)

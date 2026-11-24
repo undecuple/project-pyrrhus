@@ -58,6 +58,7 @@
 #include "kz2_cache_root.h"       /* KZ2_CACHE_ROOT: the dump read in place, writes apart */
 #include "kz2_online.h"           /* the online settings files, read before main() (D56) */
 #include "ps3emu/input_latency.h" /* patch 6037: input-to-present probe (KZ2_LATENCY=1) */
+#include "kz2_vblank_clock.h"     /* vblank ticks at 59.94 Hz on the QPC grid */
 
 #ifdef _WIN32
 /* timeBeginPeriod: <windows.h> arrives with WIN32_LEAN_AND_MEAN set, which
@@ -520,7 +521,21 @@ static DWORD WINAPI frame_clock(LPVOID)
     if (!rsx_ok) kz2_no_renderer_exit();
 
     unsigned  last_flip = 0;
-    ULONGLONG next_tick = GetTickCount64();
+    /* Runtime an earlier change: the vblank ticks are due on an exact 1001/60000 s grid of the performance counter
+     * (kz2_vblank_clock.h). It stepped a 16 ms integer period on GetTickCount64: 62.5 Hz, not the PS3's 59.94 (an earlier change
+     * measured ~62.6), which ran the game's vblank-counted pacing 4.3 % fast. KZ2_VBLANK_16MS=1 keeps the old
+     * 16 ms period for an A/B only. */
+    kz2_vbclock vbc;
+    {
+        LARGE_INTEGER qf, q0;
+        QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
+        const char* e = getenv("KZ2_VBLANK_16MS");
+        const int old16 = e && atoi(e) != 0;
+        kz2_vbclock_init(&vbc, (uint64_t)q0.QuadPart, (uint64_t)qf.QuadPart,
+                         old16 ? 16u : KZ2_VBLANK_NUM_NTSC, old16 ? 1000u : KZ2_VBLANK_DEN_NTSC);
+        fprintf(stderr, "[vblank] ticker %s (counter %llu Hz)\n",
+                old16 ? "16 ms (62.5 Hz, KZ2_VBLANK_16MS=1)" : "1001/60000 s (59.94 Hz)", (unsigned long long)qf.QuadPart);
+    }
 
     for (;;) {
         {   /* the sleep between passes (cellGcm_walker_wait), timed for the patch 6037 probe (KZ2_LATENCY=1) */
@@ -543,10 +558,11 @@ static DWORD WINAPI frame_clock(LPVOID)
             ps3_lat_walker(ps3_lat_walk_kind(why),
                            (uint64_t)((double)(s1.QuadPart - s0.QuadPart) * 1e6 / (double)sf.QuadPart));
         }
-        ULONGLONG now = GetTickCount64();
+        LARGE_INTEGER qnow; QueryPerformanceCounter(&qnow);
+        const uint64_t now = (uint64_t)qnow.QuadPart;
 
         int fired = 0;
-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
+        while (kz2_vbclock_ready(&vbc, now) && fired < 240) {
             cellGcmTickVBlank();
             cellGcmTickFlip();
             /* Present a pending flip BEFORE draining any further. The flip
@@ -573,10 +589,10 @@ static DWORD WINAPI frame_clock(LPVOID)
                 }
                 kz2_pump_note(fired + 1);
             }
-            next_tick += 16;             /* ~60 Hz */
+            kz2_vbclock_advance(&vbc);   /* the next tick on the 59.94 Hz grid */
             fired++;
         }
-        if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
+        if (fired >= 240) kz2_vbclock_rebase(&vbc, now);   /* fell too far behind (4 s) -- resync */
 
         /* Drain at the outer cadence too, not only on the 16 ms tick: titles
          * fence every render pass on a label the drain writes, and one wave of

@@ -1,0 +1,105 @@
+KZ2 6083: the bounded NV406E ACQUIRE wait (GCM_SEMA_ACQUIRE=1 GCM_SEMA_ACQUIRE_MS=<ms>) is timed per
+acquire and cleared when an acquire is met. The wait's start time was a static inside the wait, reset only when a wait
+gave up: a met acquire left it standing, so the next unmet acquire with the same label and value inherited the start of
+an earlier, already met wait and, once <ms> had passed since then, gave up at once without waiting. Killzone 2's frame
+gate (vblank handler 1.29 0x48F40 writes label 0x49 = 1 every second call; the frame end 0x48580 acquires it at
+0x486A8..0x486B8 and releases 0 at 0x486C4..0x486CC, before its flip at 0x487B4) has every acquire at label 0x49 == 1,
+so about one frame in eight went through the gate unmet: an earlier change's gate run presented 34.0 frames a second against
+~31.3 openings, and no frame took >= 100 ms (the give-up line is capped at 12, all at boot). Now the timer is file
+scope, keyed on the acquire's FIFO offset, label and value, and cleared at a met acquire; every give-up is counted and
+6081's [acq] line prints "gave up=N" per window. Only with GCM_SEMA_ACQUIRE=1 and GCM_SEMA_ACQUIRE_MS set (both off by
+default); no default behaviour change. Upstream candidate (ps3recomp libs/video/cellGcmSys.c, same code).
+Host test: tools/runtime/test_acq_bounded_wait.sh (the real code in a gate simulation, with a negative control).
+Review fix: the label is read once per acquire (acq_have) and that one value decides both the met reset
+and the wait, so a vblank write landing between two reads can no longer consume an acquire with its timer standing
+(test_acq_bounded_wait check 4, with a control that re-reads).
+
+--- a6083/libs/video/cellGcmSys.c	2026-11-13 15:09:41.358895988 -0600
++++ b6083/libs/video/cellGcmSys.c	2026-11-13 15:09:46.846193556 -0600
+@@ -3074,6 +3074,16 @@
+     unsigned long long seen, met, unmet, behind, other, t0;
+     u32 unmet_by_label[4096];
+ } s_acq;
++/* KZ2 patch 6083: the bounded acquire wait's state (GCM_SEMA_ACQUIRE=1 GCM_SEMA_ACQUIRE_MS=<ms>).
++ * It was static inside the wait and reset only when a wait gave up, never when an acquire was met, so the next unmet
++ * acquire with the same label and value (Killzone 2's frame gate: every one is label 0x49 == 1) inherited the start
++ * time of an earlier, already met wait and gave up at once once <ms> had passed since then: about one frame in four
++ * went through the 30 Hz gate unmet (34 presents a second against ~31 openings, no frame >= 100 ms). Now the
++ * wait is timed per acquire (its FIFO offset, label and value) and the timer is cleared when an acquire is met.
++ * s_acqb_gaveup counts every give-up (the log line stops at 12); 6081's [acq] line prints it. */
++static u32 s_acqb_off, s_acqb_val, s_acqb_get;
++static unsigned long long s_acqb_t0;
++static volatile unsigned long long s_acqb_gaveup;
+ static int gcm_acq_stats_on(void)
+ {
+     static int on = -1;
+@@ -3106,15 +3116,17 @@
+     }
+     /* KZ2 patch 6082: vblank ticks, guest handler calls and ticks lost to coalescing in the same window */
+     static u32 vb_t0, vb_c0, vb_l0;
++    static unsigned long long gu0;   /* KZ2 patch 6083 */
+     const u32 vb_t = __atomic_load_n(&s_vb_ticks, __ATOMIC_RELAXED), vb_c = __atomic_load_n(&s_vb_calls, __ATOMIC_RELAXED),
+               vb_l = __atomic_load_n(&s_vb_lost, __ATOMIC_RELAXED);
+     fprintf(stderr, "[acq] %.1f s: seen=%llu met=%llu unmet=%llu (behind=%llu other=%llu) mode=%s; most unmet labels "
+-                    "0x%X=%u 0x%X=%u 0x%X=%u 0x%X=%u; vblank ticks=%u handler calls=%u lost=%u (%s)\n",
++                    "0x%X=%u 0x%X=%u 0x%X=%u 0x%X=%u; vblank ticks=%u handler calls=%u lost=%u (%s); gave up=%llu\n",
+             (now - s_acq.t0) / 1000.0, s_acq.seen, s_acq.met, s_acq.unmet,
+             s_acq.behind, s_acq.other, blk ? "block (each return counted)" : "pass (consumed unmet)",
+             top[0], topn[0], top[1], topn[1], top[2], topn[2], top[3], topn[3],
+-            vb_t - vb_t0, vb_c - vb_c0, vb_l - vb_l0, gcm_vblank_each() ? "each" : "coalesced");
+-    vb_t0 = vb_t; vb_c0 = vb_c; vb_l0 = vb_l;
++            vb_t - vb_t0, vb_c - vb_c0, vb_l - vb_l0, gcm_vblank_each() ? "each" : "coalesced",
++            s_acqb_gaveup - gu0);   /* KZ2 patch 6083: bounded acquire waits that gave up in the window */
++    vb_t0 = vb_t; vb_c0 = vb_c; vb_l0 = vb_l; gu0 = s_acqb_gaveup;
+     memset(&s_acq, 0, sizeof s_acq);
+     s_acq.t0 = now;
+ }
+@@ -3635,6 +3647,11 @@
+                      * (rsx_live_draw_vr_acquire, checked at each draw). */
+                     if (m == 0x68u && rsx_live_draw_enabled()) rsx_live_draw_vr_acquire(la, v, vm_read32(la) == v);
+                     if (m == 0x68u) __atomic_store_n(&s_acq_wait_la, 0u, __ATOMIC_RELAXED);   /* KZ2 patch 6082: set again below if it blocks */
++                    /* KZ2 patch 6083: the label is read once for this acquire; the met reset and the wait below use the
++                     * same value, so an acquire consumed as met always clears the timer (a write landing between two
++                     * reads used to let it pass met with the timer standing). */
++                    const u32 acq_have = (m == 0x68u) ? vm_read32(la) : 0u;
++                    if (m == 0x68u && acq_have == v) s_acqb_t0 = 0;   /* KZ2 patch 6083: a met acquire ends its timed wait */
+                     if (m == 0x68u && gcm_acq_stats_on()) gcm_acq_note(s_sema_offset, vm_read32(la), v);   /* KZ2 patch 6081 */
+                     { static int sn = 0, recdbg = -1; if (recdbg < 0) recdbg = getenv("GCM_RECDBG") ? 1 : 0;
+                       if (recdbg && PS3_LOG_FIRST(sn, 12))
+@@ -3682,7 +3699,7 @@
+                             fprintf(stderr, "[SEMA-REL] get=0x%08X off=0x%X val=0x%08X\n", s_fifo_getoff, s_sema_offset, v); }
+                         cellGcm_label_notify();   /* patch 6019 */
+                     }
+-                    else if (m == 0x68u && vm_read32(la) != v) {
++                    else if (m == 0x68u && acq_have != v) {   /* KZ2 patch 6083: the value read above */
+             /* GCM_SEMA_ACQUIRE=1 makes ACQUIRE actually block, which is what
+              * the hardware does. Off by default: a title whose label nothing
+              * ever writes would wedge the drain permanently, and RELEASE on
+@@ -3697,11 +3714,14 @@
+                  * <ms> on the same acquire it is consumed and said so. inFAMOUS 2
+                  * acquires a label its SPU lighting writes each frame: waiting
+                  * here is what orders the RSX's sampling after that write. */
+-                static u32 b_off, b_val; static unsigned long long b_t0;
++                /* KZ2 patch 6083: the timer is per acquire (FIFO offset, label, value) and file-scope, so a met
++                 * acquire clears it (above); it used to carry an old wait's start into the next frame's acquire. */
+                 extern unsigned long long ps3_ms_now(void);
+                 const unsigned long long now = ps3_ms_now();
+-                if (!b_t0 || b_off != s_sema_offset || b_val != v) { b_off = s_sema_offset; b_val = v; b_t0 = now; }
+-                if (!blk_ms || now - b_t0 < blk_ms) {
++                if (!s_acqb_t0 || s_acqb_off != s_sema_offset || s_acqb_val != v || s_acqb_get != s_fifo_getoff) {
++                    s_acqb_off = s_sema_offset; s_acqb_val = v; s_acqb_get = s_fifo_getoff; s_acqb_t0 = now ? now : 1;
++                }
++                if (!blk_ms || now - s_acqb_t0 < blk_ms) {
+                     if (PS3_FT_ON() && !s_ft_sema_t0) s_ft_sema_t0 = ps3_ft_now();
+                     __atomic_store_n(&s_acq_wait_v, v, __ATOMIC_RELAXED);   /* KZ2 patch 6082 */
+                     __atomic_store_n(&s_acq_wait_la, la, __ATOMIC_SEQ_CST);
+@@ -3710,7 +3730,8 @@
+                 { static int tn; if (PS3_LOG_FIRST(tn, 12))
+                     fprintf(stderr, "[SEMA] acquire off=0x%X == 0x%08X gave up after %u ms (label 0x%08X)\n",
+                             s_sema_offset, v, blk_ms, vm_read32(la)); }
+-                b_t0 = 0;
++                s_acqb_t0 = 0;
++                s_acqb_gaveup++;   /* KZ2 patch 6083 */
+             }
+         }
+                 }
