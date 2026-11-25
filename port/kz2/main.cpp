@@ -548,8 +548,8 @@ static DWORD WINAPI frame_clock(LPVOID)
             const int woke = cellGcm_walker_wait(4);
             QueryPerformanceCounter(&s1); QueryPerformanceFrequency(&sf);
             {   /* [park-wake] every 10 s: sleeps an SPU put on the park ended early (patch 6038), and all sleeps */
-                static unsigned s_woke, s_sleeps; static ULONGLONG s_t0;
-                s_woke += woke ? 1u : 0u; s_sleeps++;
+                static unsigned s_woke, s_polled, s_sleeps; static ULONGLONG s_t0;
+                s_woke += woke == 1 ? 1u : 0u; s_polled += woke == 2 ? 1u : 0u; s_sleeps++;   /* 2: patch 6085's poll */
                 const ULONGLONG t = GetTickCount64();
                 if (!s_t0) s_t0 = t;
                 else if (t - s_t0 >= 10000) {
@@ -559,9 +559,10 @@ static DWORD WINAPI frame_clock(LPVOID)
                         unsigned np = 0, nk = 0;
                         cellGcm_walker_poll_counts(&np, &nk);
                         if (np | nk)
-                            fprintf(stderr, "[walker-poll] total: %u sleeps ended by a moved put, %u by a changed park word\n", np, nk);
+                            fprintf(stderr, "[walker-poll] last %.1f s: %u sleeps ended by the poll; total: %u by a moved put, "
+                                    "%u by a changed park word\n", (double)(t - s_t0) / 1000.0, s_polled, np, nk);
                     }
-                    s_t0 = t; s_woke = s_sleeps = 0;
+                    s_t0 = t; s_woke = s_polled = s_sleeps = 0;
                 }
             }
             ps3_lat_walker(ps3_lat_walk_kind(why),
