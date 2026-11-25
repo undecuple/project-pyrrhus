@@ -6,6 +6,14 @@
 2. The census tables of both EBOOT versions name six plugin rows, all job-module rows, and the plugin that
    lift_spu.PLUGIN_SEEDS has extra function starts for is one of them in both (the seeds are keyed by fp_span).
 3. The seeds lie in the plugin's image at PLUGIN_BASE and are instruction-aligned.
+4. lift_spu.py lifts plugins only when asked: the default kinds have no "plugin" unless KZ2_LIFT_PLUGINS=1.
+5. lift_spu.plugin_code_end: the first function that decodes to data, only when nothing but data follows it.
+6. gen_spu_register.py on a made-up lift (no game bytes: a fake EBOOT and image table): a failed plugin row and one
+   whose entry symbol is missing are left out with a warning, never fatal; the generated spu_workloads.c, compiled
+   with a C compiler against the patched toolkit's headers and stand-ins for the runtime, registers nothing when
+   KZ2_AMADEUS_PLUGINS is unset, empty, 0 or 10, and with =1 registers the good plugin once: its EA, load address,
+   span, image id 400 and segment bytes equal to the EBOOT's. The C part SKIPs without a compiler or a patched
+   toolkit (KZ2_PATCHED_DIR or work/ps3recomp-patched).
 
     python3 tools/spu/test_plugin_regions.py
 """
@@ -72,11 +80,135 @@ def test_census(ver):
     check(lift.PLUGIN_BASE == 0x8400, "PLUGIN_BASE")
 
 
+def test_default_kinds():
+    import subprocess
+    code = ("import sys; sys.argv=['x','--ps3recomp','.','--out','.']; import lift_spu, argparse;"
+            "orig=argparse.ArgumentParser.parse_args;"
+            "argparse.ArgumentParser.parse_args=lambda s,*a: (print(orig(s).kinds), sys.exit(0));"
+            "lift_spu.main()")
+    for env, want in ((None, "pm,job,elf"), ("0", "pm,job,elf"), ("1", "pm,job,elf,plugin")):
+        e = dict(os.environ)
+        e.pop("KZ2_LIFT_PLUGINS", None)
+        if env is not None:
+            e["KZ2_LIFT_PLUGINS"] = env
+        r = subprocess.run([sys.executable, "-c", code], cwd=HERE, env=e, capture_output=True, text=True)
+        check(r.stdout.strip() == want, f"KZ2_LIFT_PLUGINS={env}: default kinds {r.stdout.strip()!r} {r.stderr[-300:]}")
+
+
+def test_code_end(lift):
+    B = 0x8400
+    w = lambda fs: [B + 0x900, 0, fs, False, False]
+    res = dict(bounds=[[B + 0x30, B + 0x100], [B + 0x100, B + 0x200], [B + 0x2000, B + 0x2100]], words=[w(B + 0x2000)])
+    check(lift.plugin_code_end(res) == B + 0x2000, "code end at the data function")
+    res = dict(bounds=res["bounds"] + [[B + 0x3000, B + 0x3010]], words=[w(B + 0x2000)])
+    check(lift.plugin_code_end(res) == 0, "a clean function after the data one: no cut")
+    check(lift.plugin_code_end(dict(bounds=[[B, B + 8]], words=[])) == 0, "no data: no cut")
+
+
+def test_generator(gen_ver):
+    import json, shutil, subprocess, tempfile
+    kz2ver, _lift, gen = load(gen_ver)
+    d = tempfile.mkdtemp(prefix="plgreg")
+    try:
+        eboot = bytes((i * 13 + 5) & 0xFF for i in range(0x4000))
+        open(os.path.join(d, "EBOOT.elf"), "wb").write(eboot)
+        tsv = os.path.join(d, "census.tsv")
+        hdr = "kind\tfile_offset\tea\tsize\tspan\tfp_span\tstandalone\theader\treg_name"
+        rows = [f"job\t0x{o:08x}\t0x{o + 0x10000:X}\t512\t512\t0x{o:016X}\t1\t\t(unregistered) Amadeus audio plugin module"
+                for o in (0x1000, 0x2000, 0x3000)]
+        open(tsv, "w").write(chr(10).join([hdr] + rows) + chr(10))
+        kz2ver.EBOOT, kz2ver.TSV = os.path.join(d, "EBOOT.elf"), tsv
+        lift = os.path.join(d, "spu")
+        os.makedirs(os.path.join(lift, "lift", "plg_00001000"))
+        open(os.path.join(lift, "eboot_ver"), "w").write(kz2ver.VER + chr(10))
+        open(os.path.join(lift, "lift", "plg_00001000", "spu_recomp.h"), "w").write(
+            "void plg_00001000_spu_func_00008430(void* ctx);" + chr(10))
+        row = lambda o, ok: dict(name=f"plg_{o:08x}", kind="plugin", ok=ok, file_offset=o, size=512, base=0x8400,
+                                 entry_off=0x30, job=f"job_{o:08x}", reg_name="(unregistered) Amadeus audio plugin module",
+                                 bounds=[[0x8430, 0x8480], [0x8500, 0x8540]])
+        json.dump([row(0x1000, True), row(0x2000, False), row(0x3000, True)], open(os.path.join(lift, "spu_lift.json"), "w"))
+        sys.argv = ["gen_spu_register.py", "--lift", lift]
+        import contextlib, io
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                gen.main()
+            ran = True
+        except SystemExit as e:
+            ran = False
+            check(False, f"gen_spu_register exited on a bad plugin row: {e}")
+        if not ran:
+            return
+        w = err.getvalue()
+        check("plg_00002000: lift failed" in w, "a failed plugin row is warned about")
+        check("plg_00003000: entry symbol" in w, "a plugin without its entry symbol is warned about")
+        src = os.path.join(lift, "lift", "spu_workloads.c")
+        c = open(src).read()
+        check("plg_00002000" not in c and "plg_00003000_spu_recomp_register" not in c, "bad plugin rows are left out")
+        check(c.count("spu_overlay_register_verified_region(") == 1, "one region is generated")
+        check("unsigned kz2_spu_image_count = 1u;" in c and "const unsigned kz2_spu_image_names_n = 1u;" in c,
+              "the image count and the name table agree")
+        pt = os.environ.get("KZ2_PATCHED_DIR") or os.path.join(HERE, "..", "..", "work", "ps3recomp-patched")
+        cc = next((x for x in ("cc", "gcc", "clang") if shutil.which(x)), None)
+        if not cc or not os.path.isfile(os.path.join(pt, "runtime", "spu", "spu_overlay_residency.h")):
+            print("SKIP: the generated file's C part (no C compiler or no patched toolkit)")
+            return
+        stub = os.path.join(d, "stub.c")
+        open(stub, "w").write(chr(10).join([
+            "#include <stdint.h>", "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>",
+            "typedef struct { uint32_t lsa, size; const uint8_t* bytes; } seg_t;",
+            "static int n_reg, n_begin; static uint32_t r_ea, r_lsa, r_span, r_count; static int r_id; static int bytes_ok = 1;",
+            "static const uint8_t* eboot; static size_t eboot_n;",
+            "void spu_begin_image(int id) { (void)id; n_begin++; }",
+            "void plg_00001000_spu_recomp_register(void) {}",
+            "int spu_overlay_register_verified_region(uint32_t ea, uint32_t lsa, uint32_t span, int id, const seg_t* s, unsigned n) {",
+            "    n_reg++; r_ea = ea; r_lsa = lsa; r_span = span; r_id = id; r_count = n;",
+            "    for (unsigned i = 0; i < n; i++) {",
+            "        uint32_t off = 0x1000u + (s[i].lsa - 0x8400u);",
+            "        if (off + s[i].size > eboot_n || memcmp(eboot + off, s[i].bytes, s[i].size)) bytes_ok = 0;",
+            "    }",
+            "    return 1;", "}",
+            "void spu_workload_register_img(void) {}", "void spu_overlay_register_sig(void) {}",
+            "const char* (*g_kz2_spu_image_name)(int);",
+            "/* the generated file registers from a constructor: load the EBOOT copy in an earlier one */",
+            "__attribute__((constructor(101))) static void load_first(void) {",
+            "    static uint8_t b[0x4000]; FILE* f = fopen(getenv(\"T_EBOOT\"), \"rb\");",
+            "    if (f) { eboot_n = fread(b, 1, sizeof b, f); fclose(f); } eboot = b;",
+            "}",
+            "int main(void) {",
+            "    printf(\"%d %X %X %X %d %u %d\" \"\\n\", n_reg, r_ea, r_lsa, r_span, r_id, r_count, bytes_ok);",
+            "    return 0;", "}", ""]))
+        exe = os.path.join(d, "t.exe" if os.name == "nt" else "t")
+        inc = ["-I", os.path.join(pt, "runtime", "spu"), "-I", os.path.join(pt, "include"), "-I", os.path.join(pt, "runtime")]
+        b = subprocess.run([cc, "-std=gnu11", "-O1", "-w", "-msse4.1", *inc, "-o", exe, src, stub],
+                           capture_output=True, text=True)
+        check(b.returncode == 0, "the generated file compiles: " + b.stderr[-600:])
+        if b.returncode:
+            return
+        for val, want in ((None, 0), ("", 0), ("0", 0), ("10", 0), ("1", 1)):
+            e = dict(os.environ, T_EBOOT=os.path.join(d, "EBOOT.elf"))
+            e.pop("KZ2_AMADEUS_PLUGINS", None)
+            if val is not None:
+                e["KZ2_AMADEUS_PLUGINS"] = val
+            r = subprocess.run([exe], env=e, capture_output=True, text=True)
+            f = r.stdout.split()
+            check(r.returncode == 0 and f and int(f[0]) == want,
+                  f"KZ2_AMADEUS_PLUGINS={val!r}: {f[0] if f else '?'} regions registered, want {want} {r.stderr[-200:]}")
+            if want and len(f) == 7:
+                check(f[1:6] == ["11000", "8400", "140", "400", "2"], f"the region's EA/load/span/id/count: {f[1:6]}")
+                check(f[6] == "1", "the segment bytes are the EBOOT's")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
-    _k, _l, gen = load("129")
+    _k, lift, gen = load("129")
     test_merge(gen)
     for ver in ("129", "101"):
         test_census(ver)
+    test_default_kinds()
+    test_code_end(lift)
+    test_generator("129")
     for f in fails:
         print("FAIL", f)
     print(f"test_plugin_regions: {'FAIL' if fails else 'PASS'} ({len(fails)} failed)")

@@ -3,7 +3,7 @@
 and the SPU ELFs. From Project Helghast tools/spu/lift_spu.py (kz3ver -> kz2ver; inputs from the re-data census).
 
     lift_spu.py --ps3recomp work/spu/ps3recomp-patched --out work/spu/spu [-j N] [--only NAME,...]
-                [--kinds pm,job,elf,plugin]
+                [--kinds pm,job,elf[,plugin]]
 
 Run it through tools/spu/lift_spu.sh (sandboxed, patched ps3recomp copy). Input (read-only): the EBOOT of
 KZ2_EBOOT_VER (129 default: work/bin/EBOOT-129.elf; 101: the disc EBOOT) and re/wws_jobs_v<VER>.tsv (
@@ -19,8 +19,12 @@ min(footprint, distance to the next image of any kind): Anim.Skinning's footprin
 with entry base+entry_off and lifted with --auto-functions plus the extra seeds of ps3recomp's lift_jobmods.py.
 
 The six Amadeus audio plugin modules are job-module images too, but Snd.Amadeus streams the one it needs to LS 0x8400
-and runs it there, never from the job code buffer. Each is lifted a second time wrapped at that address (kind
-"plugin", plg_<file offset>, PLUGIN_BASE below); gen_spu_register.py registers those lifts as verified regions.
+and runs it there, never from the job code buffer. Only when asked (--kinds with "plugin", or KZ2_LIFT_PLUGINS=1 for
+the default kinds, e.g. in the release first run), each is lifted a second time wrapped at that address (kind
+"plugin", plg_<file offset>, PLUGIN_BASE below); gen_spu_register.py registers those lifts as verified regions, used
+with KZ2_AMADEUS_PLUGINS=1 at run time. Without them the build is the same as before. A plugin lift that fails, or
+whose code end cannot be found, is left out with a warning (its spu_recomp.c renamed to spu_recomp.c.failed so the
+port build skips it); the other images are not affected.
 
 Output: <out>/lift/<name>/spu_recomp.{c,h} + lift.log, <out>/spu_lift.json, <out>/eboot_ver.
 """
@@ -336,6 +340,21 @@ def native_gates(sub, name):
     return n
 
 
+def plugin_code_end(res):
+    """The code end of a plugin lift: the start of the first lifted function that decodes to data (.word), when every
+    function after it does too or none follows. The plugin images have no section headers, and the seed scans
+    (table_targets, ila_targets) can find a "function" in the data after the code (plg_00e3bb00: one at 0x1B018, 10 KB
+    past the last real function, 17 of its 67 words undecodable). 0 = none found (nothing to cut)."""
+    words = res.get("words") or []
+    bad = sorted({w[2] for w in words})
+    if not bad:
+        return 0
+    starts = sorted(s for s, _ in res.get("bounds") or [])
+    first = bad[0]
+    after = [s for s in starts if s > first]
+    return first if all(s in bad for s in after) else 0
+
+
 def lift_one(job):
     """Run spu_lifter.main() in-process for one image and collect what it lifted."""
     name, kind, elf_path, argv_extra, meta, pt, outdir = job
@@ -382,6 +401,10 @@ def lift_one(job):
         ok = False
         buf.write(traceback.format_exc())
     debase_includes(sub)
+    if not ok and kind == "plugin":   # left out of the build (gen_spu_register.py skips the row with a warning)
+        src = os.path.join(sub, "spu_recomp.c")
+        if os.path.exists(src):
+            os.replace(src, src + ".failed")
     if ok:
         gates = native_gates(sub, name)
         if gates:
@@ -409,8 +432,11 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("-j", type=int, default=os.cpu_count())
     ap.add_argument("--only", default="", help="comma list of image names")
-    ap.add_argument("--kinds", default="pm,job,elf,plugin",
-                    help="comma list of image kinds to lift (pm, job, elf, plugin)")
+    # KZ2_LIFT_PLUGINS=1 adds "plugin" to the default kinds (the Amadeus plugin lifts behind KZ2_AMADEUS_PLUGINS=1;
+    # off by default: without it no player's first run lifts or builds them).
+    dk = "pm,job,elf" + (",plugin" if os.environ.get("KZ2_LIFT_PLUGINS") == "1" else "")
+    ap.add_argument("--kinds", default=dk,
+                    help="comma list of image kinds to lift (pm, job, elf; plugin only when asked)")
     ap.add_argument("--no-code-end", action="store_true", help="ELF: do not stop at .rodata (audit baseline)")
     a = ap.parse_args()
     pt = os.path.abspath(a.ps3recomp)
@@ -500,6 +526,10 @@ def main():
             ps = [pb + 0x30] + manual_link_targets(raw, pb) + switch_table_targets(raw, pb)
             ps += table_targets([(raw, pb)], (raw, pb), pend) + ila_targets((raw, pb), pend)
             ps += PLUGIN_SEEDS.get(meta.get("fp_span", ""), [])
+            # the job branch's other two seed sources, under the plugin's own name (its rows in
+            # re/spu/native_gates.tsv would be at LS 0x8400 addresses; the job's own rows are at 0x4000)
+            ps += keep_seeds(pname, cov.get(pname, []), pb, pend, 0, dropped)
+            ps += gate_cont_seeds(pname)
             ps = sorted({s for s in ps if pb <= s < pend and not s & 3})
             pmeta = dict(meta, base=pb, job=name)
             pmeta.pop("code_end", None)   # an LS address of the 0x4000 lift
@@ -516,6 +546,18 @@ def main():
 
     with ProcessPoolExecutor(max_workers=a.j) as ex:
         results = list(ex.map(lift_one, jobs))
+        # Plugins whose lift decoded data as code: lift again with --code-end there (seeds past it dropped).
+        again = []
+        for k, r in enumerate(results):
+            ce = plugin_code_end(r) if r["kind"] == "plugin" and r["ok"] else 0
+            if ce:
+                j = next(j for j in jobs if j[0] == r["name"])
+                seeds = [int(x, 16) for x in j[3][1].split(",") if x and int(x, 16) < ce]
+                again.append((k, (j[0], j[1], j[2], ["--extra-funcs", ",".join(hex(s) for s in seeds),
+                                                     "--code-end", hex(ce)], dict(j[4], code_end=ce), j[5], j[6])))
+        for (k, _), r in zip(again, ex.map(lift_one, [j for _, j in again])):
+            print(f"{r['name']}: data decoded as code from 0x{r['code_end']:X}: lifted again with --code-end")
+            results[k] = r
     lj = os.path.join(out, "spu_lift.json")
     n_now = len(results)
     if a.only and os.path.exists(lj):
@@ -526,7 +568,10 @@ def main():
     results.sort(key=lambda r: (r["kind"], r["file_offset"]))
     json.dump(results, open(lj, "w"), indent=1)
     open(os.path.join(out, "eboot_ver"), "w").write(kz2ver.VER + "\n")
-    bad = [r["name"] for r in results if not r["ok"]]
+    bad = [r["name"] for r in results if not r["ok"] and r["kind"] != "plugin"]
+    for r in results:
+        if not r["ok"] and r["kind"] == "plugin":
+            print(f"warning: plugin lift {r['name']} failed: left out (the plugin runs interpreted); see its lift.log")
     tot_f = sum(r.get("functions", 0) for r in results)
     tot_u = {}
     for r in results:

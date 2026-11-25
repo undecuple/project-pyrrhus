@@ -24,7 +24,9 @@ How each kind is found at run time (ps3recomp v0.13.0 runtime, runtime/spu/ and 
     functions' byte ranges, which the runtime compares with local store before the first dispatch after each load).
     Image ids 400+. Registered only with KZ2_AMADEUS_PLUGINS=1 (kz2_spu_register_plugins() in the generated file);
     without it nothing of a plugin lift is registered and the plugins run interpreted, as before. Needs patch 7023
-    (the plugins are job-module images too, so their header signatures are registered as well).
+    (the plugins are job-module images too, so their header signatures are registered as well). Lifted only when
+    asked (lift_spu.py); a plugin row that failed or has no usable function ranges is left out with a warning and
+    never stops the registration of the other images.
 """
 import argparse, json, os, struct, sys
 
@@ -117,9 +119,12 @@ def main():
     a.out = os.path.join(a.lift, "lift")
     names = {r["name"]: (r.get("reg_name") or "") for r in kz2ver.rows()}
     R = json.load(open(os.path.join(a.lift, "spu_lift.json")))
-    bad = [r["name"] for r in R if not r["ok"]]
+    bad = [r["name"] for r in R if not r["ok"] and r["kind"] != "plugin"]
     if bad:
         sys.exit(f"lift failed for {bad}; rerun tools/spu/lift_spu.sh")
+    # Optional plugin lifts (lift_spu.py kind "plugin"): a failed one is left out, never fatal.
+    warnings = [f"{r['name']}: lift failed" for r in R if not r["ok"] and r["kind"] == "plugin"]
+    R = [r for r in R if r["ok"] or r["kind"] != "plugin"]
     eboot = open(kz2ver.EBOOT, "rb").read()
     images, problems = [], []
 
@@ -166,7 +171,7 @@ def main():
     for i, r in enumerate(sorted((r for r in R if r["kind"] == "plugin"), key=lambda r: r["file_offset"])):
         segs = merge_segments(r.get("bounds") or [])
         if not segs or segs[0][0] < r["base"] or segs[-1][1] > r["base"] + r["size"]:
-            problems.append(f"{r['name']}: no usable function ranges in the lift")
+            warnings.append(f"{r['name']}: no usable function ranges in the lift")
             continue
         images.append(dict(name=r["name"], kind="plugin", image_id=PLUGIN_IMAGE_BASE + i, size=r["size"],
                            ea=r["file_offset"] + 0x10000, base=r["base"], job=r.get("job", ""),
@@ -185,6 +190,12 @@ def main():
         images = [m for m in images if m["name"] in keep]
 
     # Checks: entry symbols exist, ids unique and not reserved, signatures and fingerprints unique.
+    for m in [m for m in images if m["kind"] == "plugin"]:
+        if not has_symbol(a.lift, m["name"], m["entry_sym"]):
+            warnings.append(f"{m['name']}: entry symbol {m['entry_sym']} not in the lift")
+            images.remove(m)
+    for w in warnings:
+        print(f"warning: Amadeus plugin {w}: left out (it runs interpreted)", file=sys.stderr)
     for m in images:
         if not has_symbol(a.lift, m["name"], m["entry_sym"]):
             problems.append(f"{m['name']}: entry symbol {m['entry_sym']} not in the lift")
@@ -235,7 +246,7 @@ def main():
           " * functions). NULL = run the lifted body; port/kz2/spu/kz2_native_jobs.c fills the slots of the jobs whose",
           " * KZ2_NATIVE_JOB_<NAME> flag is set. */",
           "int (*g_kz2_native_gate[128])(spu_context*);   /* KZ2_NATIVE_SLOTS (port/kz2/spu/kz2_native_jobs.h) */",
-          "", "unsigned kz2_spu_image_count = %du;" % sum(m["kind"] not in ("elfseg", "plugin") for m in images), "",
+          "", "unsigned kz2_spu_image_count = %du;" % sum(m["kind"] != "elfseg" for m in images), "",
           "void kz2_spu_register_all(void)", "{",
           "    static int done;", "    if (done) return;", "    done = 1;"]
     plugins = [m for m in images if m["kind"] == "plugin"]
