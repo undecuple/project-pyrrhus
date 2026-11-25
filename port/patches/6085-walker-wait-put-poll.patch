@@ -1,0 +1,99 @@
+KZ2 6085: the frame thread's sleep between drain passes ends when the title has written more commands
+(KZ2_WALKER_POLL_US=<n>, off by default; ENHANCEMENT: host timing only, no guest-visible change).
+A drain pass walks up to the put it read at its start, and the sleep after it (cellGcm_walker_wait(4) in port/kz2
+main.cpp's frame_clock) is a flat Sleep unless a park (6038) or an acquire wait (6082) is armed. Commands the title
+writes during or just after a pass therefore wait for the sleep to end, on the thread the frame waits for.
+Measured on 0.1.13 (native Windows, Ryzen 9 9950X3D, RTX 4090; an unattended run of Corinth Sands, the player standing
+in the fight): KZ3_PROF on rsx:frame with KZ2_PROF_STACK=1, 30.5k samples: 26.6 % under cellGcm_walker_wait (15.4 %
+in the event wait, 11.2 % in the plain Sleep). A/B, three rounds in rotated order, 120 s runs, the level's average
+frame rate: off 42.73 +- 0.48, KZ2_WALKER_POLL_US=0 44.83 +- 0.68 (+4.9 %, +0.4 cores), =250 44.63 +- 0.61 (+4.5 %,
++0.14 cores); every run with the switch above every run without (issue #102).
+The change: the drain records the put it starts from (s_wp_seen_put). With the switch, the wait runs in <n> us slices
+(a high-resolution waitable timer together with the wake event; 0 = yield-spin, capped at 4000) and returns 2 when the
+control register's put differs from the recorded one, or the armed park word differs from s_park_watch_w (whoever
+wrote it); 6082's acquire label is checked each slice as well. cellGcm_walker_poll_counts gives the two counts.
+Not checked: Proton, a CPU with few cores (a yield-spin there may cost more than it gives), input latency.
+Host test: tools/runtime/test_walker_wait_poll.sh (wiring, and the decision rule with negative controls).
+Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's sleep to go through one function).
+
+--- a6085/libs/video/cellGcmSys.c	2026-11-25 01:56:54.433964900 -0500
++++ b6085/libs/video/cellGcmSys.c	2026-11-25 01:56:54.534451400 -0500
+@@ -1169,8 +1169,36 @@
+     if (s_walker_wake) SetEvent(s_walker_wake);
+ #endif
+ }
++/* KZ2 patch 6085: the frame thread's sleep ends when the title has written more commands (KZ2_WALKER_POLL_US=<n>,
++ * off by default). A drain pass walks up to the put it read at its start (s_wp_seen_put), and the sleep after it is
++ * a flat `ms` (4, port/kz2 main.cpp frame_clock) unless a park or an acquire wait is armed, so commands written
++ * during or just after a pass waited for the sleep to end, on the thread that bounds the frame. Measured
++ * in the Corinth Sands firefight (KZ3_PROF on rsx:frame): 26.6 % of the frame thread's samples under this wait, 11.2 %
++ * in the plain Sleep. With the switch the wait runs in <n> us slices (a high-resolution waitable timer together
++ * with the wake event; 0 = yield-spin) and returns 2 as soon as the control register's put differs from the one the
++ * last pass started from, or the armed park word differs from the word the walker stopped on (s_park_watch_w, however
++ * it was written; patch 7014's kick sees only writes that take the notify path). The acquire label (6082) is checked
++ * each slice too. Counters: cellGcm_walker_poll_counts (the port's [walker-poll] line). Upstream candidate. */
++static volatile u32 s_wp_seen_put;
++static volatile u32 s_park_watch_w;   /* tentative; defined with the park watch (patch 7014) below */
++static volatile u32 s_wp_n_put, s_wp_n_park;
++static int gcm_walker_poll_us(void)
++{
++    static int us = -2;
++    if (us == -2) { const char* e = getenv("KZ2_WALKER_POLL_US"); us = (e && *e) ? atoi(e) : -1; if (us > 4000) us = 4000; }
++    return us;
++}
++/* 1 = the put moved since the last pass began, 2 = the armed park word changed, 0 = nothing new */
++static int gcm_walker_work_pending(void)
++{
++    if (vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != __atomic_load_n(&s_wp_seen_put, __ATOMIC_RELAXED)) return 1;
++    const u32 pe = __atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE);
++    if (pe && vm_read32(pe) != __atomic_load_n(&s_park_watch_w, __ATOMIC_RELAXED)) return 2;
++    return 0;
++}
++void cellGcm_walker_poll_counts(unsigned* put, unsigned* park) { *put = s_wp_n_put; *park = s_wp_n_park; }
+ /* The frame thread's sleep between drain passes: up to `ms`, ended early by an SPU put on the park the last pass
+- * stopped at. Returns 1 if it was woken. */
++ * stopped at. Returns 1 if it was woken (2: by patch 6085's poll). */
+ int cellGcm_walker_wait(unsigned ms)
+ {
+ #ifdef _WIN32
+@@ -1179,6 +1207,32 @@
+      * between the stop and here ends the wait at once */
+     const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
+     if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
++    if (gcm_walker_poll_us() >= 0 && s_walker_wake) {   /* KZ2 patch 6085 */
++        static HANDLE s_tmr; static LARGE_INTEGER s_qf;
++        if (!s_qf.QuadPart) {
++            QueryPerformanceFrequency(&s_qf);
++            s_tmr = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++        }
++        LARGE_INTEGER t0, t;
++        QueryPerformanceCounter(&t0);
++        const LONGLONG deadline = t0.QuadPart + (LONGLONG)ms * s_qf.QuadPart / 1000;
++        for (;;) {
++            const int pend = gcm_walker_work_pending();
++            if (pend) { if (pend == 1) s_wp_n_put++; else s_wp_n_park++; return 2; }
++            if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
++            QueryPerformanceCounter(&t);
++            if (t.QuadPart >= deadline) return 0;
++            if (gcm_walker_poll_us() == 0 || !s_tmr) {
++                if (WaitForSingleObject(s_walker_wake, 0) == WAIT_OBJECT_0) return 1;
++                SwitchToThread();
++            } else {
++                LARGE_INTEGER due; due.QuadPart = -(LONGLONG)gcm_walker_poll_us() * 10;
++                HANDLE h[2] = { s_walker_wake, s_tmr };
++                SetWaitableTimer(s_tmr, &due, 0, NULL, NULL, FALSE);
++                if (WaitForMultipleObjects(2, h, FALSE, ms + 1) == WAIT_OBJECT_0) return 1;
++            }
++        }
++    }
+     if (!s_walker_wake || ((!gcm_park_wake_on() || !__atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE)) && !wla)) {
+         Sleep(ms);
+         return 0;
+@@ -3178,6 +3232,7 @@
+      * own command ring, so everything after the jump (including the reference
+      * writes its waits spin on) silently never executed. */
+     u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
++    __atomic_store_n(&s_wp_seen_put, put, __ATOMIC_RELAXED);   /* KZ2 patch 6085: the put this pass starts from */
+     if (rsx_live_draw_enabled()) rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: a drain pass sees a new put */
+     /* The words behind `put` were stored by another thread (the title, or the
+      * recycle below) before it stored `put`. On x86 the hardware keeps loads

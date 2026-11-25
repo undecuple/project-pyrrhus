@@ -505,6 +505,9 @@ static void kz2_fc_end(int kind, const Kz2FcMark& m)
  * 4 ms as before, but while the last pass stopped on a self-JUMP park it returns as soon as an SPU put patches that
  * park (KZ2_PARK_WAKE=0 = a plain 4 ms sleep). */
 extern "C" int cellGcm_walker_wait(unsigned ms);
+/* Patch 6085 (KZ2_WALKER_POLL_US=<us>, off by default): the sleep also ends when the title's put has moved or the
+ * armed park word has changed; these are the sleeps each of the two ended, since the start. */
+extern "C" void cellGcm_walker_poll_counts(unsigned* put, unsigned* park);
 
 static DWORD WINAPI frame_clock(LPVOID)
 {
@@ -552,6 +555,12 @@ static DWORD WINAPI frame_clock(LPVOID)
                 else if (t - s_t0 >= 10000) {
                     fprintf(stderr, "[park-wake] last %.1f s: %u of %u frame-thread sleeps ended by an SPU put on the park\n",
                             (double)(t - s_t0) / 1000.0, s_woke, s_sleeps);
+                    {   /* [walker-poll] (patch 6085): printed only once the poll has ended a sleep */
+                        unsigned np = 0, nk = 0;
+                        cellGcm_walker_poll_counts(&np, &nk);
+                        if (np | nk)
+                            fprintf(stderr, "[walker-poll] total: %u sleeps ended by a moved put, %u by a changed park word\n", np, nk);
+                    }
                     s_t0 = t; s_woke = s_sleeps = 0;
                 }
             }
