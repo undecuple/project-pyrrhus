@@ -19,6 +19,12 @@ How each kind is found at run time (ps3recomp v0.13.0 runtime, runtime/spu/ and 
     `ila` signature) against spu_overlay_register_sig() entries. Image ids 200+.
   * SPU ELFs (elf_*): fingerprint over spu_elf_image_size() bytes and over the executable PT_LOAD. Image ids 30+
     (clear of the runtime's special ids 1, 22, 23, 60-65, 100, 200+).
+  * Amadeus audio plugin modules (plg_*, lift_spu.py kind "plugin"): Snd.Amadeus GETs a plugin to LS 0x8400 and runs
+    it there. Each is a verified region (spu_overlay_register_verified_region: source EA, load address, the lifted
+    functions' byte ranges, which the runtime compares with local store before the first dispatch after each load).
+    Image ids 400+. Registered only with KZ2_AMADEUS_PLUGINS=1 (kz2_spu_register_plugins() in the generated file);
+    without it nothing of a plugin lift is registered and the plugins run interpreted, as before. Needs patch 7023
+    (the plugins are job-module images too, so their header signatures are registered as well).
 """
 import argparse, json, os, struct, sys
 
@@ -29,6 +35,8 @@ import kz2ver  # noqa: E402
 PM_IMAGE_ID = 2    # WWS job manager: id 2 is what the runtime's WWS hooks expect
 ELF_IMAGE_BASE = 30
 JOB_IMAGE_BASE = 200
+PLUGIN_IMAGE_BASE = 400   # below the runtime's 512 (KZ3_OVL_SKIP_MAX) and 1024 (overlay map log) id limits
+MAX_SEGMENTS = 8          # runtime/spu/spu_channels.c SPU_OVERLAY_CODE_SEGMENTS
 PM_ENTRY = 0xA00
 RESERVED = {1, 22, 23, 100} | set(range(60, 66))
 
@@ -74,6 +82,25 @@ def text_fp(b):
             off, fsz = be32(b, o + 4), be32(b, o + 0x10)
             return fnv1a64(b[off:off + fsz])
     return None
+
+
+def merge_segments(bounds, limit=MAX_SEGMENTS):
+    """[(start, end)] function ranges -> at most `limit` sorted, disjoint [start, end) ranges that cover them all.
+    Touching and overlapping ranges are joined first; while there are still too many, the two ranges with the
+    smallest gap between them are joined (the gap's bytes are then verified too: they are the image's own bytes)."""
+    segs = []
+    for s, e in sorted((int(s), int(e)) for s, e in bounds):
+        if e <= s:
+            continue
+        if segs and s <= segs[-1][1]:
+            segs[-1][1] = max(segs[-1][1], e)
+        else:
+            segs.append([s, e])
+    while len(segs) > limit:
+        k = min(range(len(segs) - 1), key=lambda j: segs[j + 1][0] - segs[j][1])
+        segs[k][1] = segs[k + 1][1]
+        del segs[k + 1]
+    return [tuple(x) for x in segs]
 
 
 def has_symbol(lift, name, sym):
@@ -135,9 +162,22 @@ def main():
                            hdr_base=r["hdr_base"], flags=r["flags"], entry=r["base"] + r["entry_off"],
                            entry_sym=f"{r['name']}_spu_func_{r['base'] + r['entry_off']:08X}"))
 
+    # Amadeus plugin modules lifted at the address Snd.Amadeus streams them to (lift_spu.py kind "plugin").
+    for i, r in enumerate(sorted((r for r in R if r["kind"] == "plugin"), key=lambda r: r["file_offset"])):
+        segs = merge_segments(r.get("bounds") or [])
+        if not segs or segs[0][0] < r["base"] or segs[-1][1] > r["base"] + r["size"]:
+            problems.append(f"{r['name']}: no usable function ranges in the lift")
+            continue
+        images.append(dict(name=r["name"], kind="plugin", image_id=PLUGIN_IMAGE_BASE + i, size=r["size"],
+                           ea=r["file_offset"] + 0x10000, base=r["base"], job=r.get("job", ""),
+                           file_offset=r["file_offset"], segments=[list(s) for s in segs],
+                           span=segs[-1][1] - r["base"], functions=len(r.get("bounds") or []),
+                           entry=r["base"] + r["entry_off"],
+                           entry_sym=f"{r['name']}_spu_func_{r['base'] + r['entry_off']:08X}"))
+
     # Registration order: Edge zlib inflate task first (it gates the PSARC TOC reads at boot), then the WWS
     # job manager policy module, then the other ELFs and the job modules.
-    first = {"pm": 0, "elf": 1, "job": 2}
+    first = {"pm": 0, "elf": 1, "job": 2, "plugin": 4}
     images.sort(key=lambda m: first.get(m["kind"], 3))
     images.sort(key=lambda m: m["kind"] == "elfseg")  # stable: segments after every primary image
     if a.only:
@@ -177,8 +217,9 @@ def main():
          " * by FNV-1a-64 image fingerprint (spu_workload_register_img), the WWS job modules by their 16-byte",
          " * header signature (spu_overlay_register_sig). Each image's functions go in under its own image id",
          " * (spu_begin_image before its spu_recomp_register). EBOOT %s. */" % kz2ver.VER,
-         "#include <stdint.h>",
+         "#include <stdint.h>", "#include <stdio.h>", "#include <stdlib.h>",
          '#include "spu_workload.h"',
+         '#include "spu_overlay_residency.h"',
          "",
          "#ifndef SPU_ABI   /* patch 1099: lifted SPU functions' calling convention (spu_context.h) */",
          "#define SPU_ABI",
@@ -194,10 +235,15 @@ def main():
           " * functions). NULL = run the lifted body; port/kz2/spu/kz2_native_jobs.c fills the slots of the jobs whose",
           " * KZ2_NATIVE_JOB_<NAME> flag is set. */",
           "int (*g_kz2_native_gate[128])(spu_context*);   /* KZ2_NATIVE_SLOTS (port/kz2/spu/kz2_native_jobs.h) */",
-          "", "unsigned kz2_spu_image_count = %du;" % sum(m["kind"] != "elfseg" for m in images), "",
+          "", "unsigned kz2_spu_image_count = %du;" % sum(m["kind"] not in ("elfseg", "plugin") for m in images), "",
           "void kz2_spu_register_all(void)", "{",
           "    static int done;", "    if (done) return;", "    done = 1;"]
+    plugins = [m for m in images if m["kind"] == "plugin"]
+    for m in plugins:
+        m["label"] = (names.get(m["job"], "") or m["name"]) + " at LS 0x%X" % m["base"]
     for m in images:
+        if m["kind"] == "plugin":
+            continue   # registered by kz2_spu_register_plugins() below
         m["label"] = names.get(m["name"], "") or m["name"]
         tag = f"{m['kind']} EA 0x{m['ea']:08X}, {m['size']} bytes, {m['label']}"
         L.append(f"    /* {m['name']}: {tag} */")
@@ -212,7 +258,38 @@ def main():
             arr = ",".join(f"0x{x:02X}" for x in bytes.fromhex(m["sig"]))
             L.append(f"    {{ static const uint8_t sig[16] = {{{arr}}};")
             L.append(f"      spu_overlay_register_sig(sig, {m['image_id']}); }}")
-    L += ["    spu_begin_image(0);", "}", "",
+    L += ["    spu_begin_image(0);", "}", ""]
+    # The plugins' verified regions. The expected bytes are the title's code, like the lifted C beside this file.
+    for m in plugins:
+        for k, (s, e) in enumerate(m["segments"]):
+            o = m["file_offset"] + (s - m["base"])
+            b = eboot[o:o + (e - s)]
+            L.append(f"static const uint8_t plg_{m['image_id']}_{k}[{len(b)}] = {{")
+            L += ["    " + ",".join(f"0x{x:02X}" for x in b[j:j + 16]) + "," for j in range(0, len(b), 16)]
+            L.append("};")
+    L += ["", "/* Snd.Amadeus's plugin modules, lifted at the address it streams them to. ENHANCEMENT, opt-in:",
+          " * KZ2_AMADEUS_PLUGINS=1 registers them; unset (or anything else), nothing of these lifts is registered and",
+          " * the plugins run in the SPU interpreter as before. Returns the number of regions registered. */",
+          "int kz2_spu_register_plugins(void)", "{",
+          "    static int done, n;", "    if (done) return n;", "    done = 1;",
+          '    const char* e = getenv("KZ2_AMADEUS_PLUGINS");',
+          "    if (!(e && e[0] == '1' && !e[1])) return 0;"]
+    for m in plugins:
+        L.append(f"    {{   /* {m['name']}: EA 0x{m['ea']:08X}, {m['size']} bytes, {m['functions']} functions, "
+                 f"{m['label']} */")
+        L.append("        static const spu_overlay_code_segment seg[] = {")
+        L += [f"            {{0x{s:05X}u, sizeof plg_{m['image_id']}_{k}, plg_{m['image_id']}_{k}}},"
+              for k, (s, e) in enumerate(m["segments"])]
+        L.append("        };")
+        L.append(f"        spu_begin_image({m['image_id']}); {m['name']}_spu_recomp_register();")
+        L.append(f"        if (spu_overlay_register_verified_region(0x{m['ea']:08X}u, 0x{m['base']:X}u, "
+                 f"0x{m['span']:X}u, {m['image_id']}, seg, {len(m['segments'])})) n++;")
+        L.append(f'        else fprintf(stderr, "[amadeus-plugins] image {m["image_id"]} {m["name"]}: region not '
+                 f'registered, interpreted\\n");')
+        L.append("    }")
+    L += ["    spu_begin_image(0);",
+          f'    fprintf(stderr, "[amadeus-plugins] %d of {len(plugins)} plugin regions registered\\n", n);',
+          "    return n;", "}", "",
           "/* Image id -> census name (re/wws_jobs_v%s.tsv), for log lines. */" % kz2ver.VER,
           "typedef struct { int id; uint32_t ea; const char* name; } kz2_spu_image_name;",
           "const kz2_spu_image_name kz2_spu_image_names[] = {"]
@@ -226,7 +303,8 @@ def main():
           "__attribute__((constructor)) static void kz2_spu_register_ctor(void)", "{",
           "    extern const char* (*g_kz2_spu_image_name)(int);   /* patch 7002 job log names */",
           "    g_kz2_spu_image_name = kz2_spu_image_name_of;",
-          "    kz2_spu_register_all();", "}", ""]
+          "    kz2_spu_register_all();",
+          "    kz2_spu_register_plugins();", "}", ""]
     os.makedirs(a.out, exist_ok=True)
     open(os.path.join(a.out, "spu_workloads.c"), "w").write("\n".join(L))
     for m in images:
@@ -234,9 +312,10 @@ def main():
             if m.get(k) is not None:
                 m[k] = f"0x{m[k]:016X}"
     json.dump(images, open(os.path.join(a.lift, "kz2_spu_manifest.json"), "w"), indent=1)
-    n = {k: sum(1 for m in images if m["kind"] == k) for k in ("pm", "elf", "job", "elfseg")}
-    print(f"registered {len(images) - n['elfseg']} images: {n['pm']} policy module(s), {n['elf']} ELFs, "
-          f"{n['job']} job modules; {n['elfseg']} extra ELF code segment(s)")
+    n = {k: sum(1 for m in images if m["kind"] == k) for k in ("pm", "elf", "job", "elfseg", "plugin")}
+    print(f"registered {len(images) - n['elfseg'] - n['plugin']} images: {n['pm']} policy module(s), {n['elf']} ELFs, "
+          f"{n['job']} job modules; {n['elfseg']} extra ELF code segment(s); "
+          f"{n['plugin']} Amadeus plugin region(s) behind KZ2_AMADEUS_PLUGINS=1")
     for m in images:
         if m["kind"] == "pm":
             print(f"  {m['name']}: EA 0x{m['ea']:08X} size {m['size']} fp {m['fp']} image id {m['image_id']}")

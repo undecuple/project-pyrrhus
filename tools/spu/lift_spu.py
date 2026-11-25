@@ -2,7 +2,8 @@
 """Lift Killzone 2's SPU programs with ps3recomp's spu_lifter: the WWS job-manager policy module, the WWS job modules
 and the SPU ELFs. From Project Helghast tools/spu/lift_spu.py (kz3ver -> kz2ver; inputs from the re-data census).
 
-    lift_spu.py --ps3recomp work/spu/ps3recomp-patched --out work/spu/spu [-j N] [--only NAME,...] [--kinds pm,job,elf]
+    lift_spu.py --ps3recomp work/spu/ps3recomp-patched --out work/spu/spu [-j N] [--only NAME,...]
+                [--kinds pm,job,elf,plugin]
 
 Run it through tools/spu/lift_spu.sh (sandboxed, patched ps3recomp copy). Input (read-only): the EBOOT of
 KZ2_EBOOT_VER (129 default: work/bin/EBOOT-129.elf; 101: the disc EBOOT) and re/wws_jobs_v<VER>.tsv (
@@ -16,6 +17,10 @@ KZ2's census offsets are the true module starts (no -0xC as KZ3's jobmods.py). T
 min(footprint, distance to the next image of any kind): Anim.Skinning's footprint runs over the policy module (1.29 0xD90C00 +
 0xCA00 > PM 0xD92C80). Each module is wrapped as a one-segment SPU ELF at its LS base (0x4000 when the header says 0)
 with entry base+entry_off and lifted with --auto-functions plus the extra seeds of ps3recomp's lift_jobmods.py.
+
+The six Amadeus audio plugin modules are job-module images too, but Snd.Amadeus streams the one it needs to LS 0x8400
+and runs it there, never from the job code buffer. Each is lifted a second time wrapped at that address (kind
+"plugin", plg_<file offset>, PLUGIN_BASE below); gen_spu_register.py registers those lifts as verified regions.
 
 Output: <out>/lift/<name>/spu_recomp.{c,h} + lift.log, <out>/spu_lift.json, <out>/eboot_ver.
 """
@@ -32,6 +37,17 @@ CODE_END = {}
 # 0xA2C is its interrupt handler (the entry stores `bra 0xA2C` at LS 0; nothing branches there).
 PM_BASE = 0xA00
 PM_SEEDS = [0xA2C]
+# Amadeus audio plugin modules: Snd.Amadeus (job_00e22100 in 1.29, code at LS 0x4000-0x78D0) GETs a plugin to
+# LS 0x8400 and calls into it there. Seen with SPU_DUMP_OVL=<dir>,0x8400 at a Corinth River checkpoint of 1.29:
+# EA 0x00E4BB00, 0x00E30F00 and 0x00E2FF00.
+# ASSUMPTION: the other three plugins load at 0x8400 too. A plugin that loads anywhere else keeps running as before
+# (interpreted): a verified region only matches a GET to the address it was lifted for.
+PLUGIN_BASE = 0x8400
+PLUGIN_MARK = "Amadeus audio plugin module"   # reg_name of the plugin rows in re/wws_jobs_v<VER>.tsv
+# Function starts the SPU interpreter was entered at in play (SPU_INTERP_HIST=1) that the seed scans below do not
+# find, by the census fp_span of the plugin (the same in 1.01 and 1.29). LS addresses with the plugin at PLUGIN_BASE.
+PLUGIN_SEEDS = {"0x56918C1DEB0C0805": [0xA7B4, 0xAC14, 0xAC94, 0xAE10, 0xBAE8, 0xC12C, 0xC22C, 0xC37C, 0xC400,
+                                       0xC888, 0xCA68]}
 
 
 def keep_seeds(name, seeds, lo, hi, ce, dropped):
@@ -72,7 +88,7 @@ def job_modules(d, rows):
         raw = d[s:s + n]
         inside = any(0 < s - e < 0x200 for e in aud)
         meta = dict(file_offset=s, entry_off=ent, footprint=foot, w3=w3, w4=w4, w9=w9, hdr_base=base,
-                    flags=flags, inside_elf=inside, reg_name=r.get("reg_name", ""))
+                    flags=flags, inside_elf=inside, reg_name=r.get("reg_name", ""), fp_span=r.get("fp_span", ""))
         out.append((r["name"], raw, base or 0x4000, ent, meta))
     return out
 
@@ -349,6 +365,7 @@ def lift_one(job):
 
     def cbr(insns, bounds):  # called once by main() with the final function bounds
         starts_of[0] = sorted(s for s, _ in bounds)
+        inst["bounds"] = sorted([s, e] for s, e in bounds)
         return orig_cbr(insns, bounds)
 
     spu_lifter.compute_bi_r0_jumps = cbr
@@ -372,6 +389,8 @@ def lift_one(job):
     open(os.path.join(sub, "lift.log"), "w").write(" ".join(sys.argv[1:]) + "\n" + buf.getvalue())
     l = inst.get("l")
     res = dict(name=name, kind=kind, ok=ok, argv=argv_extra, **meta)
+    if kind == "plugin":   # the lifted functions' byte ranges: what gen_spu_register.py has the runtime verify
+        res["bounds"] = inst.get("bounds", [])
     if l is not None:
         res.update(functions=len(l.functions), unsupported=dict(l.unsupported),
                    insns=sum(hist.values()), hist=hist,
@@ -390,7 +409,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("-j", type=int, default=os.cpu_count())
     ap.add_argument("--only", default="", help="comma list of image names")
-    ap.add_argument("--kinds", default="pm,job,elf", help="comma list of image kinds to lift (pm, job, elf)")
+    ap.add_argument("--kinds", default="pm,job,elf,plugin",
+                    help="comma list of image kinds to lift (pm, job, elf, plugin)")
     ap.add_argument("--no-code-end", action="store_true", help="ELF: do not stop at .rodata (audit baseline)")
     a = ap.parse_args()
     pt = os.path.abspath(a.ps3recomp)
@@ -470,6 +490,20 @@ def main():
             extra += ["--code-end", hex(elf_ce[wrapper[0]])]
             meta["code_end"] = elf_ce[wrapper[0]]
         jobs.append((name, "job", p, extra, meta, pt, out))
+        if PLUGIN_MARK in meta.get("reg_name", ""):
+            # The same image again, at the address Snd.Amadeus runs it from. No --code-end: only the functions'
+            # own byte ranges are registered, and they are compared with local store before they are dispatched.
+            pb, pname = PLUGIN_BASE, f"plg_{meta['file_offset']:08x}"
+            pp = os.path.join(tmp, pname + ".elf")
+            open(pp, "wb").write(wrap(raw, base=pb, entry=pb + ent))
+            pend = pb + len(raw)
+            ps = [pb + 0x30] + manual_link_targets(raw, pb) + switch_table_targets(raw, pb)
+            ps += table_targets([(raw, pb)], (raw, pb), pend) + ila_targets((raw, pb), pend)
+            ps += PLUGIN_SEEDS.get(meta.get("fp_span", ""), [])
+            ps = sorted({s for s in ps if pb <= s < pend and not s & 3})
+            pmeta = dict(meta, base=pb, job=name)
+            pmeta.pop("code_end", None)   # an LS address of the 0x4000 lift
+            jobs.append((pname, "plugin", pp, ["--extra-funcs", ",".join(hex(s) for s in ps)], pmeta, pt, out))
     for name, raw, seeds in policy_modules(d, rows):
         p = os.path.join(tmp, name + ".elf")
         open(p, "wb").write(wrap(raw, base=PM_BASE, entry=PM_BASE))
