@@ -36,6 +36,12 @@ RESERVED = {1, 22, 23, 100} | set(range(60, 66))
 AMADEUS_PLUGIN_LSA = 0x8400   # tools/spu/lift_spu.py: where the Amadeus job loads its plugin modules
 
 
+def is_amadeus_plugin(m):
+    """A job lifted at the Amadeus plugin address with flag bit 31 and no header base of its own (lift_spu.py)."""
+    return (m["kind"] == "job" and m.get("base") == AMADEUS_PLUGIN_LSA and m.get("hdr_base") == 0
+            and bool(m.get("flags", 0) & 0x80000000))
+
+
 def be16(b, o): return (b[o] << 8) | b[o + 1]
 def be32(b, o): return struct.unpack_from(">I", b, o)[0]
 
@@ -188,8 +194,10 @@ def main():
          "#endif",
          "extern void spu_begin_image(int image_id);",
          "extern void spu_overlay_register_sig(const uint8_t sig[16], int image_id);",
-         '#include "spu_overlay_residency.h"   /* the Amadeus plugins: spu_overlay_register_verified_region */',
          ""]
+    if any(is_amadeus_plugin(m) for m in images):
+        # only with a plugin registered, so a lift without them generates what it did before (x86: what main does)
+        L[-1:-1] = ['#include "spu_overlay_residency.h"   /* the Amadeus plugins: spu_overlay_register_verified_sig */']
     for m in images:
         L.append(f"extern void {m['name']}_spu_recomp_register(void);")
         if m["kind"] in ("pm", "elf"):
@@ -212,7 +220,7 @@ def main():
         if m.get("text_fp") is not None:
             L.append(f"    spu_workload_register_img(0x{m['text_fp']:016X}ULL, {m['entry_sym']}, "
                      f"{m['image_id']}, \"{m['name']}.text\");")
-        if m["kind"] == "job" and m.get("base") == AMADEUS_PLUGIN_LSA and m.get("flags", 0) & 0x80000000:
+        if is_amadeus_plugin(m):
             # An Amadeus audio plugin (lift_spu.py lifts them at the LS address Amadeus loads them to). Registered
             # as a verified code region keyed by its header signature (patch 7043; Amadeus DMAs a heap copy, never
             # the image's EA): a resident-code slot of its own, so the plugin's
