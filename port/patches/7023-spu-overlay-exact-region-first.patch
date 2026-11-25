@@ -1,0 +1,36 @@
+KZ2 patch 7023: a GET that matches a verified streamed region exactly (source EA and load address) takes that region
+before any signature entry.
+spu_overlay_note_get scans the registered sources in registration order and stops at the first hit. A WWS job-module
+image is registered by its 16-byte header signature (spu_overlay_register_sig), and a signature entry hits wherever
+the image is loaded. Killzone 2's six Amadeus audio plugin modules are such images, but they never run from the job
+code buffer: Snd.Amadeus GETs the plugin it needs to LS 0x8400 and calls into it there (SPU_DUMP_OVL=<dir>,0x8400 at
+a Corinth River checkpoint: EA 0x00E4BB00, 0x00E30F00 and 0x00E2FF00). Registering a plugin a second time, as a
+verified region lifted for 0x8400 (tools/spu/lift_spu.py kind "plugin"), did nothing while the signature entry came
+first: the GET was noted as the LS 0x4000 lift, no code span became resident, and every call into the plugin ran in
+the SPU interpreter (SPU_INTERP_HIST=1: about 35 M interpreted steps a second at that checkpoint, all with overlay 231,
+Snd.Amadeus, resident).
+Here the scan first looks for a verified region whose source EA and load address are exactly the GET's and starts at
+it. Such a region names one EA and one address and its code bytes are still compared before the first dispatch
+(spu_overlay_resident_verified), so it is the more specific match. A GET with no such region (every GET in a build
+that registers no plugin regions, a plugin image sent to any other address, any other EA) scans from the first entry
+as before. Host test: tools/spu/test_ovl_exact_region.sh.
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2463,7 +2463,14 @@
+     }
+     int nsrc = __atomic_load_n(&s_ovl_src_count, __ATOMIC_ACQUIRE);
+     if (size < 512 && !spu_ovl_ea_known(ea)) return;
+-    for (int i = 0; i < nsrc; i++) {
++    /* KZ2 patch 7023: a verified region registered for exactly this source EA and load address is tried before
++     * the signature entries. An image registered both ways (a WWS job-module image that another module streams to
++     * its own address, as Snd.Amadeus does with its plugins at LS 0x8400) otherwise always took the signature
++     * entry, registered first, and its lift for the other address. No such region: the scan is as before. */
++    int exact = 0;
++    for (int i = 0; i < nsrc; i++)
++        if (s_ovl_src[i].code && s_ovl_src[i].src_ea == ea && s_ovl_src[i].load_lsa == lsa) { exact = i; break; }
++    for (int i = exact; i < nsrc; i++) {
+         const spu_ovl_src* o = &s_ovl_src[i];
+         int hit = o->has_sig ? (size >= 512 && memcmp(ls, o->sig, 16) == 0)
+                              : (o->src_ea == ea);
