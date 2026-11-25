@@ -1,5 +1,6 @@
 KZ2 6085: the frame thread's sleep between drain passes ends when the title has written more commands
-(KZ2_WALKER_POLL_US=<n>, off by default; ENHANCEMENT: host timing only, no guest-visible change).
+(KZ2_WALKER_POLL_US=<n>, off by default; ENHANCEMENT, not bit-exact: it changes when labels and flips reach the
+title, not what is drawn).
 A drain pass walks up to the put it read at its start, and the sleep after it (cellGcm_walker_wait(4) in port/kz2
 main.cpp's frame_clock) is a flat Sleep unless a park (6038) or an acquire wait (6082) is armed. Commands the title
 writes during or just after a pass therefore wait for the sleep to end, on the thread the frame waits for.
@@ -10,15 +11,20 @@ frame rate: off 42.73 +- 0.48, KZ2_WALKER_POLL_US=0 44.83 +- 0.68 (+4.9 %, +0.4 
 +0.14 cores); every run with the switch above every run without (issue #102).
 The change: the drain records the put it starts from (s_wp_seen_put). With the switch, the wait runs in <n> us slices
 (a high-resolution waitable timer together with the wake event; 0 = yield-spin, capped at 4000) and returns 2 when the
-control register's put differs from the recorded one, or the armed park word differs from s_park_watch_w (whoever
-wrote it); 6082's acquire label is checked each slice as well. cellGcm_walker_poll_counts gives the two counts.
+control register's put differs from the recorded one, or, while patch 7014's park watch is on, the armed park word
+differs from s_park_watch_w (whoever wrote it). 7014's arm stores that word only with the watch on: with
+KZ2_PARK_WATCH=0 the park test is skipped and the put test alone ends a slice (else the stale word never matches and
+the frame thread would run drain, pump and wait back to back). 6082's acquire label is checked each slice as well.
+cellGcm_walker_poll_counts gives the two counts. If the high-resolution timer cannot be made, the slices are
+yield-spins and a one-time [walker-poll] line says so.
 Not checked: Proton, a CPU with few cores (a yield-spin there may cost more than it gives), input latency.
-Host test: tools/runtime/test_walker_wait_poll.sh (wiring, and the decision rule with negative controls).
+Host test: tools/runtime/test_walker_wait_poll.sh (wiring, and the decision rule with negative controls, the park
+watch on and off).
 Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's sleep to go through one function).
 
 --- a6085/libs/video/cellGcmSys.c	2026-11-25 01:56:54.433964900 -0500
 +++ b6085/libs/video/cellGcmSys.c	2026-11-25 01:56:54.534451400 -0500
-@@ -1169,8 +1169,36 @@
+@@ -1169,8 +1169,41 @@
      if (s_walker_wake) SetEvent(s_walker_wake);
  #endif
  }
@@ -32,6 +38,7 @@ Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's 
 + * last pass started from, or the armed park word differs from the word the walker stopped on (s_park_watch_w, however
 + * it was written; patch 7014's kick sees only writes that take the notify path). The acquire label (6082) is checked
 + * each slice too. Counters: cellGcm_walker_poll_counts (the port's [walker-poll] line). Upstream candidate. */
++static int gcm_park_watch_on(void);   /* patch 7014, below */
 +static volatile u32 s_wp_seen_put;
 +static volatile u32 s_park_watch_w;   /* tentative; defined with the park watch (patch 7014) below */
 +static volatile u32 s_wp_n_put, s_wp_n_park;
@@ -41,12 +48,16 @@ Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's 
 +    if (us == -2) { const char* e = getenv("KZ2_WALKER_POLL_US"); us = (e && *e) ? atoi(e) : -1; if (us > 4000) us = 4000; }
 +    return us;
 +}
-+/* 1 = the put moved since the last pass began, 2 = the armed park word changed, 0 = nothing new */
++/* 1 = the put moved since the last pass began, 2 = the armed park word changed, 0 = nothing new.
++ * The park word is compared only while 7014's park watch is on: its arm is what stores s_park_watch_w, so with
++ * KZ2_PARK_WATCH=0 (or an off phase of KZ2_PARK_WATCH_TOGGLE) the stored word is stale, never equals the parked
++ * JUMP, and the test would end every slice at once. A park armed in an off phase and still parked when the watch
++ * turns on ends one slice early; the next pass re-arms it with the current word. */
 +static int gcm_walker_work_pending(void)
 +{
 +    if (vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != __atomic_load_n(&s_wp_seen_put, __ATOMIC_RELAXED)) return 1;
 +    const u32 pe = __atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE);
-+    if (pe && vm_read32(pe) != __atomic_load_n(&s_park_watch_w, __ATOMIC_RELAXED)) return 2;
++    if (pe && gcm_park_watch_on() && vm_read32(pe) != __atomic_load_n(&s_park_watch_w, __ATOMIC_RELAXED)) return 2;
 +    return 0;
 +}
 +void cellGcm_walker_poll_counts(unsigned* put, unsigned* park) { *put = s_wp_n_put; *park = s_wp_n_park; }
@@ -56,7 +67,7 @@ Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's 
  int cellGcm_walker_wait(unsigned ms)
  {
  #ifdef _WIN32
-@@ -1179,6 +1207,32 @@
+@@ -1179,6 +1212,35 @@
       * between the stop and here ends the wait at once */
      const u32 wla = __atomic_load_n(&s_acq_wait_la, __ATOMIC_SEQ_CST);
      if (wla && vm_read32(wla) == __atomic_load_n(&s_acq_wait_v, __ATOMIC_RELAXED)) return 1;
@@ -65,6 +76,9 @@ Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's 
 +        if (!s_qf.QuadPart) {
 +            QueryPerformanceFrequency(&s_qf);
 +            s_tmr = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++            if (!s_tmr && gcm_walker_poll_us() > 0)
++                fprintf(stderr, "[walker-poll] no high-resolution timer (error %lu): KZ2_WALKER_POLL_US=%d runs as a "
++                        "yield-spin\n", (unsigned long)GetLastError(), gcm_walker_poll_us());
 +        }
 +        LARGE_INTEGER t0, t;
 +        QueryPerformanceCounter(&t0);
@@ -89,7 +103,7 @@ Upstream candidate (ps3recomp libs/video/cellGcmSys.c; needs the frame thread's 
      if (!s_walker_wake || ((!gcm_park_wake_on() || !__atomic_load_n(&s_park_wake_ea, __ATOMIC_ACQUIRE)) && !wla)) {
          Sleep(ms);
          return 0;
-@@ -3178,6 +3232,7 @@
+@@ -3178,6 +3240,7 @@
       * own command ring, so everything after the jump (including the reference
       * writes its waits spin on) silently never executed. */
      u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
