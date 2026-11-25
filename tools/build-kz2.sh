@@ -45,10 +45,36 @@ fi
 FFW="${KZ2_FFMPEG_WIN:-$MAINC/work/ffmpeg-win}"
 want_ff="${KZ2_FFMPEG_INCLUDE:-$FFW/include}"; no_ff=OFF
 [[ -f "$want_ff/libavcodec/avcodec.h" ]] || { echo "build-kz2: WARNING no FFmpeg headers at $want_ff: this developer build has black movies and silent AC3 (see tools/runtime/ffmpeg-lgpl-win.nix)" >&2; want_ff=""; no_ff=ON; }
+# Guards only (the remote build): the remote build takes RECOMP_DIR and SPU_DIR from this cache, so it must exist
+# (build-1, audit 2026-11-25: no cache meant a guessed port/kz2/spu and an exe without SPU jobs).
+[[ "$GO" == 1 && ! -f "$DIR/CMakeCache.txt" ]] && { echo "build-kz2: no $DIR/CMakeCache.txt: configure the build dir" \
+  "first (this script without KZ2_BUILD_GUARDS_ONLY, in the .#win shell)" >&2; exit 3; }
+# Lifted SPU images (tools/spu/lift_spu.sh): the cache must point at $OUT/spu/lift, a lift with spu_workloads.c and at
+# least one <image>/spu_recomp.c. An earlier change: an exe without them boots to black ("[spu_workload] ERROR ... no lifted
+# image ... DROPPED"); build-1 (2026-11-25): one froze in the menu. A second worktree gets them by linking
+# work/spu/lift to main's. KZ2_SPU=0 builds without them on purpose (port/kz2/spu, -DKZ2_ALLOW_NO_SPU=ON); a cache
+# with PORT_ENABLE_SPU=OFF is left as it is. Otherwise no lift is an error (CMake stops too).
+SPU_LIFT="$OUT/spu/lift"; want_spu=""; no_spu=OFF
+cfg_spu_on="$(sed -n 's/^PORT_ENABLE_SPU:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null || true)"
+case "${cfg_spu_on^^}" in
+  OFF|0|NO|FALSE|N|IGNORE) ;;
+  *)
+    if [[ "${KZ2_SPU:-1}" == 0 ]]; then want_spu="$ROOT/port/kz2/spu"; no_spu=ON
+      echo "build-kz2: WARNING KZ2_SPU=0: this exe will not run the game's SPU jobs" >&2
+    elif [[ -f "$SPU_LIFT/spu_workloads.c" ]] && spu_imgs=("$SPU_LIFT"/*/spu_recomp.c) && [[ -f "${spu_imgs[0]}" ]]; then
+      # a glob, not compgen: the nix shells' non-interactive bash has no completion builtins
+      want_spu="$SPU_LIFT"
+    else
+      echo "build-kz2: no lifted SPU images at $SPU_LIFT (spu_workloads.c and <image>/spu_recomp.c): this exe would" \
+        "not run the game's SPU jobs; run tools/spu/lift_spu.sh, link work/spu/lift to main's, or KZ2_SPU=0 to mean it" >&2
+      exit 3
+    fi ;;
+esac
+SPU_ARGS=(); [[ -n "$want_spu" ]] && SPU_ARGS=(-DSPU_DIR="$want_spu" -DKZ2_ALLOW_NO_SPU="$no_spu")
 if [[ "$GO" != 1 && ! -f "$DIR/CMakeCache.txt" ]]; then
   cmake -S "$ROOT/port/kz2" -B "$DIR" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ROOT/port/cmake/mingw-w64.cmake" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE="$(command -v python3)" \
-    -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" \
+    -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" "${SPU_ARGS[@]}" \
     -DPS3RECOMP_DIR="$PT" -DRECOMP_DIR="$OUT/recomp" >"$DIR.configure.log" 2>&1 \
     || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
@@ -57,17 +83,9 @@ fi
 # (the link then fails with undefined _cellSpursLFQueuePushBody).
 pt_stamp="$(cat "$PT/.kz2-patchset" 2>/dev/null || true)"
 if [[ "$GO" != 1 && "$(cat "$DIR/.kz2-toolkit-stamp" 2>/dev/null || true)" != "$pt_stamp" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" "${SPU_ARGS[@]}" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
   echo "$pt_stamp" > "$DIR/.kz2-toolkit-stamp"
 fi
-# Lifted SPU images (tools/spu/lift_spu.sh): point the cache at $OUT/spu/lift when it has a registration TU
-# (the CMake default port/kz2/spu does not exist). KZ2_SPU=0 builds without them.
-SPU_LIFT="$OUT/spu/lift"
-if [[ "${KZ2_SPU:-1}" != 0 && -f "$SPU_LIFT/spu_workloads.c" ]]; then want_spu="$SPU_LIFT"; else want_spu="$ROOT/port/kz2/spu"; fi
-# an exe without the lifted SPU images boots to black ("[spu_workload] ERROR ... no lifted image ... DROPPED");
-# a second worktree gets them by linking work/spu/lift to main's. Say so instead of building it silently.
-[[ "$want_spu" == "$SPU_LIFT" || "${KZ2_SPU:-1}" == 0 ]] || echo "build-kz2: WARNING no lifted SPU images at $SPU_LIFT" \
-  "(no spu_workloads.c): this exe will not run the game's SPU jobs; link it to main's work/spu/lift, or KZ2_SPU=0 to mean it" >&2
 # a build dir configured against another toolkit tree (PS3RECOMP_DIR) builds that tree, whatever $PT's stamp
 # says (a second worktree's dir made with KZ2_OUT=work/runtime kept building the pre-bump toolkit). Refuse the mismatch.
 cfg_pt="$(sed -n 's/^PS3RECOMP_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null || true)"
@@ -75,11 +93,18 @@ if [[ -n "$cfg_pt" && "$(realpath -m "$cfg_pt")" != "$(realpath -m "$PT")" && "$
   echo "build-kz2: $DIR is configured for the toolkit $cfg_pt, not $PT (KZ2_OUT=$OUT): use a new build dir or the" \
     "matching KZ2_OUT" >&2; exit 3
 fi
-if [[ "$GO" != 1 && "$(sed -n 's/^SPU_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null)" != "$want_spu" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" -DSPU_DIR="$want_spu" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+cfg_spu="$(sed -n 's/^SPU_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null || true)"
+if [[ -n "$want_spu" && "$GO" != 1 && "$cfg_spu" != "$want_spu" ]]; then
+  cmake -S "$ROOT/port/kz2" -B "$DIR" "${SPU_ARGS[@]}" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+fi
+# Guards only: nothing reconfigures the cache here, and the remote build ships its SPU_DIR: refuse a cache that does
+# not point at the expected lift (build-1).
+if [[ -n "$want_spu" && "$GO" == 1 && "$(realpath -m "${cfg_spu:-/nonexistent}")" != "$(realpath -m "$want_spu")" ]]; then
+  echo "build-kz2: $DIR is configured with SPU_DIR=${cfg_spu:-<none>}, not $want_spu: reconfigure it (this script" \
+    "without KZ2_BUILD_GUARDS_ONLY, or cmake -B $DIR -DSPU_DIR=$want_spu)" >&2; exit 3
 fi
 if [[ "$GO" != 1 && "$(sed -n 's/^KZ2_FFMPEG_INCLUDE_DIR:[A-Z]*=//p' "$DIR/CMakeCache.txt" 2>/dev/null)" != "$want_ff" ]]; then
-  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+  cmake -S "$ROOT/port/kz2" -B "$DIR" -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" "${SPU_ARGS[@]}" >>"$DIR.configure.log" 2>&1 || { tail -20 "$DIR.configure.log" >&2; exit 4; }
 fi
 # The lift must announce exactly the overrides of its EBOOT's list (a host override is compiled only when the lift
 # announced PPU_OVERRIDE_<addr>): port/kz2/ppu_overrides.txt for 1.29, ppu_overrides-101.txt for v1.01, by the ver=

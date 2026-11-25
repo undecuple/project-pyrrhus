@@ -3,9 +3,9 @@ KZ2 patch 2157 (from KZ3 2157, the fence-wait part only): ld_wait_fence fails cl
 ld_wait_fence ignored WaitForSingleObject's result and the fence's completed value after the wait. D3D12 reports a removed
 device as an all-ones completed value (which also completes every event), so a caller could treat a range or a frame
 slot as free when the GPU had not finished with it. Now an all-ones value before the wait, a wait that did not signal,
-or a completed value below the target after it sets g.ready = 0, prints "[d3d-fail] ..." and returns 0. Every caller
-that reuses memory after the wait (tile allocation, frame slots) already checks the return. Nothing changes while the
-device is alive.
+or a completed value below the target after it sets g.ready = 0, prints "[d3d-fail] ..." and returns 0. The frame-slot
+(2008) and tile-allocation (6059) callers check the return; ld_wait_idle (2008) and ld_dm_sync_size (2095, 6040) do not
+yet, which matters only after the device is removed (audit 2026-11-25). Nothing changes while the device is alive.
 
 From Project Helghast port/patches/2157-live-draw-ring-fail-closed.patch (snapshot work/kz3-import/2026-11-11-rsx-47e0c238),
 imported by KZ2 an earlier change, ld_wait_fence hunks only (copied). The rest of KZ3 2157 hardens the ring-mark paths of

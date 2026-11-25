@@ -7,7 +7,7 @@ shows a black box where the picture should be.
 
 Cause: the panels' fragment program takes an anti-aliased edge factor from the screen-space derivative of its
 texture coordinate, min(uv - uv^2, fwidth(uv)) / fwidth(uv) with fwidth = |DDX| + |DDY| (Killzone 2 1.29, program
-at loc 1 0x00115480 in the Statistics page, frame 2609 of kz2-r41-ui1), and multiplies the alpha by it. The decompiler
+at loc 1 0x00115480 in the Statistics page, frame 2609 of a test run), and multiplies the alpha by it. The decompiler
 had no case for DDX (0x15) or DDY (0x16): it emitted a TODO comment and wrote nothing, so the destination kept 0, the
 factor became 0 * (1 / 0) = NaN and the export guard returned a transparent 0. Every panel, bar and picture that
 uses the program blended away.

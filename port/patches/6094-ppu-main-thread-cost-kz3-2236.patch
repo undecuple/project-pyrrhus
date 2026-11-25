@@ -1,0 +1,644 @@
+KZ2 patch 6094 (fps-why 2026-11-24 R1, R2, R3, R6 first half): ppu-main's runtime overhead in the
+lifted PPU code. Ported from KZ3 patch 2236 (Project Helghast, same author, MIT; KZ3 has agreed
+to share one patch line for the TLS fold, the accessors and -mfma) and the PPU half of KZ3 patch 1115 (the TEB slot
+for g_trampoline_fn, an earlier change, Project Helghast; its profiler half is not ported). Adapted: KZ2_ names, no per-thread icall cache
+(KZ2 has none), no raw-store reservation test (KZ2's VM_RAW_ST has no SPU coherence, so there is nothing to inline),
+an exact fmaf reference for the boot self-test (port/kz2/ppu_isa_ref.cpp).
+
+Cause (fps-why 2026-11-24 section 1 row 3, the RE notes "An earlier change"): ppu-main is busy 28-36 ms per heavy frame,
+12-15 ms of it ps3recomp runtime overhead: emulated TLS 13 % (__emutls_get_address -> _MCF_thread_self ->
+__MCF_tls_table_get -> do_linear_probe_nonempty; TU 010 has 843 emutls relocations), out-of-line accessors 12.8 %
+(about 60 .isra copies of each accessor; 8,140 of TU 010's 10,446 32-bit reads are calls), vmaddfp plus software
+fmaf 9.8 %.
+
+Change:
+- runtime/ppu/ppu_vmx.h: under __FMA__ && __SSE4_1__ (x86), vmaddfp = _mm_fmadd_ps and vnmsubfp = fmsub then a sign
+  flip (an exact zero must be -0), with pshufb byte swap, the NJ input/result flush and the NaN -> 0x7FC00000 fix on
+  all four lanes. The scalar #else path is unchanged. NaN: a NaN operand loses its payload in both paths, as on
+  main (unlike the other vector float ops here); RPCS3 (read, not copied) does the same for vmaddfp/vnmsubfp (the
+  canonical 0x7FC00000 with its NaN fix on). A propagation rule waits for a hardware-backed answer (lane/runtime-6097).
+  R2 IS A CORRECTNESS FIX AGAINST THE PS3, not a no-op: MinGW's software fmaf and fma are not correctly rounded
+  (kz2.exe 0x149081ee0 / 0x149081f90 sum a split product with several roundings; KZ3 measured ~15 % of random inputs
+  wrong). Hardware FMA rounds once, as the PS3's vmaddfp / fmadd do. So the -mfma path is checked against an exact
+  reference -- glibc's fmaf in the host test, kz2_fmaf_exact (port/kz2/kz2_fmaf_exact.h) in the [ppu-isa] boot
+  self-test -- and NOT against today's exe, whose bits are the wrong ones.
+  KZ2_PPU_ISA ALSO CHANGES THE SCALAR FPU: -mfma on every lifted TU turns the fused family (fmadd, fmsub, fnmadd,
+  fnmsub and their single forms, which go through fma() in the lifter's ppu_fmadd_core) into hardware vfmadd*. Their
+  bits change wherever MinGW's software fma() was wrong: the same correctness fix against the PS3, for the scalar
+  unit. (The single forms still compute fma in double and then round to float, a rare double rounding against PPU
+  fmadds that predates 6094 and is not fixed here.) An ISA A/B therefore changes guest FPU results, not only speed.
+- runtime/ppu/ppu_loader.cpp: t_thr (depth, vcall stack and pointer) taken once per indirect call;
+  ps3_indirect_call / ps3_indirect_call_to both go through ps3_indirect_call_entry(ctx, addr) ->
+  ps3_indirect_call_impl_at(ctx, addr) (no TLS flag pair; between the old set and consume only diagnostics ran,
+  they still name ctx->ctr); the drain loop takes &g_trampoline_fn once. ps3_ppu_dispatch_depth_slot /
+  ps3_ppu_vcall_sp_slot return the t_thr fields. ppu_tramp_ref_slow + g_ppu_tramp_slot (KZ3 1115; KZ2_TRAMP_TEB=0
+  turns the slot off at run time). KZ2_PPU_COST_LOG=1 (default off): [ppu-tls] at 10 s and exit, [ppu-acc]
+  slow_ld/slow_st every 10 s.
+- tools/ppu_lifter.py (HEADER_PREAMBLE and SOURCE_PREAMBLE; needs a relift): ppu_mm_take, vm_mm_in/ok/st_ok,
+  vm_{read,write}{8,16,32,64}_mm and vm_raw_ld16/st16 are PPU_ACC_INL: always_inline with -DPPU_ACC_ALWAYS_INLINE=1
+  (KZ2_PPU_ACC_INLINE=ON), plain static inline (as before) without. With the option ON every fallback is a static
+  noinline cold stub (ppu_ld*_slow, ppu_st*_slow) that calls the runtime's vm_read* / vm_write* and bumps the shared
+  relaxed counter only while ppu_acc_count_on is 1 (set by KZ2_PPU_COST_LOG=1; otherwise the stub only reads that
+  never-written flag, so no thread writes a shared cache line per slow access). With the option OFF the fallbacks are
+  macros for the plain vm_read* / vm_write* calls: the preprocessed accessors are main's (r94 review item 1).
+  Watched-path semantics unchanged. PPU_TRAMP_TEB (default 0; -DPPU_TRAMP_TEB=1 from KZ2_PPU_TRAMP_TEB=ON, MinGW x86-64 only):
+  g_trampoline_fn through the TEB slot.
+- port/kz2 (not in this patch): KZ2_PPU_ISA, KZ2_PPU_ACC_INLINE, KZ2_PPU_CMODEL_SMALL, KZ2_PPU_TRAMP_TEB build
+  options, all default OFF (KZ3 2236 has the accessors always inlined unconditionally; here an option, for its own A/B
+  and because of the compile time);
+  ppu_isa_probe.cpp / ppu_isa_ref.cpp and the [ppu-isa] boot line; kz2_cpu_check.c also for KZ2_PPU_NEEDS_FMA.
+
+Expected effect (ASSUMPTION, fps-why): TLS 3-4 ms, FMA 1.5-2.5 ms, inlining 1-2 ms of ppu-main per heavy frame; judged
+on ppu-main busy ms per flip in a paired A/B, not fps. NOT verified: any game run; the gain; MinGW's software fmaf
+error rate on KZ2's own inputs.
+
+Host tests: tools/runtime/test_ppu_vmx_fma.sh, tools/runtime/test_ppu_icall_to.sh, tools/runtime/test_ppu_acc_fast.sh,
+tools/runtime/test_ppu_tramp_slot.sh (each with negative controls).
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index ecd0b21..b72a4f3 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1574,10 +1574,26 @@ static void pt_record(uint32_t addr) {
+ }
+ static void pt_restore(uint32_t addr) { for (int i=0;i<g_pt_n;i++) if (g_pt_addr[i]==addr) g_pt_live[i]=0; }
+ #endif
++/* ---- KZ2 patch 6094 begin: per-thread dispatch state (tools/runtime/test_ppu_icall_to.sh compiles this block) ---- */
++/* KZ2 patch 6094 (from KZ3 patch 2236): the indirect-call path's thread-locals in one object. MinGW GCC has only
++ * emulated TLS (it rejects -fno-emulated-tls): every access to a PPU_THREAD_LOCAL is a call to
++ * __emutls_get_address, which walks mcfgthread's per-thread table (_MCF_thread_self, __MCF_tls_table_get,
++ * do_linear_probe_nonempty: 13 % of KZ2's ppu-main samples together, fps-why 2026-11-24 R1). One indirect call took
++ * about 7 of them (g_active_ctx, the target flag pair, the depth, the vcall stack pointer and stack,
++ * g_trampoline_fn per drain step). ps3_indirect_call_impl_at now takes &t_thr once; the target of
++ * ps3_indirect_call_to travels as an argument instead of through a thread-local flag. Storage is still per thread:
++ * only the number of lookups changes. Taking the address once is as safe as the depth reference the dispatch
++ * already held across fn(ctx): a guest fiber runs on the host thread that created it. (KZ2 has no per-thread icall
++ * cache, so KZ3's ic[] member is not here.) */
++struct ppu_thr_state {
++    int            dispatch_depth;   /* was g_dispatch_depth (comment below) */
++    int            vcall_sp;         /* was g_vcall_sp */
++    uint32_t       vcall_stk[128];   /* was g_vcall_stk */
++};
++static PPU_THREAD_LOCAL ppu_thr_state t_thr;
+ /* Stack of currently-executing indirect-call (vtable) targets on this thread, so a
+- * write hook can name the virtual method that is running when it writes a value. */
+-static PPU_THREAD_LOCAL uint32_t g_vcall_stk[128];
+-static PPU_THREAD_LOCAL int      g_vcall_sp = 0;
++ * write hook can name the virtual method that is running when it writes a value
++ * (t_thr.vcall_stk / vcall_sp, patch 6094). */
+ /* Nesting depth of ps3_indirect_call on this host thread (the recursion guard
+  * in ps3_indirect_call_impl). A host coroutine that runs guest code and ends by
+  * switching away from inside an indirect call never unwinds its frames, so one
+@@ -1586,10 +1602,10 @@ static PPU_THREAD_LOCAL int      g_vcall_sp = 0;
+  * A coroutine layer keeps one count per coroutine by saving *slot when it
+  * switches away and restoring it when it switches back; threads that never
+  * switch keep using their thread-local count. The vcall stack pointer leaks
+- * the same way. */
+-static PPU_THREAD_LOCAL int      g_dispatch_depth = 0;
+-extern "C" int* ps3_ppu_dispatch_depth_slot(void) { return &g_dispatch_depth; }
+-extern "C" int* ps3_ppu_vcall_sp_slot(void) { return &g_vcall_sp; }
++ * the same way. (t_thr.dispatch_depth, patch 6094.) */
++extern "C" int* ps3_ppu_dispatch_depth_slot(void) { return &t_thr.dispatch_depth; }
++extern "C" int* ps3_ppu_vcall_sp_slot(void) { return &t_thr.vcall_sp; }
++/* ---- KZ2 patch 6094 end ---- */
+ 
+ /* Every guest store commits through this: on a line no SPU has reserved (all of
+  * them, until SPU code runs) it is the plain memcpy it replaced. */
+@@ -2148,6 +2164,113 @@ void flow_lookup_alloc(unsigned int p) {
+ /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
+ extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
+ 
++/* KZ2 patch 6094 (from KZ3 patch 1115, an earlier change, and 2236's counters): the TEB-slot path to g_trampoline_fn
++ * the generated code takes on MinGW when it is built with -DPPU_TRAMP_TEB=1 (KZ2_PPU_TRAMP_TEB=ON in
++ * port/kz2/CMakeLists.txt; the lifter's source preamble). The slot holds a pointer to this thread's g_trampoline_fn
++ * (its emulated-TLS storage), so both paths reach the same per-thread object. KZ2_TRAMP_TEB=0: no slot (every
++ * access comes here and returns &g_trampoline_fn, the old storage through one more call). Defined in every MinGW
++ * x86-64 build, used only by a lifted tree built with the option. */
++#if defined(_WIN32) && defined(__GNUC__) && !defined(_MSC_VER) && defined(__x86_64__)
++extern "C" unsigned g_ppu_tramp_slot = 0;
++static volatile long s_ppu_tramp_state = 0;   /* 0 undecided, 1 deciding, 2 decided */
++static DWORD s_ppu_tramp_idx = TLS_OUT_OF_INDEXES;
++static unsigned long long s_ppu_tramp_slow_calls = 0;   /* [ppu-tls] counters (KZ3 2236) */
++static volatile long s_ppu_tramp_threads = 0;
++extern "C" void (**ppu_tramp_ref_slow(void))(void*)
++{
++    void (**p)(void*) = &g_trampoline_fn;
++    /* lossy relaxed count (no locked add: with the slot off every access comes here) */
++    __atomic_store_n(&s_ppu_tramp_slow_calls, __atomic_load_n(&s_ppu_tramp_slow_calls, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
++    if (s_ppu_tramp_state != 2) {
++        if (InterlockedCompareExchange(&s_ppu_tramp_state, 1, 0) == 0) {
++            const char* e = getenv("KZ2_TRAMP_TEB");
++            DWORD idx = (e && e[0] == '0') ? TLS_OUT_OF_INDEXES : TlsAlloc();
++            if (idx != TLS_OUT_OF_INDEXES && idx >= 64) { TlsFree(idx); idx = TLS_OUT_OF_INDEXES; }  /* expansion slots: no */
++            s_ppu_tramp_idx = idx;
++            fprintf(stderr, "[tramp] g_trampoline_fn via TEB slot: %s idx=%ld (KZ2 patch 6094, from KZ3 1115)\n",
++                    idx == TLS_OUT_OF_INDEXES ? "off" : "on", idx == TLS_OUT_OF_INDEXES ? -1L : (long)idx);
++            InterlockedExchange(&s_ppu_tramp_state, 2);
++        } else {
++            while (s_ppu_tramp_state != 2) Sleep(0);
++        }
++    }
++    const DWORD idx = s_ppu_tramp_idx;
++    if (idx == TLS_OUT_OF_INDEXES) return p;
++    if (TlsGetValue(idx) != (void*)p) { TlsSetValue(idx, (void*)p); InterlockedIncrement(&s_ppu_tramp_threads); }
++    if (!g_ppu_tramp_slot) {
++        /* Self-check of the TEB layout (TlsSlots at 0x1480, also under Wine): the raw gs read must see what
++         * TlsSetValue stored, or the fast path stays off. */
++        const unsigned long long off = 0x1480ull + 8ull * idx;
++        void* q;
++        __asm__ __volatile__("movq %%gs:(%1), %0" : "=r"(q) : "r"(off));
++        if (q == (void*)p) g_ppu_tramp_slot = (unsigned)off;
++        else {
++            static volatile long warned = 0;
++            if (InterlockedExchange(&warned, 1) == 0)
++                fprintf(stderr, "[tramp] TEB self-check failed (gs:0x%llx = %p, want %p): fast path off\n", off, q, (void*)p);
++            s_ppu_tramp_idx = TLS_OUT_OF_INDEXES;
++        }
++    }
++    return p;
++}
++#endif
++
++/* ---- KZ2 patch 6094 begin: PPU main-thread cost counters ---- */
++/* From KZ3 patch 2236. KZ2_PPU_COST_LOG=1 (default off): a reporter thread logs
++ *   [ppu-tls] teb=on slot=0x1488 slow_calls=N threads=M      at 10 s and at exit: the TEB slot for g_trampoline_fn
++ *             (built in with KZ2_PPU_TRAMP_TEB=ON); slow_calls = ppu_tramp_ref_slow calls (one per thread with the
++ *             slot on; every drain with it off), threads = threads that filled the slot;
++ *   [ppu-acc] slow_ld=N slow_st=N                            every 10 s, cumulative: guest loads / stores of the lifted
++ *             code that left the inline fast path (out of the inline range, poll word, armed diagnostic, SPU-reserved
++ *             line).
++ * The ppu_acc_* counters are bumped by the lifted code's out-of-line (cold) access paths only (ppu_lifter.py, patch
++ * 6094), as relaxed load + store: lossy under contention, no locked instruction on the slow path either. */
++#include <thread>
++#include <chrono>
++extern "C" { unsigned long long ppu_acc_slow_ld = 0, ppu_acc_slow_st = 0;
++/* KZ2: the lifted slow stubs (KZ2_PPU_ACC_INLINE builds only) bump the counters above only while this is 1, set
++ * once by ppu_cost_log_start with KZ2_PPU_COST_LOG=1; otherwise no thread writes their cache line (r94 review). */
++int ppu_acc_count_on = 0; }
++static void ppu_cost_print_tls(void)
++{
++#if defined(_WIN32) && defined(__GNUC__) && !defined(_MSC_VER) && defined(__x86_64__)
++    fprintf(stderr, "[ppu-tls] teb=%s slot=0x%x slow_calls=%llu threads=%ld\n", g_ppu_tramp_slot ? "on" : "off",
++            g_ppu_tramp_slot, __atomic_load_n(&s_ppu_tramp_slow_calls, __ATOMIC_RELAXED), (long)s_ppu_tramp_threads);
++#else
++    fprintf(stderr, "[ppu-tls] teb=n/a (not a MinGW x86-64 build)\n");
++#endif
++}
++static void ppu_cost_print_acc(void)
++{
++    fprintf(stderr, "[ppu-acc] slow_ld=%llu slow_st=%llu\n", __atomic_load_n(&ppu_acc_slow_ld, __ATOMIC_RELAXED),
++            __atomic_load_n(&ppu_acc_slow_st, __ATOMIC_RELAXED));
++}
++static void ppu_cost_at_exit(void) { ppu_cost_print_tls(); ppu_cost_print_acc(); }
++/* Read at the first indirect call (after main has applied kz2.ini to the environment), started once. */
++static int ppu_cost_log_start(void)
++{
++    static std::atomic<int> s_state{0};   /* 0 not decided, 1 deciding, 2 off, 3 on */
++    int expect = 0;
++    if (!s_state.compare_exchange_strong(expect, 1)) { while (s_state.load() == 1) std::this_thread::yield(); return s_state.load() == 3; }
++    const char* e = getenv("KZ2_PPU_COST_LOG");
++    const int on = e && e[0] == '1';
++    if (on) {
++        __atomic_store_n(&ppu_acc_count_on, 1, __ATOMIC_RELAXED);
++        atexit(ppu_cost_at_exit);
++        std::thread([] {
++            for (unsigned t = 1;; t++) {
++                std::this_thread::sleep_for(std::chrono::seconds(10));
++                if (t == 1) ppu_cost_print_tls();
++                ppu_cost_print_acc();
++            }
++        }).detach();
++        fprintf(stderr, "[ppu-acc] KZ2_PPU_COST_LOG=1: [ppu-tls] at 10 s and exit, [ppu-acc] every 10 s (KZ2 patch 6094)\n");
++    }
++    s_state.store(on ? 3 : 2);
++    return on;
++}
++/* ---- KZ2 patch 6094 end ---- */
++
+ /* Per-thread active guest context, for the crash handler to report the guest PC
+  * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
+ extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx = nullptr;
+@@ -2541,7 +2664,7 @@ extern "C" void ppu_dump_bctrl_ring(uint32_t thread_id, const char* tag)
+  * half restores from the wrong frame -- hands its caller garbage in a register
+  * the caller trusts, and the damage surfaces far away as a "vtable used as an
+  * object" or a double-allocated heap block. Reports the target once each. */
+-static void ps3_indirect_call_impl(ppu_context* ctx);
++static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr);   /* KZ2 patch 6094: target as an argument */
+ /* The impl declares these at block scope; outside an extern "C" function that
+  * would give them C++ linkage, so pin it here. */
+ extern "C" uint32_t ps3_hle_count(void);
+@@ -2592,30 +2715,25 @@ static void icall_hist(ppu_context* ctx, uint32_t tgt, int phase)
+     ReleaseSRWLockExclusive(&lk);
+ }
+ 
++/* ---- KZ2 patch 6094 begin: indirect-call entries (tools/runtime/test_ppu_icall_to.sh compiles this block) ---- */
+ /* ps3_indirect_call_to: dispatch to an explicit guest target with CTR left as
+- * the guest had it (b<cond>lrl branches through LR; CTR must not change). */
+-static PPU_THREAD_LOCAL uint32_t g_icall_target;
+-static PPU_THREAD_LOCAL int      g_icall_target_set;
+-extern "C" void ps3_indirect_call(ppu_context* ctx);
+-extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target)
+-{
+-    g_icall_target = target;
+-    g_icall_target_set = 1;
+-    ps3_indirect_call(ctx);
+-}
+-
+-extern "C" void ps3_indirect_call(ppu_context* ctx)
++ * the guest had it (b<cond>lrl branches through LR; CTR must not change).
++ * KZ2 patch 6094 (from KZ3 2236): the target is passed down as an argument (it
++ * was a thread-local flag pair set here and consumed at the top of the impl;
++ * between the two only diagnostics ran, never guest code). The diagnostics
++ * still name ctx->ctr, as before. */
++static void ps3_indirect_call_entry(ppu_context* ctx, uint32_t addr)
+ {
+     static int on = -1;
+-    if (on < 0) on = getenv("PPU_CSCHECK") ? 1 : 0;
++    if (on < 0) { on = getenv("PPU_CSCHECK") ? 1 : 0; ppu_cost_log_start(); }
+     { static int hg = -1; if (hg < 0) hg = getenv("PS3_ICALL_GATE") ? 1 : 0;
+       if (hg) { const uint32_t tgt = (uint32_t)ctx->ctr; icall_hist(ctx, tgt, 0);
+-                ps3_indirect_call_impl(ctx); icall_hist(ctx, tgt, 1); return; } }
+-    if (!on) { ps3_indirect_call_impl(ctx); return; }
++                ps3_indirect_call_impl_at(ctx, addr); icall_hist(ctx, tgt, 1); return; } }
++    if (!on) { ps3_indirect_call_impl_at(ctx, addr); return; }
+     uint64_t save[19]; uint32_t tgt = (uint32_t)ctx->ctr;
+     save[0] = ctx->gpr[1];
+     for (int r = 14; r < 32; r++) save[r - 13] = ctx->gpr[r];
+-    ps3_indirect_call_impl(ctx);
++    ps3_indirect_call_impl_at(ctx, addr);
+     if (ctx->gpr[1] != save[0] || memcmp(&ctx->gpr[14], &save[1], 18 * sizeof(uint64_t))) {
+         static uint32_t seen[256]; static unsigned n;
+         for (unsigned i = 0; i < n; i++) if (seen[i] == tgt) return;
+@@ -2630,9 +2748,13 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
+         fprintf(stderr, "%s\n", buf);
+     }
+ }
++extern "C" void ps3_indirect_call(ppu_context* ctx) { ps3_indirect_call_entry(ctx, (uint32_t)ctx->ctr); }
++extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target) { ps3_indirect_call_entry(ctx, target); }
++/* ---- KZ2 patch 6094 end ---- */
+ 
+-static void ps3_indirect_call_impl(ppu_context* ctx)
++static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+ {
++    ppu_thr_state* const T = &t_thr;   /* KZ2 patch 6094: one TLS lookup for the depth and the vcall stack */
+     g_active_ctx = ctx;
+     /* BCTRL_RING=1: keep the last N indirect-call targets per thread, and let
+      * anything that can name a moment dump them. A render path built out of
+@@ -2657,8 +2779,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         for(int i=0;i<fr;i++) p+=snprintf(ln+p,sizeof(ln)-p," %llX",(unsigned long long)((char*)bt[i]-mb));
+         fprintf(stderr,"%s\n",ln); } } }
+ #endif
+-    uint32_t addr = (uint32_t)ctx->ctr;
+-    if (g_icall_target_set) { addr = g_icall_target; g_icall_target_set = 0; }
++    /* addr: ctx->ctr for ps3_indirect_call, the explicit target for ps3_indirect_call_to (patch 6094) */
+     /* PS3_CALLTRACE=N: log the first N indirect calls (target + r3/r4) --
+      * generic visibility into vtable/callback dispatch (e.g. which job body a
+      * JobManager worker runs). */
+@@ -2884,6 +3005,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         }
+     }
+ 
++    /* ---- KZ2 patch 6094 begin: dispatch core (tools/runtime/test_ppu_icall_to.sh compiles this block) ---- */
+     ppu_fn fn = ppu_lookup(addr);
+     if (!fn) {
+         /* OPD-swap clobber fixup: a malformed memcpy (game func_0036FA74) writes
+@@ -2906,7 +3028,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         /* Recursion-depth guard: a malformed/cyclic jump table (or a tail-call
+          * chain that never converges) can dispatch recursively without bound
+          * and blow the host stack. Cap the depth, log once, then unwind. */
+-        int& s_depth = g_dispatch_depth;
++        int& s_depth = T->dispatch_depth;
+         if (s_depth > 4000) {
+             static int warned = 0;
+             if (PS3_LOG_FIRST(warned, 8))
+@@ -2923,16 +3045,17 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+          * to the dispatched toc before each link so the chain stays consistent. */
+         uint32_t _toc0 = (uint32_t)ctx->gpr[2];
+         static int _tf=-1; if(_tf<0)_tf=getenv("PPU_TOCFIX")?1:0;
+-        if (g_vcall_sp < 128) g_vcall_stk[g_vcall_sp] = addr;
+-        g_vcall_sp++;
++        if (T->vcall_sp < 128) T->vcall_stk[T->vcall_sp] = addr;
++        T->vcall_sp++;
+         fn(ctx);
+-        while (g_trampoline_fn) {
+-            void (*tf)(void*) = g_trampoline_fn;
+-            g_trampoline_fn = 0;
++        void (**const tr)(void*) = &g_trampoline_fn;   /* patch 6094: one TLS lookup for the drain loop */
++        while (*tr) {
++            void (*tf)(void*) = *tr;
++            *tr = 0;
+             if (_tf) ctx->gpr[2] = _toc0;
+             tf(ctx);
+         }
+-        if (g_vcall_sp > 0) g_vcall_sp--;
++        if (T->vcall_sp > 0) T->vcall_sp--;
+         /* PPU_RETWATCH=<hex>: catch the first vcall(s) whose RETURN value (r3)
+          * equals this, pinning the exact virtual method that produces the poison. */
+         { static int64_t rw=-2; if(rw==-2){const char*e=getenv("PPU_RETWATCH"); rw=e?(int64_t)strtoul(e,0,16):-1;}
+@@ -2950,6 +3073,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         s_depth--;
+         return;
+     }
++    /* ---- KZ2 patch 6094 end ---- */
+     /* Garbage virtual-call guard: a call target that resolves to no registered
+      * function AND lands in the data/string-pool range (0x10000000..0x30000000 is
+      * mapped data/SPURS/heap, never valid PPU code -- game .text is <0x10000000,
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+index 35052c6..4b487c9 100644
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -18,6 +18,11 @@
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
++/* KZ2 patch 6094 (from KZ3 patch 2236): the four-lane vmaddfp / vnmsubfp (below) when the lifted code is built with -mfma. */
++#if defined(__FMA__) && defined(__SSE4_1__) && (defined(__x86_64__) || defined(__i386__)) && !defined(VMX_NO_SIMD_FMA)
++#include <immintrin.h>
++#define VMX_SIMD_FMA 1
++#endif
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -275,6 +280,47 @@ VMX_FBIN(vmx_vsubfp, vmx_f(x) - vmx_f(y), 1)
+ VMX_FBIN(vmx_vmaxfp, vmx_maxf(vmx_f(x), vmx_f(y)), 0)
+ VMX_FBIN(vmx_vminfp, vmx_minf(vmx_f(x), vmx_f(y)), 0)
+ 
++/* ---- KZ2 patch 6094 begin: vmaddfp / vnmsubfp, four lanes at once under -mfma (tools/runtime/test_ppu_vmx_fma.sh) ---- */
++/* From KZ3 patch 2236. KZ2_PPU_ISA=ON (port/kz2/CMakeLists.txt) builds the lifted PPU sources with -mfma. The scalar
++ * helpers below then still did one fmaf per lane plus a byte-by-byte gather and scatter. The same instruction on all
++ * four lanes:
++ *   - load 16 bytes and swap each 32-bit word to host order (pshufb);
++ *   - VSCR[NJ]: an input lane whose exponent is 0 becomes its sign alone (vmx_flush);
++ *   - vmaddfp = a*c + b fused (_mm_fmadd_ps, = a correctly rounded fmaf(x, z, y));
++ *   - vnmsubfp = -(a*c - b): fmsub, then a sign flip, as the scalar -fmaf(x, z, -y). Not fnmadd: for an exact zero
++ *     (a*c == b) fnmadd gives +0 where the scalar path (and the instruction) gives -0;
++ *   - a NaN result becomes the default QNaN 0x7FC00000 (vmx_fix: these two never propagated NaN payloads);
++ *   - flush the result under NJ, swap back, store 16 bytes.
++ * Bit-identical to the scalar #else path WHEN fmaf is correctly rounded (glibc; hardware FMA). MinGW's software
++ * fmaf is not (it sums a split product with several roundings), so on the Windows build this path is a correctness
++ * fix against the PS3, not a no-op: the host test checks it against glibc, and the [ppu-isa] boot line checks it
++ * against an exact software reference (port/kz2/ppu_isa_ref.cpp), never against the pre-6094 exe. */
++#if defined(VMX_SIMD_FMA)
++VMX_INL __m128i vmx_bswap32x4(__m128i v) {
++    return _mm_shuffle_epi8(v, _mm_set_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3));
++}
++VMX_INL __m128i vmx_flush4(__m128i x, uint32_t vscr) {   /* vmx_flush on each lane */
++    if (!(vscr & VMX_NJ)) return x;
++    const __m128i den = _mm_cmpeq_epi32(_mm_and_si128(x, _mm_set1_epi32(0x7F800000)), _mm_setzero_si128());
++    return _mm_blendv_epi8(x, _mm_and_si128(x, _mm_set1_epi32((int)0x80000000u)), den);
++}
++VMX_INL __m128 vmx_ld4f(const void* p, uint32_t vscr) {
++    return _mm_castsi128_ps(vmx_flush4(vmx_bswap32x4(_mm_loadu_si128((const __m128i*)p)), vscr));
++}
++VMX_INL void vmx_st4f(void* p, __m128 r, uint32_t vscr) {
++    const __m128 fixed = _mm_blendv_ps(r, _mm_castsi128_ps(_mm_set1_epi32(0x7FC00000)), _mm_cmpunord_ps(r, r));   /* vmx_fix */
++    _mm_storeu_si128((__m128i*)p, vmx_bswap32x4(vmx_flush4(_mm_castps_si128(fixed), vscr)));
++}
++VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {
++    const __m128 a = vmx_ld4f(a_, vscr), b = vmx_ld4f(b_, vscr), c = vmx_ld4f(c_, vscr);
++    vmx_st4f(d_, _mm_fmadd_ps(a, c, b), vscr);
++}
++VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {
++    const __m128 a = vmx_ld4f(a_, vscr), b = vmx_ld4f(b_, vscr), c = vmx_ld4f(c_, vscr);
++    vmx_st4f(d_, _mm_xor_ps(_mm_fmsub_ps(a, c, b), _mm_set1_ps(-0.0f)), vscr);
++}
++#else
++/* ---- KZ2 patch 6094 end ---- */
+ VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+@@ -285,6 +331,7 @@ VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+         vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(-fmaf(x, z, -y))), vscr)); } VMX_OUT; }
++#endif   /* KZ2 patch 6094: VMX_SIMD_FMA */
+ 
+ #define VMX_FUN(name, expr, flush_in, nanmode) \
+ VMX_INL void name(VMX_D, VMX_B, uint32_t vscr) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16]; \
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index f832e6c..a23df9d 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -154,10 +154,20 @@ extern uint8_t* vm_base;
+ #define VM_RAW_ST(T, ea, val) do { uint8_t* _p = vm_base + (uint32_t)(ea); T _v = (val); \
+     if (!((uintptr_t)_p & (sizeof(T) - 1))) __atomic_store_n((T*)_p, _v, __ATOMIC_RELAXED); \
+     else memcpy(_p, &_v, sizeof(T)); } while (0)
+-static inline void vm_raw_ld16(void* dst, uint64_t ea) {   /* quadword-aligned */
++/* KZ2 patch 6094 (from KZ3 patch 2236): the inline accessors below are PPU_ACC_INL. KZ2_PPU_ACC_INLINE=ON
++ * (port/kz2/CMakeLists.txt, -DPPU_ACC_ALWAYS_INLINE=1) makes them always_inline; default off = plain static inline,
++ * the code before 6094 (GCC then keeps out-of-line .isra copies, one set per lifted TU). */
++#ifndef PPU_ACC_INL   /* here, inside the VM_RAW_LD .. vm_raw_st16 span tools/spu/test_putllc_ppu.sh copies */
++#if defined(PPU_ACC_ALWAYS_INLINE) && PPU_ACC_ALWAYS_INLINE
++#  define PPU_ACC_INL static inline __attribute__((always_inline))
++#else
++#  define PPU_ACC_INL static inline
++#endif
++#endif
++PPU_ACC_INL void vm_raw_ld16(void* dst, uint64_t ea) {   /* quadword-aligned */
+     uint64_t lo = VM_RAW_LD(uint64_t, ea), hi = VM_RAW_LD(uint64_t, ea + 8);
+     memcpy(dst, &lo, 8); memcpy((uint8_t*)dst + 8, &hi, 8); }
+-static inline void vm_raw_st16(uint64_t ea, const void* src) {
++PPU_ACC_INL void vm_raw_st16(uint64_t ea, const void* src) {
+     uint64_t lo, hi; memcpy(&lo, src, 8); memcpy(&hi, (const uint8_t*)src + 8, 8);
+     VM_RAW_ST(uint64_t, ea, lo); VM_RAW_ST(uint64_t, ea + 8, hi); }
+ extern int      vm_inline_ok;
+@@ -174,6 +184,8 @@ extern uint32_t ppu_hle_inject_base;
+ extern uint32_t             g_barrier_sync_watch;
+ extern uint32_t             g_null_sweep_hi;
+ extern const unsigned char* g_spu_coh_bits;   /* SPU-reserved lines, NULL until the first */
++extern unsigned long long   ppu_acc_slow_ld, ppu_acc_slow_st;   /* [ppu-acc] counters (patch 6094, ppu_loader.cpp) */
++extern int                  ppu_acc_count_on;   /* 1 only with KZ2_PPU_COST_LOG=1 (patch 6094, ppu_loader.cpp) */
+ #ifdef __cplusplus
+ }
+ #endif
+@@ -192,7 +204,7 @@ extern const unsigned char* g_spu_coh_bits;   /* SPU-reserved lines, NULL until
+  * they also turned away, the gcm ref-poll word, is only special to vm_read32,
+  * so only the 32-bit load still tests it. */
+ typedef struct ppu_mm { uint8_t* vb; int64_t ld_span, st_span; uint32_t poll; } ppu_mm;
+-static inline ppu_mm ppu_mm_take(void)
++PPU_ACC_INL ppu_mm ppu_mm_take(void)
+ {
+     const uint32_t hi = (ppu_vm_size != 0 && ppu_vm_size < 0xE0000000u) ? ppu_vm_size : 0xE0000000u;
+     const int64_t span = hi > 0x10000u ? (int64_t)(hi - 0x10000u) : 0;
+@@ -206,15 +218,15 @@ static inline ppu_mm ppu_mm_take(void)
+ /* [ea, ea + n) inside [0x10000, 0x10000 + span). Below 0x10000 the 32-bit
+  * subtraction wraps past any span. Signed, so span - n is computed once per
+  * function and a span of 0 still turns everything away. */
+-static inline int vm_mm_in(int64_t span, uint32_t ea, uint32_t n)
++PPU_ACC_INL int vm_mm_in(int64_t span, uint32_t ea, uint32_t n)
+ {
+     return (int64_t)(uint32_t)(ea - 0x10000u) <= span - (int64_t)n;
+ }
+-static inline int vm_mm_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
++PPU_ACC_INL int vm_mm_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
+ {
+     return vm_mm_in(m->ld_span, ea, n);
+ }
+-static inline int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
++PPU_ACC_INL int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
+ {
+     if (!__builtin_expect(vm_mm_in(m->st_span, ea, n), 1) ||
+         __builtin_expect((g_barrier_sync_watch | g_null_sweep_hi) != 0, 0))
+@@ -223,13 +235,43 @@ static inline int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
+     if (bits) { const uint32_t line = ea >> 7; if ((bits[line >> 3] >> (line & 7)) & 1u) return 0; }
+     return 1;
+ }
+-static inline uint8_t vm_read8_mm(const ppu_mm* m, uint64_t a)
++/* KZ2 patch 6094 (from KZ3 patch 2236; tools/runtime/test_ppu_acc_fast.sh): with KZ2_PPU_ACC_INLINE=ON
++ * (PPU_ACC_ALWAYS_INLINE) the accessors below are always inlined. GCC kept them out of line: kz2.exe held about 60
++ * .isra copies of each, one per lifted TU, and in TU 010 8,140 of 10,446 32-bit reads were calls (fps-why
++ * 2026-11-24 R3). What leaves the fast path then calls one of these cold, never-inlined stubs (keeps the inlined
++ * body small), which takes the runtime's out-of-line vm_read* / vm_write*. The stubs count it for [ppu-acc] only
++ * while ppu_acc_count_on is 1 (KZ2_PPU_COST_LOG=1; relaxed load + store, lossy under contention, no locked
++ * instruction); otherwise they only read that never-written flag, so no thread writes a shared line per access.
++ * With the option OFF the slow paths are the plain vm_read* / vm_write* calls, the code before 6094.
++ * Watched-path semantics unchanged. */
++#if defined(PPU_ACC_ALWAYS_INLINE) && PPU_ACC_ALWAYS_INLINE
++#define PPU_ACC_BUMP(c) do { if (__builtin_expect(ppu_acc_count_on, 0)) \
++    __atomic_store_n(&(c), __atomic_load_n(&(c), __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED); } while (0)
++static __attribute__((noinline, cold, unused)) uint8_t  ppu_ld8_slow (uint64_t a) { PPU_ACC_BUMP(ppu_acc_slow_ld); return vm_read8(a); }
++static __attribute__((noinline, cold, unused)) uint16_t ppu_ld16_slow(uint64_t a) { PPU_ACC_BUMP(ppu_acc_slow_ld); return vm_read16(a); }
++static __attribute__((noinline, cold, unused)) uint32_t ppu_ld32_slow(uint64_t a) { PPU_ACC_BUMP(ppu_acc_slow_ld); return vm_read32(a); }
++static __attribute__((noinline, cold, unused)) uint64_t ppu_ld64_slow(uint64_t a) { PPU_ACC_BUMP(ppu_acc_slow_ld); return vm_read64(a); }
++static __attribute__((noinline, cold, unused)) void ppu_st8_slow (uint64_t a, uint8_t  v) { PPU_ACC_BUMP(ppu_acc_slow_st); vm_write8(a, v); }
++static __attribute__((noinline, cold, unused)) void ppu_st16_slow(uint64_t a, uint16_t v) { PPU_ACC_BUMP(ppu_acc_slow_st); vm_write16(a, v); }
++static __attribute__((noinline, cold, unused)) void ppu_st32_slow(uint64_t a, uint32_t v) { PPU_ACC_BUMP(ppu_acc_slow_st); vm_write32(a, v); }
++static __attribute__((noinline, cold, unused)) void ppu_st64_slow(uint64_t a, uint64_t v) { PPU_ACC_BUMP(ppu_acc_slow_st); vm_write64(a, v); }
++#else
++#define ppu_ld8_slow(a)     vm_read8(a)
++#define ppu_ld16_slow(a)    vm_read16(a)
++#define ppu_ld32_slow(a)    vm_read32(a)
++#define ppu_ld64_slow(a)    vm_read64(a)
++#define ppu_st8_slow(a, v)  vm_write8(a, v)
++#define ppu_st16_slow(a, v) vm_write16(a, v)
++#define ppu_st32_slow(a, v) vm_write32(a, v)
++#define ppu_st64_slow(a, v) vm_write64(a, v)
++#endif
++PPU_ACC_INL uint8_t vm_read8_mm(const ppu_mm* m, uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_ok(m, ea, 1), 1)) return __atomic_load_n(m->vb + ea, __ATOMIC_RELAXED);
+-    return vm_read8(a);
++    return ppu_ld8_slow(a);
+ }
+-static inline uint16_t vm_read16_mm(const ppu_mm* m, uint64_t a)
++PPU_ACC_INL uint16_t vm_read16_mm(const ppu_mm* m, uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_ok(m, ea, 2), 1)) {   /* aligned: single-copy atomic, as on Cell */
+@@ -237,9 +279,9 @@ static inline uint16_t vm_read16_mm(const ppu_mm* m, uint64_t a)
+         if (!(ea & 1u)) v = __atomic_load_n((const uint16_t*)(m->vb + ea), __ATOMIC_RELAXED);
+         else memcpy(&v, m->vb + ea, 2);
+         return __builtin_bswap16(v); }
+-    return vm_read16(a);
++    return ppu_ld16_slow(a);
+ }
+-static inline uint32_t vm_read32_mm(const ppu_mm* m, uint64_t a)
++PPU_ACC_INL uint32_t vm_read32_mm(const ppu_mm* m, uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_ok(m, ea, 4), 1) && __builtin_expect(ea != m->poll, 1)) {   /* aligned: single-copy atomic, as on Cell */
+@@ -247,9 +289,9 @@ static inline uint32_t vm_read32_mm(const ppu_mm* m, uint64_t a)
+         if (!(ea & 3u)) v = __atomic_load_n((const uint32_t*)(m->vb + ea), __ATOMIC_RELAXED);
+         else memcpy(&v, m->vb + ea, 4);
+         return __builtin_bswap32(v); }
+-    return vm_read32(a);
++    return ppu_ld32_slow(a);
+ }
+-static inline uint64_t vm_read64_mm(const ppu_mm* m, uint64_t a)
++PPU_ACC_INL uint64_t vm_read64_mm(const ppu_mm* m, uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_ok(m, ea, 8), 1)) {   /* aligned: single-copy atomic, as on Cell */
+@@ -257,15 +299,15 @@ static inline uint64_t vm_read64_mm(const ppu_mm* m, uint64_t a)
+         if (!(ea & 7u)) v = __atomic_load_n((const uint64_t*)(m->vb + ea), __ATOMIC_RELAXED);
+         else memcpy(&v, m->vb + ea, 8);
+         return __builtin_bswap64(v); }
+-    return vm_read64(a);
++    return ppu_ld64_slow(a);
+ }
+-static inline void vm_write8_mm(const ppu_mm* m, uint64_t a, uint8_t v)
++PPU_ACC_INL void vm_write8_mm(const ppu_mm* m, uint64_t a, uint8_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_st_ok(m, ea, 1), 1)) { __atomic_store_n(m->vb + ea, v, __ATOMIC_RELAXED); return; }
+-    vm_write8(a, v);
++    ppu_st8_slow(a, v);
+ }
+-static inline void vm_write16_mm(const ppu_mm* m, uint64_t a, uint16_t v)
++PPU_ACC_INL void vm_write16_mm(const ppu_mm* m, uint64_t a, uint16_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_st_ok(m, ea, 2), 1)) {   /* aligned: single-copy atomic, as on Cell */
+@@ -273,9 +315,9 @@ static inline void vm_write16_mm(const ppu_mm* m, uint64_t a, uint16_t v)
+         if (!(ea & 1u)) __atomic_store_n((uint16_t*)(m->vb + ea), be, __ATOMIC_RELAXED);
+         else memcpy(m->vb + ea, &be, 2);
+         return; }
+-    vm_write16(a, v);
++    ppu_st16_slow(a, v);
+ }
+-static inline void vm_write32_mm(const ppu_mm* m, uint64_t a, uint32_t v)
++PPU_ACC_INL void vm_write32_mm(const ppu_mm* m, uint64_t a, uint32_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_st_ok(m, ea, 4), 1)) {
+@@ -283,9 +325,9 @@ static inline void vm_write32_mm(const ppu_mm* m, uint64_t a, uint32_t v)
+         if (!(ea & 3u)) __atomic_store_n((uint32_t*)(m->vb + ea), be, __ATOMIC_RELAXED);
+         else memcpy(m->vb + ea, &be, 4);
+         return; }
+-    vm_write32(a, v);
++    ppu_st32_slow(a, v);
+ }
+-static inline void vm_write64_mm(const ppu_mm* m, uint64_t a, uint64_t v)
++PPU_ACC_INL void vm_write64_mm(const ppu_mm* m, uint64_t a, uint64_t v)
+ {
+     const uint32_t ea = (uint32_t)a;
+     if (__builtin_expect(vm_mm_st_ok(m, ea, 8), 1)) {
+@@ -293,7 +335,7 @@ static inline void vm_write64_mm(const ppu_mm* m, uint64_t a, uint64_t v)
+         if (!(ea & 7u)) __atomic_store_n((uint64_t*)(m->vb + ea), be, __ATOMIC_RELAXED);
+         else memcpy(m->vb + ea, &be, 8);
+         return; }
+-    vm_write64(a, v);
++    ppu_st64_slow(a, v);
+ }
+ /* Outside a lifted function: a fresh copy per access. */
+ static inline uint8_t  vm_read8_inl (uint64_t a) { const ppu_mm m = ppu_mm_take(); return vm_read8_mm(&m, a); }
+@@ -592,6 +634,38 @@ extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx);
+  * PPU_THREAD_LOCAL comes from ppu_recomp.h, included above. */
+ extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*);
+ 
++/* KZ2 patch 6094 (from KZ3 patch 1115): on MinGW (emulated TLS: every g_trampoline_fn access is a
++ * call to __emutls_get_address, after every lifted call) the generated code can reach this thread's g_trampoline_fn
++ * through a pointer cached in one Windows TLS slot of the TEB (gs:[0x1480 + 8 * index]): two loads, no call. The
++ * storage stays the TLS variable itself, so runtime code that names it directly sees the same value (same
++ * per-thread semantics). A thread whose slot is still empty, or a process without the fast path (KZ2_TRAMP_TEB=0,
++ * no slot below 64, the self-check failed), takes ppu_tramp_ref_slow(), which returns &g_trampoline_fn and fills
++ * the slot. Default off (the old code); -DPPU_TRAMP_TEB=1 (KZ2_PPU_TRAMP_TEB=ON) builds this path on MinGW x86-64. */
++#ifndef PPU_TRAMP_TEB
++#  define PPU_TRAMP_TEB 0
++#endif
++#if PPU_TRAMP_TEB && !(defined(_WIN32) && defined(__GNUC__) && !defined(_MSC_VER) && defined(__x86_64__)) && !defined(PPU_TRAMP_GS_LOAD)
++#  undef PPU_TRAMP_TEB
++#  define PPU_TRAMP_TEB 0   /* the slot exists only in MinGW x86-64 runtimes (ppu_loader.cpp) */
++#endif
++#if PPU_TRAMP_TEB
++#ifndef PPU_TRAMP_GS_LOAD   /* the TEB read (a host test supplies an emulated TEB) */
++#  define PPU_TRAMP_GS_LOAD(o, p) __asm__("movq %%gs:(%1), %0" : "=r"(p) : "r"(o))
++#endif
++extern "C" unsigned g_ppu_tramp_slot;   /* TEB byte offset of the slot, 0 = no fast path */
++extern "C" void (**ppu_tramp_ref_slow(void))(void*);
++static inline __attribute__((always_inline)) void (**ppu_tramp_ref(void))(void*) {
++    const unsigned long long o = g_ppu_tramp_slot;
++    if (__builtin_expect(o != 0, 1)) {
++        void* p;
++        PPU_TRAMP_GS_LOAD(o, p);
++        if (__builtin_expect(p != 0, 1)) return (void (**)(void*))p;
++    }
++    return ppu_tramp_ref_slow();
++}
++#define g_trampoline_fn (*ppu_tramp_ref())
++#endif
++
+ /* Drain pending trampolines after any call that might set g_trampoline_fn.
+  * Converts cross-fragment fallthrough chains into iterative loops. */
+ #define DRAIN_TRAMPOLINE(ctx) do { \\

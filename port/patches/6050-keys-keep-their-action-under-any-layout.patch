@@ -126,7 +126,7 @@ diff -ruN a/libs/input/pad_kb_roles.h b/libs/input/pad_kb_roles.h
 +
 +/* Per key, the button chosen when it went down is kept until it comes up, so a key held while the table lapses (the
 + * game skips its on-foot look update for a moment while zooming in) does not turn into its plain button half-way
-+ * (the right mouse button held to zoom became R3 = close combat under Modern: kz2-r65-keys-modern). roles = NULL: the
++ * (the right mouse button held to zoom became R3 = close combat under Modern: a test run). roles = NULL: the
 + * plain buttons for new presses. */
 +typedef struct { unsigned short held[16]; unsigned prev; } PadKbRoleLatch;
 +static inline unsigned pad_kb_roles_latch(PadKbRoleLatch* l, const unsigned short* roles, unsigned buttons)

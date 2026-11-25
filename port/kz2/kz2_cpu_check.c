@@ -8,8 +8,8 @@
  * built WITHOUT those flags (it is not one of the SPU sources) and runs as a priority-101 constructor, ahead of every
  * default-priority constructor and of main(). FMA3 + AVX: Intel Haswell (2013) / AMD Piledriver (2012) or newer.
  *
- * The check is compiled in only when CMake defines KZ2_SPU_NEEDS_FMA (KZ2_SPU_FMA=ON); a build with -DKZ2_SPU_FMA=OFF
- * demands nothing. KZ2_CPU_CHECK_FAIL=1 forces the failure path (host test tools/runtime/test_cpu_check.sh). */
+ * The check is compiled in only when CMake defines KZ2_SPU_NEEDS_FMA (KZ2_SPU_FMA=ON) or KZ2_PPU_NEEDS_FMA
+ * (KZ2_PPU_ISA=ON); a build with both off demands nothing. KZ2_CPU_CHECK_FAIL=1 forces the failure path (host test tools/runtime/test_cpu_check.sh). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +65,7 @@ unsigned kz2_cpu_check_run(void)
              "This build of Killzone 2 needs a CPU with AVX and FMA3 (Intel Haswell / AMD Piledriver or newer) and an "
              "operating system that enables AVX.\n"
              "Missing here:%s%s%s%s\n"
-             "A build made with -DKZ2_SPU_FMA=OFF runs without them.",
+             "A build made with -DKZ2_SPU_FMA=OFF -DKZ2_PPU_ISA=OFF runs without them.",
              (miss & KZ2_CPU_MISSING_AVX) ? " AVX" : "", (miss & KZ2_CPU_MISSING_FMA) ? " FMA3" : "",
              (miss & KZ2_CPU_MISSING_OS_AVX) ? " OS-AVX-state" : "",
              (miss & KZ2_CPU_MISSING_FORCED) ? " (forced by KZ2_CPU_CHECK_FAIL)" : "");
@@ -77,7 +77,9 @@ unsigned kz2_cpu_check_run(void)
     return miss;
 }
 
-#if defined(KZ2_SPU_NEEDS_FMA)
+/* Runtime an earlier change (patch 6094): KZ2_PPU_ISA=ON builds the lifted PPU code with -mfma too and defines
+ * KZ2_PPU_NEEDS_FMA here; either option alone needs the check. */
+#if defined(KZ2_SPU_NEEDS_FMA) || defined(KZ2_PPU_NEEDS_FMA)
 __attribute__((constructor(101))) static void kz2_cpu_check(void)
 {
     if (kz2_cpu_check_run()) exit(1);

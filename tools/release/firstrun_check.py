@@ -652,7 +652,7 @@ def check_update(r, upd, disc_id=None):
     else:
         r.ok("U2", f"update EBOOT.BIN present ({os.path.getsize(eb):,} bytes, {'SELF' if head(eb, 4) == SELF_MAGIC else 'ELF'})")
     # U3 FAILs (issue #16; WARN before): the 1.29 EBOOT run on the disc's data alone stops at the
-    # main menu (mainmenu.jsp served without the 1.29 patch, NULL call from 0x003F2984, sys_process_exit(1); kz2-r33-noupd).
+    # main menu (mainmenu.jsp served without the 1.29 patch, NULL call from 0x003F2984, sys_process_exit(1); a test run).
     data = os.path.join(upd, "USRDIR", UPDATE_DATA)
     if not os.path.isfile(data):
         r.fail("U3", f"1.29 update: no USRDIR/{UPDATE_DATA}; without the update's data the game stops at the main menu")

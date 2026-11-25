@@ -1,5 +1,5 @@
-KZ2 patch 6060 (ENHANCEMENT): keyboard tilt keys for the valves and demolition charges (Discord
-tester on 0.1.7: "breach charge still won't work, requires controller tilt").
+KZ2 patch 6060 (ENHANCEMENT): keyboard tilt keys for the valves and demolition charges (player report on 0.1.7:
+the breach charge needed controller tilt).
 
 Without a motion sensor the valves and charges take the tilt from the right stick X (patch 6049 + the title port's
 motion hook) while the game's grab (GrabLeftHand/GrabRightHand, L1 + R1, which no pad layout moves) is held. With a

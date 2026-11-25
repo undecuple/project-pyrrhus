@@ -3,7 +3,7 @@ in the KZ2 page's order. The KZ2 page (port/kz2/kz2_menu_text.h KB_INPUTS, from 
 in keybinds.ini order (pad_kb_inputs: up, down, left, right, cross, ... select, then ls_up .. rs_right), while 2038's
 rows were KZ3's page order (ls_up first). Every "key R S", "dup R S", "capture R S", "clear R S" and "sel R S" from
 the KZ2 page therefore named another input: row 0 "D-PAD UP" showed ls_up's W, and a capture there rebound Move
-forward (kz2-r47-m6: 'key 0 0' -> 'W', test key J -> row 0 = ls_up). The rows are now pad_kb_inputs' order; the
+forward (a test run: 'key 0 0' -> 'W', test key J -> row 0 = ls_up). The rows are now pad_kb_inputs' order; the
 labels (capture hint and conflict text) follow their rows. Host test tools/runtime/test_kb_rows.sh checks
 pad_kb_rows = pad_kb_inputs = KB_INPUTS.
 
@@ -17,7 +17,7 @@ diff -ruN a/libs/input/pad_keybinds.h b/libs/input/pad_keybinds.h
 +/* KZ2 patch 2122: the rows in the KZ2 page's order, which is pad_kb_inputs' (the keybinds.ini order: 16 buttons, then
 + * the 8 stick directions; port/kz2/kz2_menu_text.h KB_INPUTS, tools/re/kbpage.py). KZ3's order (sticks first, the
 + * KZ3 GUM's) made the KZ2 page show and capture the wrong input: its row 0 "D-PAD UP" answered "key 0 0" with
-+ * ls_up's W, and a capture there rebound Move forward (run kz2-r47-m6). */
++ * ls_up's W, and a capture there rebound Move forward (a test run). */
  static const PadKbRow pad_kb_rows[] = {
 +    { "up", "Up", "Up" },                 { "down", "Down", "Down" },
 +    { "left", "Left", "Left" },           { "right", "Right", "Right" },

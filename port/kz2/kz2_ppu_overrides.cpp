@@ -2083,7 +2083,7 @@ static void kz2_mouse_pre(ppu_context* ctx)
         static unsigned s_fn; static double s_fline = -1.0;
         if (in && s_fn++ % 5 == 0) { const uint32_t g = vm_read32(0x00F3B288u); if (g) kz2_aim_gather_detail(E, 0.0f, g, 0); }
         if (in && kz2_aim_tgt.have) {
-            const float hx = kz2_gp_f32(E + 0x320), hy = kz2_gp_f32(E + 0x324);   /* view forward x, y (+0x31C reads 0; run kz2-r74-aim-on2) */
+            const float hx = kz2_gp_f32(E + 0x320), hy = kz2_gp_f32(E + 0x324);   /* view forward x, y (+0x31C reads 0; a test run) */
             const float want = atan2f(kz2_aim_tgt.y - kz2_gp_f32(E + 0xB4), kz2_aim_tgt.x - kz2_gp_f32(E + 0xB0));
             float err = want - atan2f(hy, hx);
             while (err > 3.14159265f) err -= 6.2831853f;
@@ -2418,10 +2418,10 @@ void func_0066F3C0(ppu_context* ctx) { kz2_fov_cam(ctx, func_0066F3C0__lifted); 
  * Field of view setting (ENHANCEMENT; display.ini fov / KZ2_FOV / the Display page's FIELD OF VIEW row,
  * kz2_port_settings.cpp): the vertical FOV of the first-person view. The world view is built by the Camera's frustum
  * method 0x66F530 (lr 0x66F638; Camera r31: NearPlane +0x6C, FarPlane +0x70, FieldOfView +0x74; RTTI 0xF3AC1C, vtable
- * 0xFBA480). The same Camera object draws the level's in-engine scenes: runs kz2-r67-fovown/-fovown2 (Corinth Sands)
+ * 0xFBA480). The same Camera object draws the level's in-engine scenes: a test run (Corinth Sands)
  * show one Camera for the dropship-crash scene and for play, and only its near plane tells them apart:
  *   first-person play   45 deg, near 0.25 (CameraEntityResource FirstPersonNearPlane), far 4096; the sight zoom
- *                       narrows the FOV with the near plane kept (an earlier change run kz2-r65-keys-*)
+ *                       narrows the FOV with the near plane kept (a test run)
  *   in-engine scene     near 0.01, far 4096, FOV animated (40.7 -> 30.1 deg over the crash scene)
  *   front end / loading near 1.0 far 2000 (40 deg; menus, CamOrbit 0xFBA534) and near 0.1 far 512 (50.6 deg)
  * The weapon view model has its own frustum (lr 0x27661C, 33.75 deg, near 0.01) and is never touched. So the rule is

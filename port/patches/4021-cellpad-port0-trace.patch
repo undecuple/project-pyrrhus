@@ -1,6 +1,6 @@
 KZ2 patch 4021 (diagnostic): KZ2_PAD_TRACE=1 logs each change of what cellPadGetData hands the game
 on port 0 (digital words, left stick Y, the d-pad pressure words, the reading thread, the empty reads since the last
-line). Off by default, at most 4000 lines. For the d-pad after a Keyboard page capture (run kz2-r47-m6).
+line). Off by default, at most 4000 lines. For the d-pad after a Keyboard page capture (a test run).
 
 diff -ruN a/libs/input/cellPad.c b/libs/input/cellPad.c
 --- a/libs/input/cellPad.c	2026-10-27 17:33:36.144783463 -0500

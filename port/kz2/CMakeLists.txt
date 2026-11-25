@@ -121,6 +121,21 @@ else()
                         "-DKZ2_ALLOW_NO_FFMPEG=ON for a developer build without movies.")
 endif()
 # END ffmpeg-headers
+# KZ2_FAST_FLAGS (fps-why 2026-11-24 R4; default OFF = the toolchain's flags, unchanged). The Nix
+# cc-wrapper puts its hardening flags ahead of ours on every compile line (flake.nix sets no hardeningDisable):
+# -fzero-call-used-regs=used-gpr (an xor-zeroing epilogue in every function), -fstack-clash-protection (page probes
+# on every large frame) and -fno-omit-frame-pointer. ON appends -fzero-call-used-regs=skip
+# -fno-stack-clash-protection -fomit-frame-pointer to every TU of this directory and of the toolkit below (the RSX
+# walker in libs/video, the SPU and PPU lifts, the runtime); the last flag on the line wins. Kept:
+# -fno-strict-overflow (dropping it changes what signed overflow compiles to; the runtime is not audited for that).
+# A pure code-generation change, no semantics. Expected (ASSUMPTION, fps-why): 0.3-1.4 ms per heavy frame on the
+# walker, judged on a paired A/B of walker us per draw. The flake-level equivalent (hardeningDisable =
+# [ "zerocallusedregs" "stackclashprotection" ]) belongs to the maintainer's flake.nix.
+option(KZ2_FAST_FLAGS "drop the Nix hardening flags that cost time (zero-call-used-regs, stack-clash probes, frame pointer)" OFF)
+if(KZ2_FAST_FLAGS AND NOT MSVC)
+    add_compile_options(-fzero-call-used-regs=skip -fno-stack-clash-protection -fomit-frame-pointer)
+    message(STATUS "KZ2_FAST_FLAGS=ON: -fzero-call-used-regs=skip -fno-stack-clash-protection -fomit-frame-pointer")
+endif()
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
 
@@ -197,11 +212,14 @@ set(PS3RECOMP_SCAFFOLD
 # fingerprint, so the generated table is keyed to the images THIS build ships:
 # a table generated from another release registers signatures that can never
 # match, which is worse than shipping none. Both the table and the job-module
-# registry self-register from constructors and are therefore optional -- a tree
-# that has not lifted its SPU images yet configures and links without them.
+# registry self-register from constructors; a tree that has not lifted its SPU
+# images yet configures only with PORT_ENABLE_SPU=OFF or KZ2_ALLOW_NO_SPU=ON.
 set(SPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spu" CACHE PATH
     "Directory holding the lifted SPU images (<SPU_DIR>/<image>/spu_recomp.c)")
 option(PORT_ENABLE_SPU "Compile and register the title's lifted SPU images" ON)
+# PORT_ENABLE_SPU=ON with no lifted image in SPU_DIR stops the configure (the exe would run none of the game's SPU
+# jobs); KZ2_ALLOW_NO_SPU=ON says that is meant (developer builds only), like KZ2_ALLOW_NO_FFMPEG.
+option(KZ2_ALLOW_NO_SPU "Build with PORT_ENABLE_SPU=ON but no lifted SPU images: developer builds only" OFF)
 
 set(SPU_SOURCES "")
 if(PORT_ENABLE_SPU)
@@ -230,8 +248,14 @@ if(PORT_ENABLE_SPU)
                 message(STATUS "  (no ${gen} -- not registered)")
             endif()
         endforeach()
+    elseif(KZ2_ALLOW_NO_SPU)
+        message(WARNING "Lifted SPU: none found in ${SPU_DIR} (KZ2_ALLOW_NO_SPU=ON): this exe runs none of the "
+                        "game's SPU jobs and freezes in the menu")
     else()
-        message(STATUS "Lifted SPU:      none found in ${SPU_DIR}")
+        # Build-1 (audit 2026-11-25): an exe without the lift froze in the menu while every guard passed.
+        message(FATAL_ERROR "No lifted SPU images in SPU_DIR=${SPU_DIR} (no <image>/spu_recomp.c): point "
+                            "-DSPU_DIR at the lift (tools/spu/lift_spu.sh output, <work>/spu/lift), set "
+                            "-DPORT_ENABLE_SPU=OFF, or -DKZ2_ALLOW_NO_SPU=ON for a developer build without them.")
     endif()
 endif()
 
@@ -272,9 +296,11 @@ endif()
 # changes the compile command of every lifted PPU TU, and those are large enough
 # that the needless rebuild is measured in tens of minutes.
 #   SPU_USE_DISPATCH_MT -- route SPU_IB_DISPATCH through the musttail path.
-#   -O2                 -- the target-wide -O1 exists for the huge PPU TUs; the
-#                          SPU sources are small and decode-hot, so they get
-#                          full optimization. The last -O on the line wins.
+#   -O2                 -- explicit, so the SPU sources keep full optimization
+#                          whatever the build type says. (The lifted PPU TUs get
+#                          no -O of their own: they build at the build type's
+#                          level, -O2 -g for tools/build-kz2.sh's RelWithDebInfo,
+#                          not -O1; checked in build.ninja, an earlier change.)
 if(SPU_SOURCES)
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
@@ -429,12 +455,73 @@ endif()
 #     default; a PPC fmadd is spelt as one where the lifter means one.
 #   - /bigobj on MSVC. A single lifted file routinely passes the 65,536-section
 #     limit of the default object format.
+#
+# KZ2 patch 6094 (from KZ3 patch 2236; an earlier change, fps-why 2026-11-24 R1, R2, R3, R6). Four opt-in options for the
+# lifted PPU sources, all default OFF = the flags above, unchanged. Each is its own A/B, judged on ppu-main's busy ms
+# per flip ([wacct] / a resolved profile), not fps.
+#   KZ2_PPU_ISA          -mfma -msse4.1 (keeps -ffp-contract=off: only the lifter's explicit fma()/fmaf() fuse).
+#                        Scalar fma/fmaf become one vfmadd; patch 6094's four-lane vmaddfp/vnmsubfp (ppu_vmx.h) turns
+#                        on. A CORRECTNESS fix against the PS3, not only speed: MinGW's software fmaf/fma are not
+#                        correctly rounded (kz2.exe 0x149081ee0 / 0x149081f90 sum a split product with several
+#                        roundings; KZ3 measured ~15 % of random inputs wrong), the PS3's vmaddfp and fmadd round once.
+#                        So the -mfma build is checked against an exact reference (glibc in the host test, the exact
+#                        software fmaf of ppu_isa_ref.cpp at boot), never against the pre-6094 exe. -mfma implies AVX
+#                        and GCC vectorises with ymm at -O2; GCC bug 54412 (no 32-byte stack realignment on Win64) is
+#                        why GNU also gets -Wa,-muse-unaligned-vector-move. Needs AVX + FMA3, the same CPUs as
+#                        KZ2_SPU_FMA; kz2_cpu_check.c refuses the others (KZ2_PPU_NEEDS_FMA).
+#   KZ2_PPU_ACC_INLINE   -DPPU_ACC_ALWAYS_INLINE=1: the lifter's guest accessors (vm_read*_mm, vm_write*_mm,
+#                        ppu_mm_take, vm_raw_ld16/st16) always_inline instead of static inline (GCC kept about 60 .isra
+#                        copies of each, one per TU: 8,140 of TU 010's 10,446 32-bit reads were calls; R3). Their
+#                        slow paths are cold noinline stubs either way. Costs compile time and code size per TU.
+#   KZ2_PPU_CMODEL_SMALL -mcmodel=small on MinGW: the medium model reaches every extern through a .refptr slot, and
+#                        the inline store gate read three per store (vm_write32_mm.isra 0x1446f90e0). Also
+#                        -DPPU_ST_GATE_WORD=1 (patch 6096): the store gate reads g_barrier_sync_watch and
+#                        g_null_sweep_hi as one 64-bit word. kz2.exe is one image < 2 GiB.
+#   KZ2_PPU_TRAMP_TEB    -DPPU_TRAMP_TEB=1: DRAIN_TRAMPOLINE after every lifted call reads g_trampoline_fn through
+#                        the TEB slot of patch 6094 (KZ3 1115) instead of __emutls_get_address (runtime switch
+#                        KZ2_TRAMP_TEB=0 turns the slot off again; self-check at first use).
+# The [ppu-isa] boot line (ppu_isa_probe.cpp, built with these flags, against ppu_isa_ref.cpp built without FMA and
+# with an exact fmaf) says which were built in and whether the lifted code's fmaf/vmaddfp/vnmsubfp give the exact
+# bits on this machine (fma=64/64 is expected only with KZ2_PPU_ISA=ON: without it the count is MinGW's error).
+option(KZ2_PPU_ISA "lifted PPU sources with -mfma (needs AVX + FMA3)" OFF)
+option(KZ2_PPU_ACC_INLINE "lifted PPU sources with always_inline guest accessors (-DPPU_ACC_ALWAYS_INLINE=1)" OFF)
+option(KZ2_PPU_CMODEL_SMALL "lifted PPU sources with -mcmodel=small on MinGW and the one-word store gate" OFF)
+option(KZ2_PPU_TRAMP_TEB "lifted PPU sources with -DPPU_TRAMP_TEB=1 (the TEB slot for g_trampoline_fn)" OFF)
+set(KZ2_PPU_PROBE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/ppu_isa_probe.cpp")
+target_sources(${PROJECT_NAME} PRIVATE "${KZ2_PPU_PROBE_SRC}" ppu_isa_ref.cpp)
 if(MSVC)
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "/w;/bigobj")
 else()
-    set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
-        COMPILE_OPTIONS "-w;-ffp-contract=off")
+    set(KZ2_PPU_LIFTED_OPTS -w -ffp-contract=off)
+    set(KZ2_PPU_PROBE_DEFS "")
+    if(KZ2_PPU_ISA)
+        list(APPEND KZ2_PPU_LIFTED_OPTS -msse4.1 -mfma)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            list(APPEND KZ2_PPU_LIFTED_OPTS -Wa,-muse-unaligned-vector-move)
+        endif()
+        set_property(SOURCE kz2_cpu_check.c APPEND PROPERTY COMPILE_DEFINITIONS KZ2_PPU_NEEDS_FMA)
+    endif()
+    if(KZ2_PPU_ACC_INLINE)
+        list(APPEND KZ2_PPU_LIFTED_OPTS -DPPU_ACC_ALWAYS_INLINE=1)
+    endif()
+    if(KZ2_PPU_CMODEL_SMALL AND MINGW)
+        list(APPEND KZ2_PPU_LIFTED_OPTS -mcmodel=small -DPPU_ST_GATE_WORD=1)
+        list(APPEND KZ2_PPU_PROBE_DEFS KZ2_PPU_PROBE_CMODEL_SMALL)
+    endif()
+    if(KZ2_PPU_TRAMP_TEB)
+        list(APPEND KZ2_PPU_LIFTED_OPTS -DPPU_TRAMP_TEB=1)
+        list(APPEND KZ2_PPU_PROBE_DEFS KZ2_PPU_PROBE_TRAMP_TEB)
+    endif()
+    set_source_files_properties(${RECOMP_SOURCES} "${KZ2_PPU_PROBE_SRC}" PROPERTIES
+        COMPILE_OPTIONS "${KZ2_PPU_LIFTED_OPTS}")
+    if(KZ2_PPU_PROBE_DEFS)
+        set_property(SOURCE "${KZ2_PPU_PROBE_SRC}" APPEND PROPERTY COMPILE_DEFINITIONS ${KZ2_PPU_PROBE_DEFS})
+    endif()
+    # The reference half of the boot self-test: never FMA, whatever the lifted flags are.
+    set_source_files_properties(ppu_isa_ref.cpp PROPERTIES COMPILE_OPTIONS "-mno-fma;-mno-avx;-ffp-contract=off")
+    string(REPLACE ";" " " _kz2_ppu_opts_str "${KZ2_PPU_LIFTED_OPTS}")
+    message(STATUS "KZ2 lifted PPU flags: ${_kz2_ppu_opts_str} (KZ2_PPU_ISA=${KZ2_PPU_ISA} KZ2_PPU_ACC_INLINE=${KZ2_PPU_ACC_INLINE} KZ2_PPU_CMODEL_SMALL=${KZ2_PPU_CMODEL_SMALL} KZ2_PPU_TRAMP_TEB=${KZ2_PPU_TRAMP_TEB})")
 endif()
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,77 @@
+KZ2 patch 6096 (fps-why 2026-11-24 R6 second half): the store gate's two words as one. The lifted
+code's inline store gate (vm_mm_st_ok) read g_barrier_sync_watch and g_null_sweep_hi on every guest store (through two
+.refptr slots on MinGW's medium model: vm_write32_mm.isra 0x1446f90e0 loaded three .refptr globals per store). They
+are now the low and high halves of one aligned 8-byte object, g_ppu_st_gate (ppu_loader.cpp); the two names are
+assembler aliases of the halves, so every writer (spu_channels.c, the null-page sweep) and reader keeps its 32-bit
+word. A lifted TU built with -DPPU_ST_GATE_WORD=1 (KZ2_PPU_CMODEL_SMALL=ON, port/kz2/CMakeLists.txt) tests both with
+one 64-bit load; without it the lifted code is unchanged. Bit-exact: the word is non-zero exactly when either half is.
+Host test: tools/runtime/test_ppu_acc_fast.sh (the word build and the alias layout).
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 6db7c32..fc75db0 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1417,7 +1417,25 @@ static inline int vm_oob(uint32_t a, uint32_t n)
+  * out to scribble higher. */
+ extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx;
+ extern "C" void ppu_dump_guest_stack(ppu_context*, const char*);
+-extern "C" uint32_t g_null_sweep_hi = 0;   /* 0 = not sweeping */
++/* ---- KZ2 patch 6096 begin: one store-gate word (tools/runtime/test_ppu_acc_fast.sh compiles this block) ---- */
++/* KZ2 patch 6096 (fps-why 2026-11-24 R6): the lifted code's inline store gate (vm_mm_st_ok,
++ * ppu_lifter.py) sends every store down the out-of-line path while the barrier watch (g_barrier_sync_watch, set by
++ * spu_channels.c) or a null-page sweep (g_null_sweep_hi, below) is armed; it read both words on every store. They are
++ * now the two halves of one aligned 8-byte object, g_ppu_st_gate, so a lifted TU built with -DPPU_ST_GATE_WORD=1
++ * (KZ2_PPU_CMODEL_SMALL=ON) tests both with one load. The two names stay what they were (32-bit words, same
++ * writers, same readers): they are assembler aliases of the halves (+0 and +4; x86 is little-endian, and the word
++ * is non-zero exactly when either half is). Without the define the lifted code reads the two names as before. */
++extern "C" { alignas(8) uint64_t g_ppu_st_gate = 0; }
++extern "C" uint32_t g_barrier_sync_watch;   /* g_ppu_st_gate + 0 */
++extern "C" uint32_t g_null_sweep_hi;        /* g_ppu_st_gate + 4; 0 = not sweeping */
++#define PPU_ST_GATE_STR2(x) #x
++#define PPU_ST_GATE_STR(x) PPU_ST_GATE_STR2(x)
++#define PPU_ST_GATE_SYM(n) PPU_ST_GATE_STR(__USER_LABEL_PREFIX__) #n
++__asm__(".globl " PPU_ST_GATE_SYM(g_barrier_sync_watch) "\n\t"
++        ".set " PPU_ST_GATE_SYM(g_barrier_sync_watch) ", " PPU_ST_GATE_SYM(g_ppu_st_gate) "\n\t"
++        ".globl " PPU_ST_GATE_SYM(g_null_sweep_hi) "\n\t"
++        ".set " PPU_ST_GATE_SYM(g_null_sweep_hi) ", " PPU_ST_GATE_SYM(g_ppu_st_gate) " + 4\n");
++/* ---- KZ2 patch 6096 end ---- */
+ static uint32_t g_null_sweep_last = 0;
+ static unsigned g_null_sweep_tid = 0;
+ static int vm_null_store_report(uint32_t a, uint32_t v, int width, void* ra)
+@@ -1918,7 +1936,7 @@ uint64_t vm_read64(uint64_t a) { if (vm_oob((uint32_t)a,8)) return 0; vm_hotmap(
+  * The barrier probe in the lifted code sets g_barrier_sync_watch = sync base;
+  * any PPU store into [base+0x40, base+0xC0) is then logged with its guest
+  * function, catching whoever bumps the per-SPU lane counters. */
+-extern "C" uint32_t g_barrier_sync_watch = 0;
++/* g_barrier_sync_watch: defined with g_null_sweep_hi as the low half of g_ppu_st_gate (patch 6096, above). */
+ 
+ /* Window for the INLINE write-watch in ppu_memory.h (libs/ stores). Same PPU_WWATCH
+  * setting as below; kept as a pair so the inline check is two compares against
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index a23df9d..245a480 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -183,6 +183,7 @@ extern uint32_t ppu_hle_inject_base;
+  * lost-reservation event. */
+ extern uint32_t             g_barrier_sync_watch;
+ extern uint32_t             g_null_sweep_hi;
++extern uint64_t             g_ppu_st_gate;   /* both of the above as one word (patch 6096, ppu_loader.cpp) */
+ extern const unsigned char* g_spu_coh_bits;   /* SPU-reserved lines, NULL until the first */
+ extern unsigned long long   ppu_acc_slow_ld, ppu_acc_slow_st;   /* [ppu-acc] counters (patch 6094, ppu_loader.cpp) */
+ extern int                  ppu_acc_count_on;   /* 1 only with KZ2_PPU_COST_LOG=1 (patch 6094, ppu_loader.cpp) */
+@@ -228,9 +229,15 @@ PPU_ACC_INL int vm_mm_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
+ }
+ PPU_ACC_INL int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
+ {
++#if defined(PPU_ST_GATE_WORD) && PPU_ST_GATE_WORD   /* KZ2 patch 6096 (KZ2_PPU_CMODEL_SMALL): one load for both */
++    if (!__builtin_expect(vm_mm_in(m->st_span, ea, n), 1) ||
++        __builtin_expect(g_ppu_st_gate != 0, 0))
++        return 0;
++#else
+     if (!__builtin_expect(vm_mm_in(m->st_span, ea, n), 1) ||
+         __builtin_expect((g_barrier_sync_watch | g_null_sweep_hi) != 0, 0))
+         return 0;
++#endif
+     const unsigned char* bits = g_spu_coh_bits;
+     if (bits) { const uint32_t line = ea >> 7; if ((bits[line >> 3] >> (line & 7)) & 1u) return 0; }
+     return 1;

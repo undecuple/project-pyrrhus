@@ -10,12 +10,12 @@ LUT in main memory. The texture-to-surface lookup skips the bound target and tak
 address; only when there is none does it fall back to the target's feedback copy. While paused, the game also renders
 into 0x1E30000 as a 320x180 surface (bloom chain) and a 1280x720 one (the final composite), so the grade found one of
 those, sampled last frame's picture, and graded it again each frame. The picture converges to the LUT's brightest near entry
-(248, 255, 233), the vignette comes after it. Seen in kz2-r41-pause3 (draw dump frame 4459): the grade's input at
+(248, 255, 233), the vignette comes after it. Seen in a test run (draw dump frame 4459): the grade's input at
 0x1E30000 2560x720 has mean RGB (29, 38, 46) before the draw, the composite input after it is flat (248, 255, 233).
 
 Fix: a texture whose address and size are the bound target's is a self-read: it takes the feedback copy whatever
 else shares the address (the size rule the lookup already applies, now including the target). Other aliases keep
-the old rule. "[self-read]" logs the first redirections (and a count every 65536). In kz2-r41-pause4 the first one
+the old rule. "[self-read]" logs the first redirections (and a count every 65536). In a test run the first one
 is at frame 4429 (flip 4430 at 174.6 s, Start pressed at pad time 175 s), none before the pause: the alias exists
 only while paused. Written for this port.
 Host test: none (the rule sits in the walker's bind loop; verified in Proton, see the runtime notes).

@@ -1,0 +1,136 @@
+KZ2 patch 6095 (fps-why 2026-11-24 R5): one cold "diagnostics armed" flag in ps3_indirect_call.
+ps3_indirect_call_entry and ps3_indirect_call_impl_at (patch 6094) tested about fifteen getenv-cached switches on every
+indirect call: PPU_CSCHECK, PS3_ICALL_GATE, BCTRL_RING, PS3_BREADCRUMB, PPU_TOCWATCH, PS3_CALLTRACE(_LR/_TO/_FROM/_R5),
+FLOW_FORCE_RTCFG, SPURS_TRACE, PS3_PRX_CALLTRACE, PPU_TOCFIX, PPU_RETWATCH (indirect-call diagnostics were 4.1 % of
+ppu-main's samples). s_icall_diag, decided once at the first indirect call, is 1 when any of them is set; when it is
+0 the impl skips every diagnostic block, which with its switch unset did nothing. When one is set every block runs as
+before and tests its own switch. Bit-exact by construction; the host test checks that the list names every getenv of
+the two functions outside the cold addr == 0 path (PS3_NULL_CALL, PPU_OPD_RECOVER stay where they are).
+ASSUMPTION (as patch 7003): nothing sets these variables after the first indirect call (main applies kz2.ini first).
+Expected (ASSUMPTION, fps-why): 0.5-1 ms of ppu-main per heavy frame; judged on the ps3_indirect_call_impl share.
+Host test: tools/runtime/test_ppu_icall_diag.sh (with negative controls).
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index b72a4f3..6db7c32 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2715,6 +2715,37 @@ static void icall_hist(ppu_context* ctx, uint32_t tgt, int phase)
+     ReleaseSRWLockExclusive(&lk);
+ }
+ 
++/* ---- KZ2 patch 6095 begin: diagnostics armed flag (tools/runtime/test_ppu_icall_diag.sh checks the list) ---- */
++/* KZ2 patch 6095 (fps-why 2026-11-24 R5): ps3_indirect_call and its impl tested about fifteen
++ * getenv-cached switches on every indirect call (a load and a branch each, 4.1 % of ppu-main's samples with the
++ * rest of the diagnostics). None is set in play. One flag, decided at the first indirect call (after main has applied
++ * kz2.ini to the environment, as each switch was), now says whether any of them is set; when none is, the impl skips
++ * every diagnostic block, which with its switch unset did nothing. When one is set, every block runs exactly as
++ * before and still tests its own switch. Bit-exact: the same work, in the same order, whenever a switch is set; the
++ * same skipped work when none is. The list must name every getenv of ps3_indirect_call_entry and
++ * ps3_indirect_call_impl_at outside the cold addr == 0 path (PS3_NULL_CALL, PPU_OPD_RECOVER); the host test checks
++ * that against the source. ASSUMPTION (as patch 7003): nothing sets these variables after the first indirect call. */
++static const char* const s_icall_diag_env[] = {
++    "PPU_CSCHECK", "PS3_ICALL_GATE", "BCTRL_RING", "PS3_BREADCRUMB", "PPU_TOCWATCH", "PS3_CALLTRACE",
++    "PS3_CALLTRACE_LR", "PS3_CALLTRACE_TO", "PS3_CALLTRACE_FROM", "PS3_CALLTRACE_R5", "FLOW_FORCE_RTCFG",
++    "SPURS_TRACE", "PS3_PRX_CALLTRACE", "PPU_TOCFIX", "PPU_RETWATCH",
++};
++static int s_icall_diag = -1;   /* -1 undecided, 0 no switch set, 1 armed */
++static __attribute__((noinline, cold)) int ppu_icall_diag_decide(void)
++{
++    int armed = 0;
++    for (const char* n : s_icall_diag_env) if (getenv(n)) armed = 1;
++    ppu_cost_log_start();   /* patch 6094's counters, read at the first indirect call as before */
++    __atomic_store_n(&s_icall_diag, armed, __ATOMIC_RELAXED);
++    return armed;
++}
++static inline int ppu_icall_diag_armed(void)
++{
++    const int d = __atomic_load_n(&s_icall_diag, __ATOMIC_RELAXED);
++    return __builtin_expect(d < 0, 0) ? ppu_icall_diag_decide() : d;
++}
++/* ---- KZ2 patch 6095 end ---- */
++
+ /* ---- KZ2 patch 6094 begin: indirect-call entries (tools/runtime/test_ppu_icall_to.sh compiles this block) ---- */
+ /* ps3_indirect_call_to: dispatch to an explicit guest target with CTR left as
+  * the guest had it (b<cond>lrl branches through LR; CTR must not change).
+@@ -2724,6 +2755,7 @@ static void icall_hist(ppu_context* ctx, uint32_t tgt, int phase)
+  * still name ctx->ctr, as before. */
+ static void ps3_indirect_call_entry(ppu_context* ctx, uint32_t addr)
+ {
++    if (__builtin_expect(!ppu_icall_diag_armed(), 1)) { ps3_indirect_call_impl_at(ctx, addr); return; }   /* patch 6095 */
+     static int on = -1;
+     if (on < 0) { on = getenv("PPU_CSCHECK") ? 1 : 0; ppu_cost_log_start(); }
+     { static int hg = -1; if (hg < 0) hg = getenv("PS3_ICALL_GATE") ? 1 : 0;
+@@ -2755,6 +2787,7 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target) { ps3_in
+ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+ {
+     ppu_thr_state* const T = &t_thr;   /* KZ2 patch 6094: one TLS lookup for the depth and the vcall stack */
++    const int diag = ppu_icall_diag_armed();   /* KZ2 patch 6095: any diagnostic switch set */
+     g_active_ctx = ctx;
+     /* BCTRL_RING=1: keep the last N indirect-call targets per thread, and let
+      * anything that can name a moment dump them. A render path built out of
+@@ -2762,6 +2795,7 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+      * the disassembly, because nothing calls it with a `bl`. Diffing this ring
+      * between the last frame a title drew and the first it did not is the only
+      * way to see which way the dispatch went. */
++    if (__builtin_expect(diag, 0)) {   /* patch 6095: BCTRL_RING, PS3_BREADCRUMB, PPU_TOCWATCH */
+     { static int on = -1;
+       if (on < 0) on = getenv("BCTRL_RING") ? 1 : 0;
+       if (on) {
+@@ -2779,10 +2813,12 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+         for(int i=0;i<fr;i++) p+=snprintf(ln+p,sizeof(ln)-p," %llX",(unsigned long long)((char*)bt[i]-mb));
+         fprintf(stderr,"%s\n",ln); } } }
+ #endif
++    }   /* patch 6095 */
+     /* addr: ctx->ctr for ps3_indirect_call, the explicit target for ps3_indirect_call_to (patch 6094) */
+     /* PS3_CALLTRACE=N: log the first N indirect calls (target + r3/r4) --
+      * generic visibility into vtable/callback dispatch (e.g. which job body a
+      * JobManager worker runs). */
++    if (__builtin_expect(diag, 0)) {   /* patch 6095: PS3_CALLTRACE*, FLOW_FORCE_RTCFG */
+     { static int64_t ctr_n=-2; if(ctr_n==-2){const char*e=getenv("PS3_CALLTRACE"); ctr_n=e?atoi(e):0;}
+       /* PS3_CALLTRACE_LR=<hex>: only calls returning to this guest address.
+        * An unfiltered trace is far too heavy to reach a late failure -- it
+@@ -2881,6 +2917,7 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+           }
+       }
+       skip_calltrace: ;
++    }   /* patch 6095 */
+     /* Null / return-to-OS sentinel: a bctr to address 0 means the guest
+      * unwound to the initial frame (or a not-yet-populated function pointer).
+      * Don't treat it as an unresolved call -- just return to the caller. */
+@@ -2980,7 +3017,7 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+     /* SPURS trace: log calls into libsre's cellSpurs export range so we can
+      * identify the instance-init function (called with &spurs = 0x40009D00) and
+      * confirm libsre receives the correct struct pointer. Env SPURS_TRACE. */
+-    if (addr >= 0x30031200u && addr < 0x30031900u) {
++    if (__builtin_expect(diag, 0) && addr >= 0x30031200u && addr < 0x30031900u) {   /* diag: patch 6095 */
+         static int64_t st=-2; if (st==-2){ const char* e=getenv("SPURS_TRACE"); st=e?1:0; }
+         if (st) fprintf(stderr, "[SPURSTRACE] call libsre 0x%08X  r3=0x%08X r4=0x%08X r5=0x%08X\n",
+             addr, (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5]);
+@@ -2991,7 +3028,7 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+      * lifted cellSpurs path gets -- in particular whether cellSpursInitialize
+      * completes and CreateTaskset (0x30014DC4) / CreateTask (0x30012520) are
+      * ever reached, or execution stalls in the SPU bring-up handshake. */
+-    {
++    if (__builtin_expect(diag, 0)) {   /* patch 6095 */
+         static int64_t lt=-2; if (lt==-2){ const char* e=getenv("PS3_PRX_CALLTRACE"); lt=e?1:0; }
+         if (lt && addr>=0x30000000u && addr<0x3001D718u) {
+             static uint32_t seen[1024]; static int nseen=0; int found=0;
+@@ -3044,7 +3081,8 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+          * deserializer ran with a wrong TOC -> garbage globals -> abort. Re-pin r2
+          * to the dispatched toc before each link so the chain stays consistent. */
+         uint32_t _toc0 = (uint32_t)ctx->gpr[2];
+-        static int _tf=-1; if(_tf<0)_tf=getenv("PPU_TOCFIX")?1:0;
++        int _tf = 0;   /* patch 6095: PPU_TOCFIX read only when a switch is set */
++        if (__builtin_expect(diag, 0)) { static int s_tf=-1; if(s_tf<0)s_tf=getenv("PPU_TOCFIX")?1:0; _tf = s_tf; }
+         if (T->vcall_sp < 128) T->vcall_stk[T->vcall_sp] = addr;
+         T->vcall_sp++;
+         fn(ctx);
+@@ -3058,7 +3096,7 @@ static void ps3_indirect_call_impl_at(ppu_context* ctx, uint32_t addr)
+         if (T->vcall_sp > 0) T->vcall_sp--;
+         /* PPU_RETWATCH=<hex>: catch the first vcall(s) whose RETURN value (r3)
+          * equals this, pinning the exact virtual method that produces the poison. */
+-        { static int64_t rw=-2; if(rw==-2){const char*e=getenv("PPU_RETWATCH"); rw=e?(int64_t)strtoul(e,0,16):-1;}
++        if (__builtin_expect(diag, 0)) { static int64_t rw=-2; if(rw==-2){const char*e=getenv("PPU_RETWATCH"); rw=e?(int64_t)strtoul(e,0,16):-1;}
+           if(rw>=0 && (uint32_t)ctx->gpr[3]==(uint32_t)rw){ static int _n=0; if(PS3_LOG_FIRST(_n, 8)){
+             fprintf(stderr,"[RETWATCH] vcall -> func_%08X returned r3=0x%08X\n", addr, (uint32_t)rw);
+ #ifdef _WIN32

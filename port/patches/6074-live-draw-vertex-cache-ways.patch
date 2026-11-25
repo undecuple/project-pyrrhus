@@ -1,7 +1,7 @@
 KZ2 patch 6074: LD_VC_WAYS, set-associative slots for patch 2047's draw payload cache. Default 1
 (off: patch 2047's direct-mapped placement, unchanged).
 
-Root cause (an earlier change's split run kz2-r85-s3, [vtx-cache] deltas per 256 frames): in b-walk's heavy views the cache
+Root cause (a split test run, [vtx-cache] deltas per 256 frames): in b-walk's heavy views the cache
 misses 35-42 % of draws (light stretches 15-20 %), and 74 % of those misses are first sights ("seen" 95,512 of 128,573
 misses at t=163 s; seen == evict exactly in every interval: every slot is occupied and every new key evicts one).
 Patch 2047 maps a key to one of 16,384 slots and fills an entry only at the second sight of its key, so two keys that

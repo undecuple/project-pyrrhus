@@ -13,7 +13,7 @@ removes them on a first play, but KZ2 shipped no template and had no way to grow
    tools/runtime/pso_template.py merges the files of several sessions into the shipped pso-template.bin.
 3. rsx_pso_template.h + rsx_live_draw.c: the record carries two inputs of the pipeline key it lacked, the WPOS flip
    height (KZ2 patch 2090) and the VP branch bits (upstream #485); without them every pipeline that used either failed
-   the prewarm's key recompute (kz2-r47-b1: 247 "key mismatch" against 168 built from a 607-pipeline template). The
+   the prewarm's key recompute (a test run: 247 "key mismatch" against 168 built from a 607-pipeline template). The
    record is 564 bytes now; a template of the old size is refused by its header.
 
 diff --git a/libs/video/rsx_pace.h b/libs/video/rsx_pace.h
@@ -82,7 +82,7 @@ diff --git a/libs/video/rsx_pso_template.h b/libs/video/rsx_pso_template.h
      uint8_t  attrs[16];
      uint32_t rs[RSX_PT_RS_WORDS];
 +    /* KZ2 patch 2120: two more inputs of the walker's pipeline key that the record lacked, so every pipeline that used
-+     * them failed the prewarm's key recompute ("key mismatch": 247 of 607 in kz2-r47-b1): the WPOS flip height of
++     * them failed the prewarm's key recompute ("key mismatch": 247 of 607 in a test run): the WPOS flip height of
 +     * KZ2 patch 2090 (0 = none) and upstream #485's VP branch bits (meaningful when the VP uses BRB/CLB). The record
 +     * grows to 564 bytes, so a template of the old size is refused (rec_size), never misread. */
 +    uint32_t wpos_flip;

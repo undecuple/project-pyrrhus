@@ -288,7 +288,7 @@ static DWORD WINAPI kz2_log_copy(LPVOID unused)
             have -= end;
         }
         if (have && have < 4096) {
-            /* An unbuffered writer (a DLL's own C runtime: Wine's openvr line in kz2-r33-new1) can send one line in
+            /* An unbuffered writer (a DLL's own C runtime: Wine's openvr line in a test run) can send one line in
              * several writes; the rest of the line comes within milliseconds. Wait up to 50 ms for it. */
             for (int i = 0; i < 10; i++) {
                 if (!PeekNamedPipe(s_pipe_r, NULL, 0, NULL, &avail, NULL) || avail) break;

@@ -1026,6 +1026,7 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
 extern "C" void kz2_prompts_register(void);   /* kz2_prompts.cpp */
 
 extern "C" void kz2_motion_init(void);   /* kz2_ppu_overrides.cpp */
+extern "C" const char* kz2_ppu_isa_line(void);   /* patch 6094: lifted PPU flags + exact-fma self-test (ppu_isa_ref.cpp) */
 int main(int argc, char** argv)
 {
 #ifdef _WIN32
@@ -1045,6 +1046,7 @@ int main(int argc, char** argv)
 #endif
 
     printf("=== Killzone 2 (ps3recomp) ===\n");
+    fprintf(stderr, "%s\n", kz2_ppu_isa_line());   /* an earlier change: which lifted-PPU options are built in */
     kz2_online_log_replay();    /* the [online] lines kz2_online.cpp kept from before main(), now in the session log */
 
     /* No launch option needed (ENHANCEMENT, as KZ3's kz3_boot_inputs): argv[1] if given, else
