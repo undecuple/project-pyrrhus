@@ -46,6 +46,7 @@ static uint32_t lane(void) {
   if (m == 4) return (rnd() & 0x80FFFFFFu) | ((1u + rnd() % 3u) << 24);
   return (rnd() & 0x807FFFFFu) | ((0x60u + rnd() % 0x3Fu) << 23);
 }
+static u128 hexv(const char* h) { u128 v; for (int i = 0; i < 4; i++) { char w[9]; memcpy(w, h + 8 * i, 8); w[8] = 0; v._u32[i] = (uint32_t)strtoul(w, 0, 16); } return v; }
 static u128 vec(void) { u128 v; for (int i = 0; i < 4; i++) v._u32[i] = lane(); return v; }
 static void pr(const char* n, int k, u128 a, u128 b, u128 c, int imm, u128 r) {
   printf("%s %d %08X%08X%08X%08X %08X%08X%08X%08X %08X%08X%08X%08X %d => %08X%08X%08X%08X\n", n, k,
@@ -62,6 +63,41 @@ static int imm_for(const char* t, const char* p) {
 int main(int argc, char** argv) {
   int n = argc > 1 ? atoi(argv[1]) : 1000;
 '''
+# Fixed regression cases: the two the first x86 CI run found (review on #84; a, b, c as the random cases print them, and
+# the result the SSE4.1 build gave). Two NaN inputs in one lane: the scalar build kept the accumulator's payload.
+FIXED = [
+    ('spu_dfma', '806B927C438C50D8FFFFFFFFB5BA8208', '8078F77742F011A85A2CA57035CAC91B',
+     'DD808FCA49C554E7FFFFFFFF4398D89E', 'DD808FCA49C554E7FFFFFFFFB5BA8208'),
+    ('spu_dfnma', 'FFFFFFFF83AA83C6FF80000050D07B89', '433D4925C4EA87E50053AF3344EBF309',
+     'FFFFFFFF80000000007FFFFF83C171B3', '7FFFFFFF83AA83C63FE3AF33A85870F8'),
+]
+# dfa and dfm: where both inputs of a 64-bit lane are NaN, which payload an SSE4.1 build keeps is the compiler's choice
+# (an add or multiply may be emitted either way round, even differently per lane), so such a lane only has to be NaN
+# on both paths. The random inputs come from a fixed seed per helper, so every run draws the same cases.
+LOOSE_TWO_NAN = {'spu_dfa', 'spu_dfm'}
+
+
+def _dnan(h):
+    return (int(h, 16) & 0x7FFFFFFFFFFFFFFF) > 0x7FF0000000000000
+
+
+def same_result(x, y):
+    if x == y:
+        return True
+    f, g = x.split(), y.split()
+    if f[0] not in LOOSE_TWO_NAN or x.split(' => ')[0] != y.split(' => ')[0]:
+        return False
+    a, b, rx, ry = f[2], f[3], f[-1], g[-1]
+    for i in (0, 16):
+        la, lb, lx, ly = a[i:i + 16], b[i:i + 16], rx[i:i + 16], ry[i:i + 16]
+        if _dnan(la) and _dnan(lb):
+            if not (_dnan(lx) and _dnan(ly)):
+                return False
+        elif lx != ly:
+            return False
+    return True
+
+
 SKIP = {'spu_mfspr', 'spu_fscrrd', 'spu_shufb_ref', 'spu_shufb_1035'}   # state readers and internal references
 
 
@@ -85,6 +121,9 @@ def generate(header):
         body.append('  s = 0x9E3779B97F4A7C15ull ^ %du; for (int k = 0; k < n; k++) { u128 a = vec(), b = vec(), c = vec(); '
                     'int imm = %s; u128 r = %s(%s); pr("%s", k, a, b, c, imm, r); }\n'
                     % (sum(map(ord, name)), imm_expr, name, call, name))
+    for name, a, b, c, _ in FIXED:
+        body.append('  { u128 a = hexv("%s"), b = hexv("%s"), c = hexv("%s"); printf("FIXED "); pr("%s", 0, a, b, c, 0, %s(a, b, c)); }\n'
+                    % (a, b, c, name, name))
     return PRELUDE + ''.join(body) + '  return 0;\n}\n', len(helpers)
 
 
@@ -135,11 +174,20 @@ def main():
             subprocess.run([cc, *cflags, *flags, *inc, str(t / 'helpers.c'), '-o', str(exe), '-lm'], check=True)
             out[side] = subprocess.run([*runner, str(exe), str(args.cases)], capture_output=True, text=True,
                                        check=True, timeout=600).stdout.splitlines()
-    a, b = out['scalar'], out['sse41']
+    fixed = {side: [x[len('FIXED '):] for x in lines if x.startswith('FIXED ')] for side, lines in out.items()}
+    a, b = ([x for x in out[side] if not x.startswith('FIXED ')] for side in ('scalar', 'sse41'))
     assert len(a) == len(b) == count * args.cases, 'output length differs'
+    assert len(fixed['scalar']) == len(fixed['sse41']) == len(FIXED), 'fixed case count differs'
+    fixed_bad = 0
+    for (name, *_, want), x, y in zip(FIXED, fixed['scalar'], fixed['sse41']):
+        got = {'scalar': x.split(' => ')[1], 'sse4.1': y.split(' => ')[1]}
+        for side, r in got.items():
+            if r != want:
+                fixed_bad += 1
+                print(f'[FAIL] fixed case {name}: {side} {r}, expected {want}')
     bad = {}
     for x, y in zip(a, b):
-        if x != y:
+        if not same_result(x, y):
             assert x.split(' => ')[0] == y.split(' => ')[0], 'inputs differ between the two builds'
             bad.setdefault(x.split()[0], []).append((x, y))
     for name, rows in sorted(bad.items()):
@@ -151,10 +199,12 @@ def main():
         for name in names:
             n = sum(1 for x in a if x.split()[0] == name)
             print(f"[{'FAIL' if name in bad else 'PASS'}] {name}: {n} cases")
+    if fixed_bad:
+        raise SystemExit(f'FAIL: {fixed_bad} fixed regression result(s) differ from the SSE4.1 reference')
     if bad:
         raise SystemExit(f'FAIL: {len(bad)} of {count} SPU helpers differ between the scalar and SSE4.1 paths')
     print(f'PASS: all {count} SPU helpers give the same bits on the scalar and SSE4.1 paths '
-          f'({count * args.cases} cases, no game data)')
+          f'({count * args.cases} cases and {len(FIXED)} fixed regression cases, no game data)')
 
 
 if __name__ == '__main__':

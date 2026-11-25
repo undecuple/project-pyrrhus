@@ -10,6 +10,16 @@ deterministic subnormal/NaN/Inf-heavy inputs found exactly these three helpers
 differing; with this patch every helper matches bit for bit (1,500,000 cases).
 Host test: tools/runtime/test_spu_helpers_sse_vs_scalar.py.
 
+Following the review on #84: the first x86 CI run of that test found spu_dfma and
+spu_dfnma (1 of 3000 cases each) keeping a different NaN's payload on the two paths
+when two inputs of a lane were NaN. The double helpers have no SIMD path; the C
+operators leave the NaN to the compiler's operand order. On hosts without SSE4.1
+only, the double add, subtract, multiply and the four fused forms now pick it by the
+x86 SSE2 rule, step by step in written order (first NaN source operand, made quiet;
+else the default NaN 0xFFF8000000000000). Builds with SSE4.1 (Windows) compile the
+unchanged code. Non-NaN results are unchanged. The test keeps both CI cases as fixed
+regression cases.
+
 diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
 --- a/runtime/spu/spu_helpers.h
 +++ b/runtime/spu/spu_helpers.h
@@ -34,3 +44,45 @@ diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
  #endif
  /* patch 1079: forced inline; an exponent-255 operand lane is recomputed in spu__xr_fix (a twice = no result term) */
  #if defined(__SSE2__)
+@@ -1203,6 +1211,7 @@
+     uint64_t u; memcpy(&u, &d, sizeof u);
+     r->_u32[i*2] = (uint32_t)(u >> 32); r->_u32[i*2+1] = (uint32_t)u;
+ }
++#if defined(__SSE4_1__)
+ static inline u128 spu_dfa(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)+spu__dget(b,i)); return r; }
+ static inline u128 spu_dfs(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)-spu__dget(b,i)); return r; }
+ static inline u128 spu_dfm(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)*spu__dget(b,i)); return r; }
+@@ -1211,6 +1220,33 @@
+ static inline u128 spu_dfms(u128 a, u128 b, u128 t)  { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(a,i)*spu__dget(b,i)-spu__dget(t,i)); return r; }
+ static inline u128 spu_dfnms(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dget(t,i)-spu__dget(a,i)*spu__dget(b,i)); return r; }
+ static inline u128 spu_dfnma(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, -(spu__dget(a,i)*spu__dget(b,i)+spu__dget(t,i))); return r; }
++#else
++/* KZ2 patch 6086 (following the review on #84), hosts without SSE4.1 only (ARM64): the NaN a double result keeps,
++ * made explicit. The C operators leave it to the compiler's operand order, and the scalar build kept the
++ * accumulator's payload in dfma/dfnma where the SSE4.1 build (Windows) kept a's; ARM64 would also give its own
++ * default NaN (0x7FF8000000000000) and prefer an SNaN. Here each step applies the rule of the x86 SSE2 scalar double
++ * ops: a NaN result is the first source operand that is a NaN, made quiet, or the default NaN 0xFFF8000000000000 when
++ * no operand is one (inf - inf, 0 * inf), operands in written order (a before b, the product before the accumulator,
++ * t first in t - a*b); dfnma flips the chosen NaN's sign, as xorpd does. Non-NaN results are unchanged. Builds with
++ * SSE4.1 (Windows) keep the code above unchanged. */
++static inline int spu__disnan(double d) { uint64_t u; memcpy(&u, &d, sizeof u); return (u & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull; }
++static inline double spu__dop(double r, double x, double y) {
++    if (!spu__disnan(r)) return r;
++    uint64_t u = 0xFFF8000000000000ull;
++    if (spu__disnan(x)) memcpy(&u, &x, sizeof u); else if (spu__disnan(y)) memcpy(&u, &y, sizeof u);
++    u |= 0x0008000000000000ull;
++    double d; memcpy(&d, &u, sizeof d); return d;
++}
++static inline double spu__dneg(double d) { uint64_t u; memcpy(&u, &d, sizeof u); u ^= 0x8000000000000000ull; memcpy(&d, &u, sizeof d); return d; }
++static inline double spu__dmul(double x, double y) { return spu__dop(x * y, x, y); }
++static inline u128 spu_dfa(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++){ double x=spu__dget(a,i), y=spu__dget(b,i); spu__dset(&r,i, spu__dop(x+y, x, y)); } return r; }
++static inline u128 spu_dfs(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++){ double x=spu__dget(a,i), y=spu__dget(b,i); spu__dset(&r,i, spu__dop(x-y, x, y)); } return r; }
++static inline u128 spu_dfm(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++) spu__dset(&r,i, spu__dmul(spu__dget(a,i), spu__dget(b,i))); return r; }
++static inline u128 spu_dfma(u128 a, u128 b, u128 t)  { u128 r; for(int i=0;i<2;i++){ double p=spu__dmul(spu__dget(a,i), spu__dget(b,i)), z=spu__dget(t,i); spu__dset(&r,i, spu__dop(p+z, p, z)); } return r; }
++static inline u128 spu_dfms(u128 a, u128 b, u128 t)  { u128 r; for(int i=0;i<2;i++){ double p=spu__dmul(spu__dget(a,i), spu__dget(b,i)), z=spu__dget(t,i); spu__dset(&r,i, spu__dop(p-z, p, z)); } return r; }
++static inline u128 spu_dfnms(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++){ double p=spu__dmul(spu__dget(a,i), spu__dget(b,i)), z=spu__dget(t,i); spu__dset(&r,i, spu__dop(z-p, z, p)); } return r; }
++static inline u128 spu_dfnma(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<2;i++){ double p=spu__dmul(spu__dget(a,i), spu__dget(b,i)), z=spu__dget(t,i); spu__dset(&r,i, spu__dneg(spu__dop(p+z, p, z))); } return r; }
++#endif
+ /* double compares -> per-lane 64-bit mask (RPCS3 stubs these; sane impl here). */
+ static inline u128 spu_dfceq(u128 a, u128 b)  { u128 r; for(int i=0;i<2;i++){ uint64_t m=(spu__dget(a,i)==spu__dget(b,i))?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
+ static inline u128 spu_dfcmeq(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++){ double x=spu__dget(a,i),y=spu__dget(b,i); if(x<0)x=-x; if(y<0)y=-y; uint64_t m=(x==y)?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
