@@ -144,7 +144,7 @@ static inline size_t kz2_redact_home(const char* in, size_t n, size_t i)
 }
 
 /* in[0..n) -> out (at most cap-1 bytes, NUL-terminated) with every folder replaced by its label. -> bytes written.
- * A label can be longer than its folder (%USERPROFILE% for C:\Users\ab): give cap >= 2*n + 1 for no truncation. */
+ * A label can be longer than its folder (%USERPROFILE% for C:\Users\a): give cap >= 2*n + 1 for no truncation. */
 static inline size_t kz2_redact(const kz2_redactor* rd, const char* in, size_t n, char* out, size_t cap)
 {
     size_t i = 0, o = 0;

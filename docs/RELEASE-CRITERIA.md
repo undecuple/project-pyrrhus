@@ -1,7 +1,7 @@
 # Release criteria
 
 Project Pyrrhus has no playable release and no release date. Versions below 1.0.0 are previews: **v0.x = preview**,
-published as GitHub pre-releases, each saying what is missing ([CHANGELOG.md](../CHANGELOG.md),
+early and experimental, each saying what is missing ([CHANGELOG.md](../CHANGELOG.md),
 [known issues](KNOWN_ISSUES.md)). **v1.0.0 = the whole campaign playable start to finish at about the game's own 30
 frames per second.** The first release that calls itself **playable** waits for every point of the second list.
 Booting to a title screen, or to a black level, does not count. This list, not a date, is what a release is measured
@@ -17,7 +17,8 @@ against.
 6. **One version string** in the exe, the launcher, the installer and `CITATION.cff` (checked by
    `tools/release/test_version_agree.py`).
 7. **Tags are never moved**; a fix is a new tag.
-8. **Published as a pre-release** while the version is 0.x.
+8. **Published as a full GitHub release from v0.1.14** (v0.1.1 to v0.1.13 were GitHub pre-releases), still
+   described as an early, experimental preview: the release notes and the README say what works and what is missing.
 
 ## Release criteria for v1.0.0 (playable)
 

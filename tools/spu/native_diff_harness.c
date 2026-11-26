@@ -61,6 +61,18 @@ void spu_ls_watch_slow(uint32_t a, int w, const uint8_t* p, uint32_t pc, uint32_
 {
     (void)a; (void)w; (void)p; (void)pc; (void)lr;
 }
+/* Test-only copy of spu_channels.c's spu_ls_watch_list (not compiled here: it is the whole channel/MFC runtime).
+ * The real one parses SPU_LS_WATCH into the list on first use (g_spu_ls_watch_n < 0) and returns it with its count;
+ * the harness has its watch list settled empty (g_spu_ls_watch_n = 0 above, spu_ls_watch_slow a no-op), so this
+ * returns that count and an empty list. spu_drain.c's spu_hop_init calls it since patch 7045 (erikomis, PR #94/#95)
+ * to settle g_spu_ls_dbg_off. */
+#define HARNESS_WATCH_MAX 4   /* SPU_WATCH_MAX in spu_channels.c */
+static unsigned s_harness_ls_watch[HARNESS_WATCH_MAX];
+unsigned* spu_ls_watch_list(int* out_n)
+{
+    *out_n = g_spu_ls_watch_n;
+    return s_harness_ls_watch;
+}
 __attribute__((weak)) volatile unsigned g_spu_stack_reset_n;
 __attribute__((weak)) volatile int g_yz_lockstep_on;
 void yz_lockstep_tick(spu_context* c) { (void)c; }

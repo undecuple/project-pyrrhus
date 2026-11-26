@@ -16,7 +16,7 @@ a literal (test_version_agree.py is the list of places that state it):
   - port/kz2/CMakeLists.txt: a project VERSION X.Y.Z line, when there is one (today there is none);
   - every one-line marker span `<!-- version -->...<!-- /version -->` in the public Markdown and HTML pages: each
     X.Y.Z inside a span becomes the new version, so a span may hold a whole release link;
-  - public/CHANGELOG.md: "## [Unreleased]" becomes "## [X.Y.Z] - DATE (pre-release)"; with no Unreleased section an
+  - public/CHANGELOG.md: "## [Unreleased]" becomes "## [X.Y.Z] - DATE (pre-release)" (before 0.1.14; "(release)" from it on); with no Unreleased section an
     empty stub with "### Added" goes above the newest entry; left alone when X.Y.Z already has a section.
 Then it regenerates the site (website.py; only where its data, docs/features.tsv, is present: the public repository
 has only the generated page, where the marker spans move and the rest waits for the next export), then runs the
@@ -83,7 +83,7 @@ def sub_opt(text, pattern, repl, what):
 def changelog(text, version, date):
     if re.search(rf"^## \[{re.escape(version)}\]", text, re.M):
         return text
-    heading = f"## [{version}] - {date} (pre-release)"
+    heading = f"## [{version}] - {date} ({'pre-release' if release_version.is_prerelease(version) else 'release'})"
     if UNRELEASED.search(text):   # Keep a Changelog: the release takes the unreleased entries
         return UNRELEASED.sub(heading, text, count=1)
     m = re.search(r"^## \[", text, re.M)

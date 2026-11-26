@@ -29,5 +29,5 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Log file
-      description: "Attach the newest log file next to the exe, with your user name and folder paths removed."
+      label: Support package or log file
+      description: "Best: attach a support package (\"Make a support package\" in the Start menu; in a portable folder, run Project Pyrrhus.exe --support-package there), which leaves out your user folders and PC name. Otherwise attach the newest log from build\\logs, with your user name and folder paths removed."

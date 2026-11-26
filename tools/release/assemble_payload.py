@@ -8,7 +8,7 @@ KZ2 has neither yet). Standard library only, Python 3.8+.
     assemble_payload.py --dry-run [--repo DIR] [--toolchain CACHE] [--fonts DIR]
 
 What goes in (the allowlist, RULES below; nothing else is ever copied):
-  kz2-setup/      tools/release/{firstrun,firstrun_check,version_check,launch,install_ini,online_ini,online_dialog,lift_fixups,spu_step,rpcs3_locate,rpcs3_import}.py, eboot_sha256.json, psarc_sha256.json,
+  kz2-setup/      tools/release/{firstrun,firstrun_check,version_check,launch,support,install_ini,online_ini,online_dialog,lift_fixups,spu_step,rpcs3_locate,rpcs3_import}.py, eboot_sha256.json, psarc_sha256.json,
                   spu/{lift_spu,gen_spu_register,kz2ver}.py (the SPU lift), and
                   eboot_ver.txt (written here: the EBOOT version the tree is built for, firstrun.tree_eboot_ver of the
                   repository, read from tools/lift.sh's constants; lift.sh itself is a developer tool and not shipped)
@@ -41,6 +41,8 @@ What goes in (the allowlist, RULES below; nothing else is ever copied):
   Project Pyrrhus.exe  with --launcher EXE: the launcher built by tools/release/build_launcher.sh
   README.md, NOTICE.md (from public/), run.cmd (installer/run.cmd, the portable zip's entry; the Inno script
                   excludes it)
+  recomplauncher.json  installer/recomplauncher.json: the setup, start and settings RecompLauncher reads (written to
+                  its schema; test_recomplauncher.py)
 The toolchain (compiler, CMake, Ninja, embeddable Python) is not in the repository. With --toolchain CACHE (the
 folder fetch_toolchain.py filled from tools/release/toolchain.json) each zip entry's unpacked tree goes to
 toolchain/<dest>/ (minus its "prune" globs) and the licence texts to licenses/<group>/ (the entry's license_globs
@@ -89,6 +91,7 @@ RULES = [
     ("tools/release/firstrun_check.py", "kz2-setup/release/firstrun_check.py", "file", {}),
     ("tools/release/version_check.py", "kz2-setup/release/version_check.py", "file", {}),
     ("tools/release/launch.py", "kz2-setup/release/launch.py", "file", {}),
+    ("tools/release/support.py", "kz2-setup/release/support.py", "file", {}),   # launch.py --support-package
     ("tools/release/install_ini.py", "kz2-setup/release/install_ini.py", "file", {}),
     # launch.py --online (D56): the Online settings window and the settings files
     ("tools/release/online_ini.py", "kz2-setup/release/online_ini.py", "file", {}),
@@ -114,7 +117,11 @@ RULES = [
     (TOOLKIT + "/LICENSE", "licenses/ps3recomp-LICENSE.txt", "file", {}),
     (TOOLKIT + "/third_party/at3_standalone/COPYING.LGPLv2.1", "licenses/at3_standalone-COPYING.LGPLv2.1.txt",
      "file", {}),
-    ("public/licenses/LGPL-2.1.txt", "licenses/LGPL-2.1.txt", "file", {}),   # the one LGPL text; NOTICE.md links it
+    ("public/licenses/LGPL-2.1.txt", "licenses/LGPL-2.1.txt", "file", {}),
+    # jsp-vs-ex (MIT, two holders): patch 6045, compiled into the player's kz2.exe, adapts its patch 0004
+    ("public/licenses/jsp-vs-ex-LICENSE.txt", "licenses/jsp-vs-ex-LICENSE.txt", "file", {}),   # NOTICE.md links it
+    # Project Vekta (MIT): support.py and firstrun.py's build priority, both in the payload, adapt its files
+    ("public/licenses/project-vekta-LICENSE.txt", "licenses/project-vekta-LICENSE.txt", "file", {}),
     ("public/licenses/NotoSans-OFL.txt", "licenses/NotoSans-OFL.txt", "file", {}),   # patch 6061's face (FONTS below)
     ("public/licenses/NotoSansCJK-OFL.txt", "licenses/NotoSansCJK-OFL.txt", "file", {}),   # 6061's CJK collection (runtime 78)
     ("public/licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-LICENSE.txt", "file", {}),
@@ -122,6 +129,9 @@ RULES = [
     ("public/README.md", "README.md", "file", {}),
     ("public/NOTICE.md", "NOTICE.md", "file", {}),
     ("installer/run.cmd", "run.cmd", "file", {}),
+    # RecompLauncher reads this at the top of the release folder, next to the program (its docs/DEVELOPERS.md,
+    # "Where the file goes"); checked by test_recomplauncher.py
+    ("installer/recomplauncher.json", "recomplauncher.json", "file", {}),
 ]
 EBOOT_VER = "kz2-setup/eboot_ver.txt"   # written by assemble (tree_ver), read by firstrun.tree_eboot_ver
 FONTS = ("Rajdhani-Medium.ttf", "Rajdhani-Bold.ttf")   # KZ3's runtime notice fonts; installer art fonts

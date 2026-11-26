@@ -9,7 +9,11 @@
 An unofficial fan port by static recompilation.</p>
 
 <p align="center">
-  <a href="https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/undecuple/project-pyrrhus/ci.yml?label=CI&style=flat-square&labelColor=17130f"></a> <!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13"><img alt="pre-release 0.1.13" src="https://img.shields.io/badge/pre--release-0.1.13-b4500f?style=flat-square&labelColor=17130f"></a><!-- /version -->
+  <a href="https://recomplauncher.com/game/project-pyrrhus"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/undecuple/project-pyrrhus/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/undecuple/project-pyrrhus/ci.yml?label=CI&style=flat-square&labelColor=17130f"></a> <!-- version --><a href="https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13"><img alt="release 0.1.13" src="https://img.shields.io/badge/release-0.1.13-b4500f?style=flat-square&labelColor=17130f"></a><!-- /version -->
   <a href="https://github.com/undecuple/project-pyrrhus/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/undecuple/project-pyrrhus/total?style=flat-square&color=b4500f&labelColor=17130f"></a>
   <a href="https://github.com/undecuple/project-pyrrhus/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/undecuple/project-pyrrhus?style=flat-square&color=b4500f&labelColor=17130f"></a>
 </p>
@@ -44,7 +48,7 @@ An unofficial fan port by static recompilation.</p>
 
 ## Status
 
-**Status:** <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version --> is a pre-release, partly playable. The intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs. Direct3D 12 only.
+**Status:** <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version --> is an early, experimental release, partly playable. The intro movie plays, the menus run with sound, and the first level loads and can be played. Speed is below the PS3's 30 frames per second in our scripted runs. Direct3D 12 only.
 
 | | | | |
 |---|---|---|---|
@@ -80,7 +84,7 @@ Optional features, in the same three states (both new in 0.1.7):
 
 **Install:**
 
-1. Download `Project-Pyrrhus-setup.exe` (or the portable zip) from <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases). Every release is a pre-release for now. You should see the file in your Downloads folder.
+1. Download `Project-Pyrrhus-setup.exe` (or the portable zip, `Project-Pyrrhus-<version>-Windows-x64.zip`; up to v0.1.13 it was named `-portable.zip`) from <!-- version -->[v0.1.13](https://github.com/undecuple/project-pyrrhus/releases/tag/v0.1.13)<!-- /version --> on the [releases page](https://github.com/undecuple/project-pyrrhus/releases). Releases up to v0.1.13 were pre-releases; later ones are full releases, still early and experimental. You should see the file in your Downloads folder.
 2. Run it and point it at your disc dump, the 1.29 update and the decrypted EBOOT. If you play in RPCS3, "Use my RPCS3 install" finds all three. You should see the setup check your files and name anything wrong.
 3. Let it build. The first start translates and builds the game's code on your PC, which takes a while (about 18 minutes with four jobs). No game code, assets or keys are shipped or downloaded.
 4. Start the game from the launcher. You should see the intro movie, then the menus.
@@ -173,7 +177,7 @@ The port's own code, tools and documentation: [MIT](LICENSE). Third-party compon
 
 ## Related projects, credits and official channels
 
-**[Project Helghast](https://github.com/undecuple/project-helghast)**: Killzone 3 (PS3) ported to PC the same way. Project Pyrrhus uses its method and reuses its general runtime work (ps3recomp fixes, renderer, SPU job system), adapted to Killzone 2. Most patches in `port/patches/` come from there; the rest are Killzone 2's own. Its builds are pre-releases on its [releases page](https://github.com/undecuple/project-helghast/releases), as this project's are.
+**[Project Helghast](https://github.com/undecuple/project-helghast)**: Killzone 3 (PS3) ported to PC the same way. Project Pyrrhus uses its method and reuses its general runtime work (ps3recomp fixes, renderer, SPU job system), adapted to Killzone 2. Most patches in `port/patches/` come from there; the rest are Killzone 2's own. Its builds are on its [releases page](https://github.com/undecuple/project-helghast/releases).
 
 **[Project Vekta](https://github.com/gustavomorinaga/project-vekta)**: Killzone HD, the PS3 remaster of the first Killzone, ported to PC the same way by Gustavo Morinaga, with Windows and Linux [pre-releases](https://github.com/gustavomorinaga/project-vekta/releases). Its README has the current state.
 

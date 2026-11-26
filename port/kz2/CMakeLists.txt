@@ -159,6 +159,37 @@ set_property(SOURCE "${PS3RECOMP_DIR}/libs/video/rsx_live_draw.c" DIRECTORY "${P
 list(LENGTH _kz2_xl_files _kz2_xl_count)
 message(STATUS "Shader translator id: ${_kz2_xl_id} (${_kz2_xl_count} files in libs/video)")
 
+# KZ2_WALKER_FLAGS (step-change brief 2, 2026-11-25; default off = unchanged). Code-generation flags
+# for the RSX walker TUs only (libs/video: rsx_live_draw, rsx_dispatch, rsx_commands, rsx_draw_engine, cellGcmSys,
+# rsx_vertex_*, rsx_texture_layout, rsx_d3d12_backend), so the lifted PPU/SPU objects and the ccache stay as they are and
+# an arm costs those TUs plus the link. They come after the cc-wrapper's hardening flags, so the last one wins.
+#   off     nothing added
+#   nohard  -fzero-call-used-regs=skip -fno-stack-clash-protection -fomit-frame-pointer (KZ2_FAST_FLAGS' set, walker only)
+#   o3      nohard + -O3 (the toolkit's -fno-strict-aliasing and -fno-strict-overflow are kept: they are on the line
+#           already and -O3 does not turn them off)
+# Not a semantic change. The translator id above hashes sources, not flags, so every arm keeps the same shader cache.
+set(KZ2_WALKER_FLAGS "off" CACHE STRING "walker-TU code generation: off | nohard | o3")
+set_property(CACHE KZ2_WALKER_FLAGS PROPERTY STRINGS off nohard o3)
+if(NOT MSVC AND NOT KZ2_WALKER_FLAGS STREQUAL "off")
+    set(_kz2_wk_opts -fzero-call-used-regs=skip -fno-stack-clash-protection -fomit-frame-pointer)
+    if(KZ2_WALKER_FLAGS STREQUAL "o3")
+        list(APPEND _kz2_wk_opts -O3)
+    elseif(NOT KZ2_WALKER_FLAGS STREQUAL "nohard")
+        message(FATAL_ERROR "KZ2_WALKER_FLAGS=${KZ2_WALKER_FLAGS}: expected off, nohard or o3")
+    endif()
+    file(GLOB _kz2_wk_vtx "${PS3RECOMP_DIR}/libs/video/rsx_vertex_*.c")
+    set(_kz2_wk_srcs)
+    foreach(_kz2_wk_n rsx_live_draw rsx_dispatch rsx_commands rsx_draw_engine cellGcmSys rsx_texture_layout
+                      rsx_d3d12_backend)
+        list(APPEND _kz2_wk_srcs "${PS3RECOMP_DIR}/libs/video/${_kz2_wk_n}.c")
+    endforeach()
+    list(APPEND _kz2_wk_srcs ${_kz2_wk_vtx})
+    set_property(SOURCE ${_kz2_wk_srcs} DIRECTORY "${PS3RECOMP_DIR}" APPEND PROPERTY COMPILE_OPTIONS ${_kz2_wk_opts})
+    list(LENGTH _kz2_wk_srcs _kz2_wk_count)
+    string(REPLACE ";" " " _kz2_wk_str "${_kz2_wk_opts}")
+    message(STATUS "KZ2_WALKER_FLAGS=${KZ2_WALKER_FLAGS}: ${_kz2_wk_str} on ${_kz2_wk_count} walker TUs")
+endif()
+
 # ---------------------------------------------------------------------------
 # The HLE NID table
 # ---------------------------------------------------------------------------

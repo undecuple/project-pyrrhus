@@ -254,8 +254,8 @@ def link_tests(tmp):
 
         # Path length: the second place is shorter than the default install's own VFS folder
         # (%LOCALAPPDATA%\Programs\Project Pyrrhus\vfs), so no game path gets longer than a default install's.
-        check(len(la.alt_vfs_root({"LOCALAPPDATA": "C:\\Users\\a-long-user-name\\AppData\\Local"}, root))
-              < len(la.vfs_root("C:\\Users\\a-long-user-name\\AppData\\Local\\Programs\\Project Pyrrhus")),
+        check(len(la.alt_vfs_root({"LOCALAPPDATA": "C:\\Users\\example-a-long-user-name\\AppData\\Local"}, root))
+              < len(la.vfs_root("C:\\Users\\example-a-long-user-name\\AppData\\Local\\Programs\\Project Pyrrhus")),
               "12 the alt VFS folder's path is shorter than the default install's")
         # Where the runtime's writes land: a model of ps3recomp's guest-to-host mapping (runtime/ppu/ppu_fs.cpp host_path
         # and runtime/syscalls/sys_fs.c, with no PS3_HDD0_ROOT/PS3_HDD1_ROOT/PS3_USRDIR_BASE: mount prefix stripped, any
@@ -854,6 +854,15 @@ def main():
             check(rc == 0 and not ran and len(started) == 1 and started[0][1] == f"/DIR={root}"
                   and open(started[0][0], "rb").read() == setup_bytes and "Update this installation" in ui.asked[0],
                   f"9b Yes: checked setup started for this folder, no game {started}")
+            # 9d. under RecompLauncher (RECOMPLAUNCHER=1): the same cached "newer" result offers nothing, starts no setup,
+            # page or background check, and the game runs
+            ui, started, ran = FakeUI([True, True]), [], []
+            rc = la.main(["--root", root], ui=ui, run=lambda a, **k: ran.append(a) or 0,
+                         start=lambda a, **k: started.append(a), today=day, environ=dict(env, RECOMPLAUNCHER="1"))
+            check(rc == 0 and not ui.asked and not started and len(ran) == 1
+                  and "updates: left to RecompLauncher" in open(os.path.join(root, "logs", "launcher.log"),
+                                                                encoding="utf-8").read(),
+                  f"9d RECOMPLAUNCHER=1: no offer, no setup or check started, the game runs ({ui.asked}, {started})")
             served[dl + "Project-Pyrrhus-setup.exe"] = b"MZ tampered"
             ui, started, ran = FakeUI([True]), [], []
             rc = la.main(["--root", root], ui=ui, run=lambda a, **k: ran.append(a) or 0,

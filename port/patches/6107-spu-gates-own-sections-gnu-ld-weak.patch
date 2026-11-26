@@ -1,0 +1,51 @@
+KZ2 patch 6107: every read-mostly SPU gate in a section of its own, so MinGW's GNU ld resolves the weak gates.
+
+Root cause of the 2026-11-26 regression (every exe from main at ~3 fps, every native SPU job falling back).
+The gates in runtime/spu/spu_context.h are weak definitions (SPU_GATE), one copy per translation unit,
+and KZ3 patch 1102 put them all in .data$kz3rm. A weak definition on a PE target is a weak external
+whose default is a per-object symbol; GNU ld (MinGW, binutils 2.46 here) resolves that default at twice
+its offset in its section. Only the gate at offset 0 of a TU's .data$kz3rm was read where it lives; the
+others read and wrote the words past them (another gate, the next TU's copy or padding). Before patch
+7045 that happened to land on words the lifted code's own probes had settled; 7045's ninth gate
+(g_spu_ls_dbg_off) moved the layout, spu_ls_dbg_armed read words that are never settled, so every LS
+access of every lifted function took the gated path and every native SPU gate fell back
+(Gfx.Post.DepthOfField slot 1 calls=1198 fallback=1197).
+
+SPU_READ_MOSTLY now names one section per definition (.data$kz3rm<N>, N from __COUNTER__): each gate is
+at offset 0 of its own section, where the default resolves right, and the linker still sorts all of
+them between 1102's .data$kz3rl and .data$kz3rn fences. g_spu_irqwait_diag, the one SPU_GATE outside
+the group, joins it for the same reason. Same variables, same values; non-PE builds are unchanged.
+-DSPU_NO_READ_MOSTLY brings the old layout back, and with it the mis-resolution of the weak gates.
+Host test: tools/runtime/test_spu_gate_weak_pe.sh (MinGW link of three TUs with this header: every
+TU's reference to each gate resolves to one address that is a gate's own default; the header with
+this patch reversed is the negative control).
+
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -664,7 +664,15 @@
+  * and .data$kz3rn bound the group, so no other variable shares its lines. -DSPU_NO_READ_MOSTLY = the old layout
+  * (A/B; set it for every runtime TU). Not a semantic change: same variables, same values. */
+ #if defined(_WIN32) && defined(__GNUC__) && !defined(SPU_NO_READ_MOSTLY)
+-#  define SPU_READ_MOSTLY __attribute__((section(".data$kz3rm")))
++/* KZ2 patch 6107: one section per definition (.data$kz3rm<N>, N = __COUNTER__; still sorted between the fences).
++ * GNU ld (MinGW, binutils 2.46) resolves a weak definition's per-object default at twice its offset in its section:
++ * with every gate of a TU in one .data$kz3rm, the gates after the first read and wrote the bytes past them (another
++ * gate, another TU's copy or padding). Patch 7045's ninth gate moved them so that spu_ls_dbg_armed read unsettled
++ * words: every LS access took the gated path and every native SPU job fell back (~3 fps). At offset 0 the default
++ * resolves right. Host test: tools/runtime/test_spu_gate_weak_pe.sh. */
++#  define SPU__RM_STR2(x) #x
++#  define SPU__RM_STR(x) SPU__RM_STR2(x)
++#  define SPU_READ_MOSTLY __attribute__((section(".data$kz3rm" SPU__RM_STR(__COUNTER__))))
+ #else
+ #  define SPU_READ_MOSTLY
+ #endif
+@@ -1167,7 +1175,8 @@
+  * job manager waiting on an event) reports what it is waiting on every 2^22
+  * such dispatches. g_spu_irqwait_diag is -1 until the first call reads the
+  * variable, then 0/1, so with it off the dispatch loop pays one load. */
+-SPU_GATE int g_spu_irqwait_diag = -1;
++/* KZ2 patch 6107: in a section of its own (SPU_READ_MOSTLY), so a GNU ld PE link resolves the weak default right. */
++SPU_GATE SPU_READ_MOSTLY int g_spu_irqwait_diag = -1;
+ void spu_irqwait_diag(spu_context* ctx);
+ 
+ /* Drain a translated call up to its explicit architectural return PC. */

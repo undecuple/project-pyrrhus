@@ -1,0 +1,593 @@
+RSX_PERF_SPLIT=1: one [perf-split] line per second, the walker's time per flip in exclusive buckets that add up to the walk.
+
+Purpose: fps-plan step 2 (docs/in-progress/fps-plan.md). The existing walker timers ([perf-walk], [perf-walk2], [perf-flush])
+are gross: a ring-full flush inside the descriptor, vertex or pipeline region is counted in both that region and the flush,
+so their sum cannot be compared with the frame. This patch adds a walk-owned clock that charges every tick of one walk to
+exactly one bucket, switched at the SAME sites that already carry the LDW_T0/LDW_ADD pairs (one LDS_IN/LDS_OUT line beside
+each); the gross timers are untouched and still feed the other lines.
+
+Env flag: RSX_PERF_SPLIT=1, off by default. Off: g_rsx_split_on is 0 and each site is one load and a not-taken branch; no
+getenv beyond the one cached in rsx_perf_enabled(). On, it implies RSX_PERF=1 (the reporter thread and the cumulative
+counters), starts the RSX_PERF_GPU poller (for gpu=) and, unless RSX_PERF_PROF=A,B is set, keeps the [perf-walk] window
+open for the whole run (so the older [perf-walk*] lines print too).
+
+Lines (ms per flip over the period, flips = RSX_PERF_FLIPS; nothing is printed in a period without flips):
+  [perf-split] t= flips= frame= walk= decode= tex= pso= desc= vplan= fill= rec= wb= rbwait= submit= park= other= gpu=
+  [perf-split-w] t= flips= busy= bar=
+  [perf-split-cost] t= flips= words= commands= reads=
+frame = wall time per flip; walk = RSX_PERF_WALK_T (lock wait included); the twelve buckets from decode to other add up to
+walk (tools/runtime/perf/test_perf_split.py checks it on a log). Buckets and what feeds them:
+  decode  the FIFO method region (the base bucket between the METH_T start and end): method and state decode, a draw's
+          pre/surface/post work, clears, M2MF and NV3089 copies, and any untimed gap in a draw. Everything inside it that has
+          a bucket of its own is taken out.
+  vplan   the vertex layout plan and fetch (VTX_T's first half: payload-cache lookup, remap, hoisted fetch)
+  fill    the vertex/index copy into the upload rings (VTX_COPY_T)
+  pso     get_pso (key, memo, cache find, a synchronous build), plus the walker's wait on the async build workers (BAR)
+  tex     the texture loop (D_TEXLOOP_T: decode, hash, upload, binding); a ring-full flush inside it is submit
+  desc    descriptor ring, barriers, RTV/DSV, tables (D_DESC_T)
+  rec     recording to Draw*Instanced (D_REC_T)
+  wb      readback write-back work (NV0039 / sync write-backs) minus the flush and fence wait inside them
+  rbwait  the fence wait inside a LD_FLUSH_READBACK flush
+  submit  every other flush (list close and execute, frame-slot wait, non-readback fence waits), ld_wait_fence waits and
+          the present when the flip is walked; the queue back-pressure bucket
+  park    the walker's wait for the guest's user-command pump (gcm_walker_user_command) and the wait for the FIFO lock
+  other   what no bucket claims (FIFO word parse, jumps and calls, labels, flips); it is the clock's own bucket, not a
+          subtraction, so a bucket missed by a site shows here as a rise and the sum check still holds
+gpu = the RSX_PERF_GPU poller's last busy window scaled to the period ("na" before its first window). It is not a walker
+bucket and is not in the sum.
+Worker line: busy = async pipeline-build worker CPU per flip (compile + create); bar = the walker's wait on those workers
+(also inside pso=). There is no other worker yet; step 3's workers add their time here.
+Cost line (after KZ3 2203): method commands and their data words walked through the method region, and the clock reads
+the split itself made, per flip; a read costs about one QueryPerformanceCounter, so reads x that cost is the split's own
+overhead, and about one read per command (half of each decode-boundary read) sits inside decode.
+
+The split's cost (after KZ3 patch 2203, "perf split sampled decode cost", Project Helghast; same author, same licence as
+the other KZ3 patches in this series; adapted, not pasted, because 6091 has a different shape from KZ3's 2188):
+  - 2203 part 3 applies: while the split is on, the [perf-walk2] per-command meth_t0 timer pair is skipped. Its end read
+    and two locked adds sat inside decode on every command (phantom decode time); under the split [perf-walk2]'s meth
+    figures read 0. Split off: the same code as before.
+  - 2203 part 1 (decode_d timed on 1 word in 32, scaled, owed debits clamped) does not apply: 6091 has no per-word decode
+    timer; decode is a base bucket switched twice per command, and sampling those switches would scale the sampled
+    command's own read by 32 too, so decode's expected phantom would stay the same while one heavy command (an M2MF or
+    NV3089 copy) could move 32x its time between decode and other.
+  - 2203 part 2 (the RSX_O0 m3d counters as pass-local adds) does not apply: there are no RSX_O0 counters in KZ2.
+  - Its [perf-split-cost] line is ported with reads= in place of timed_words= (no word is timed here).
+The clock's arithmetic is in a new header, libs/video/rsx_perf_split.h (struct + timestamps in, no thread or clock calls),
+so the host test runs the walker's own code.
+
+Not attributed: (1) the idle time between walks (walker_wait, flip pacing, SPU parks that end a walk) is outside the walk by
+construction: frame - walk. (2) A flush or fence wait that nests in a bucket is charged to submit/rbwait, never to the
+enclosing bucket; texture-upload and descriptor-ring flushes therefore show in submit, not in tex/desc. (3) The clock
+owner is the thread holding the FIFO lock; enters from any other thread (guest-thread flips, workers) are ignored. (4)
+decode includes work this patch does not split (D_SURF_T, D_PRE_T, D_POST_T, clears, M2MF, NV3089): the gross
+[perf-walk2] lines still hold those splits. (5) A draw that returns early inside an open bucket (device loss) is reset at
+the next method boundary.
+
+Origin: KZ2 original, written for the step-2 split proposed to KZ3 (same line format in both ports). Reuses the 2029/2045/
+6063/6070/6075 timer sites, WALK_T, FLIPS and the 2051 GPU poller; adds no timers to the sites that exist beyond the clock.
+Not live-run: the counters are checked on the host by tools/runtime/perf/test_perf_split.py (format and sums) and the
+clock by tools/runtime/perf/test_perf_split_clock.sh (exact buckets on a virtual clock, per-command decode, the cost
+counters; negative controls: the meth pair kept, a lost charge); the walker itself needs a Proton run.
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2303,10 +2303,18 @@
+                "sys_timer.c mirrors the RSX_PERF_USLEEP_* indices");
+ static unsigned long long s_rsx_perf_methods;      /* walker thread only */
+ 
++volatile int g_rsx_split_on;                        /* KZ2 patch 6091: set once by rsx_perf_enabled() */
++volatile long long g_rsx_split_w_busy;
++volatile double g_rsx_split_gpu_busy_ms, g_rsx_split_gpu_win_ms;
+ int rsx_perf_enabled(void)
+ {
+     static int on = -1;
+-    if (on < 0) { const char* e = getenv("RSX_PERF"); on = (e && *e && *e != '0') ? 1 : 0; }
++    if (on < 0) {
++        const char* e = getenv("RSX_PERF"), *sp = getenv("RSX_PERF_SPLIT");   /* KZ2 patch 6091: the split implies the timers */
++        const int split = sp && *sp && *sp != '0';
++        on = ((e && *e && *e != '0') || split) ? 1 : 0;
++        g_rsx_split_on = split;
++    }
+     return on;
+ }
+ long long rsx_perf_now(void)
+@@ -2348,6 +2356,42 @@
+         __atomic_fetch_add(&g_rsx_perf[idx], v, __ATOMIC_RELAXED);
+ }
+ 
++/* KZ2 patch 6091: the exclusive-bucket clock behind [perf-split] (arithmetic in rsx_perf_split.h). One walk at a time
++ * owns it (s_gcm_fifo_lock): the walk's own ticks land in the owner's local accumulators and are published at walk end
++ * together with the lock wait (PARK), so the published buckets add up to what RSX_PERF_WALK_T counts for the same walks.
++ * The existing gross timers (METH, DRAW, PSO, TEX... which nest through ld_flush) stay as they are; this clock is only
++ * the exclusive view of the same regions. Only the owner thread may move it: other threads' enters are ignored. */
++static rsx_split_clk s_sp;
++static unsigned long s_sp_tid;
++static volatile long long g_sp_pub[RSX_SPB_N];      /* published ticks per bucket, read by the reporter */
++static volatile unsigned long long g_sp_words, g_sp_cmds, g_sp_reads;   /* published cost counters ([perf-split-cost]) */
++static int rsx_split_mine(void) { return s_sp.active && s_sp_tid == (unsigned long)GetCurrentThreadId(); }
++void rsx_split_enter(int b)
++{
++    if (rsx_split_mine()) rsx_split_clk_enter(&s_sp, b, rsx_perf_now());
++}
++void rsx_split_leave(void)
++{
++    if (rsx_split_mine() && s_sp.depth > 0) rsx_split_clk_leave(&s_sp, rsx_perf_now());
++}
++void rsx_split_base(int b)
++{
++    if (rsx_split_mine()) rsx_split_clk_base(&s_sp, b, rsx_perf_now());
++}
++static void rsx_split_walk_begin(long long t0)       /* the fifo lock is held */
++{
++    s_sp_tid = (unsigned long)GetCurrentThreadId();
++    rsx_split_clk_begin(&s_sp, t0, rsx_perf_now());
++}
++static void rsx_split_walk_end(void)                 /* the fifo lock is still held */
++{
++    rsx_split_clk_end(&s_sp, rsx_perf_now());
++    for (int i = 0; i < RSX_SPB_N; i++) __atomic_fetch_add(&g_sp_pub[i], s_sp.acc[i], __ATOMIC_RELAXED);
++    __atomic_fetch_add(&g_sp_words, s_sp.words, __ATOMIC_RELAXED);
++    __atomic_fetch_add(&g_sp_cmds, s_sp.cmds, __ATOMIC_RELAXED);
++    __atomic_fetch_add(&g_sp_reads, s_sp.reads, __ATOMIC_RELAXED);
++}
++
+ #ifdef _WIN32
+ #include <tlhelp32.h>
+ extern const char* ppu_thread_name_for_os_tid(unsigned long os_tid);
+@@ -2470,20 +2514,47 @@
+     }
+ }
+ 
++/* KZ2 patch 6091: the [perf-split] and [perf-split-w] lines (two lines, newline-terminated, never past `n`). Values are
++ * ms per flip over the period: walk is RSX_PERF_WALK_T, the buckets are the clock's (sp[], ticks, indexed by
++ * RSX_SPB_*), pso includes the walker's wait on the async build workers (BAR, also shown as bar= on the -w line),
++ * other is the clock's OTHER bucket (walk minus every bucket named on the line). gpu is the RSX_PERF_GPU poller's
++ * last busy window scaled to this period, "na" when that poller has not published one. */
++static void gcm_split_line(char* out, size_t n, double t, long long flips, double wall_ms, double walk_ms,
++                           const long long* sp, long long wbusy, double tk, double gpu_busy_ms, double gpu_win_ms)
++{
++    const double f = flips > 0 ? (double)flips : 1.0;
++    char gpu[24];
++    if (gpu_win_ms > 0) snprintf(gpu, sizeof gpu, "%.2f", gpu_busy_ms / gpu_win_ms * wall_ms / f);
++    else snprintf(gpu, sizeof gpu, "na");
++    #define SPMS(b) ((double)sp[b] * tk / f)
++    int o = snprintf(out, n, "[perf-split] t=%.0fs flips=%lld frame=%.2f walk=%.2f decode=%.2f tex=%.2f pso=%.2f desc=%.2f"
++                     " vplan=%.2f fill=%.2f rec=%.2f wb=%.2f rbwait=%.2f submit=%.2f park=%.2f other=%.2f gpu=%s\n",
++                     t, flips, wall_ms / f, walk_ms / f, SPMS(RSX_SPB_DECODE), SPMS(RSX_SPB_TEX),
++                     SPMS(RSX_SPB_PSO) + SPMS(RSX_SPB_BAR), SPMS(RSX_SPB_DESC), SPMS(RSX_SPB_VPLAN), SPMS(RSX_SPB_FILL),
++                     SPMS(RSX_SPB_REC), SPMS(RSX_SPB_WB), SPMS(RSX_SPB_RBWAIT), SPMS(RSX_SPB_SUBMIT), SPMS(RSX_SPB_PARK),
++                     SPMS(RSX_SPB_OTHER), gpu);
++    if (o < 0 || (size_t)o >= n) { if (n) out[n - 1] = 0; return; }
++    snprintf(out + o, n - (size_t)o, "[perf-split-w] t=%.0fs flips=%lld busy=%.2f bar=%.2f\n", t, flips,
++             (double)wbusy * tk / f, SPMS(RSX_SPB_BAR));
++    #undef SPMS
++}
++
+ static DWORD WINAPI rsx_perf_thread(LPVOID unused)
+ {
+     const char* pse = getenv("RSX_PERF_SAMPLE");
+     const int sampling = pse && *pse && *pse != '0';
+     const int sample_rsx = sampling && atoi(pse) == 2;   /* patch 2029: the walker thread only, in the window */
+     { const char* pp = getenv("RSX_PERF_PROF");
+-      if (pp && sscanf(pp, "%lf,%lf", &s_perf_prof_a, &s_perf_prof_b) != 2) s_perf_prof_a = s_perf_prof_b = -1; }
++      if (pp && sscanf(pp, "%lf,%lf", &s_perf_prof_a, &s_perf_prof_b) != 2) s_perf_prof_a = s_perf_prof_b = -1;
++      if (g_rsx_split_on && s_perf_prof_a < 0) { s_perf_prof_a = 0; s_perf_prof_b = 1e18; s_perf_walk_on = 1; } }   /* KZ2 patch 6091: whole run */
+     unsigned secs = 0;
+     (void)unused;
+     enum { MAXT = 512, TOP = 10 };
+     static DWORD tids[MAXT]; static unsigned long long cpu_prev[MAXT]; static int ntids;
+     LARGE_INTEGER f, t0, last, now;
+     QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0); last = t0;
+-    long long prev[RSX_PERF_COUNT] = {0};
++    long long prev[RSX_PERF_COUNT] = {0}, sp_prev[RSX_SPB_N] = {0}, sp_wprev = 0;
++    unsigned long long sp_cprev[3] = {0};   /* words, commands, reads at the last line */
+     unsigned long long prev_methods = 0, prev_draws = rsx_perf_draws(), prev_ff = rsx_perf_fifo_flips();
+     const double tk = 1000.0 / (double)f.QuadPart;   /* ticks -> ms */
+     for (;;) {
+@@ -2514,6 +2585,29 @@
+             d[RSX_PERF_PRESENT_T] * tk, d[RSX_PERF_SWAP_T] * tk, d[RSX_PERF_REFPOLL],
+             d[RSX_PERF_USLEEP_GCM_N], d[RSX_PERF_USLEEP_GCM_T] * tk, d[RSX_PERF_USLEEP_OTHER_T] * tk);
+         prev_methods = m; prev_draws = dr; prev_ff = rsx_perf_fifo_flips();
++        if (g_rsx_split_on) {   /* KZ2 patch 6091: one [perf-split] line per period, ms per flip, exclusive buckets */
++            long long sp[RSX_SPB_N], wb;
++            for (int i = 0; i < RSX_SPB_N; i++) { const long long c = __atomic_load_n(&g_sp_pub[i], __ATOMIC_RELAXED); sp[i] = c - sp_prev[i]; sp_prev[i] = c; }
++            { const long long c = __atomic_load_n(&g_rsx_split_w_busy, __ATOMIC_RELAXED); wb = c - sp_wprev; sp_wprev = c; }
++            if (d[RSX_PERF_FLIPS] > 0) {
++                char sl[600];
++                gcm_split_line(sl, sizeof sl, (double)(now.QuadPart - t0.QuadPart) * tk / 1000.0, d[RSX_PERF_FLIPS], wall,
++                               d[RSX_PERF_WALK_T] * tk, sp, wb, tk, g_rsx_split_gpu_busy_ms, g_rsx_split_gpu_win_ms);
++                fputs(sl, stderr);
++            }
++            {   /* the split's own cost (after KZ3 2203): per flip, printed with the [perf-split] line */
++                const unsigned long long c[3] = { __atomic_load_n(&g_sp_words, __ATOMIC_RELAXED),
++                                                  __atomic_load_n(&g_sp_cmds, __ATOMIC_RELAXED),
++                                                  __atomic_load_n(&g_sp_reads, __ATOMIC_RELAXED) };
++                if (d[RSX_PERF_FLIPS] > 0) {
++                    char cl[200];
++                    rsx_split_fmt_cost(cl, sizeof cl, (double)(now.QuadPart - t0.QuadPart) * tk / 1000.0, d[RSX_PERF_FLIPS],
++                                       c[0] - sp_cprev[0], c[1] - sp_cprev[1], c[2] - sp_cprev[2]);
++                    fputs(cl, stderr);
++                }
++                for (int i = 0; i < 3; i++) sp_cprev[i] = c[i];
++            }
++        }
+         {   /* patch 2029: the walker split, ms in the last period (only while the window was on) */
+             const double tnow = (double)(now.QuadPart - t0.QuadPart) * tk / 1000.0;
+             if (d[RSX_PERF_W_ON])
+@@ -2804,7 +2898,9 @@
+ #endif
+     const long long t0 = rsx_perf_now();
+     AcquireSRWLockExclusive(&s_gcm_fifo_lock);
++    if (g_rsx_split_on) rsx_split_walk_begin(t0);   /* KZ2 patch 6091 */
+     gcm_rsx_process_fifo_unlocked();
++    if (g_rsx_split_on) rsx_split_walk_end();
+     ReleaseSRWLockExclusive(&s_gcm_fifo_lock);
+     rsx_perf_add(RSX_PERF_WALK_T, rsx_perf_now() - t0);
+     rsx_perf_add(RSX_PERF_WALK_N, 1);
+@@ -3687,7 +3783,14 @@
+                     continue;
+                 }
+             }
+-            const long long meth_t0 = s_perf_walk_on ? rsx_perf_now() : 0;   /* patch 2045: [perf-walk2] */
++            /* KZ2 patch 6091 (after KZ3 2203 part 3): no [perf-walk2] per-command timer pair while the split is on. Its end
++             * read and two locked adds sat inside the decode bucket on every command (phantom decode time; the split
++             * already times this region), so under the split [perf-walk2]'s meth figures read 0. Split off: as before. */
++            const long long meth_t0 = (s_perf_walk_on && !g_rsx_split_on) ? rsx_perf_now() : 0;   /* patch 2045: [perf-walk2] */
++            if (g_rsx_split_on) {   /* KZ2 patch 6091: the method region is "decode" */
++                if (s_sp.active) rsx_split_clk_cmd(&s_sp, count);   /* the walker holds the fifo lock, so active = ours */
++                rsx_split_base(RSX_SPB_DECODE);
++            }
+             /* Patch 6065 (KZ3 2149, GCM_FAST_METHODS=1): the same words, in the same order and through the same calls as
+              * the loop below (live feed, draw engine, driver methods, 3D or 2D dispatch), with the per-word translation
+              * and the diagnostic checks left out. Subchannel 0 or 1, method != 0 (so no SET_OBJECT word), all data words
+@@ -3715,6 +3818,7 @@
+                             gcm_2d_method(subch, m, v);
+                     }
+                     if (meth_t0) { rsx_perf_add(RSX_PERF_W_METH_T, rsx_perf_now() - meth_t0); rsx_perf_add(RSX_PERF_W_METH_CMD_N, 1); }
++                    if (g_rsx_split_on) rsx_split_base(RSX_SPB_OTHER);   /* KZ2 patch 6091 */
+                     s_fifo_getoff += 4 + count * 4;
+                     continue;
+                 }
+@@ -3746,6 +3850,7 @@
+                      * exclusive, so nothing runs twice. Before this, the
+                      * `continue` skipped the 0xEB00 branch below for good. */
+                     if (s_user_handler_opd) gcm_walker_user_command(vm_read32(dea));
++                    if (g_rsx_split_on) rsx_split_base(RSX_SPB_OTHER);   /* KZ2 patch 6091: this exit skips the METH_T add */
+                     continue;
+                 }
+                 /* GCM_SUBCH1_3D=1: treat subchannel 1 as the 3D object too.
+@@ -3878,6 +3983,7 @@
+                 }
+             }
+             if (meth_t0) { rsx_perf_add(RSX_PERF_W_METH_T, rsx_perf_now() - meth_t0); rsx_perf_add(RSX_PERF_W_METH_CMD_N, 1); }
++            if (g_rsx_split_on) rsx_split_base(RSX_SPB_OTHER);   /* KZ2 patch 6091 */
+             s_fifo_getoff += 4 + count * 4;
+             continue;
+         }
+@@ -5636,6 +5742,7 @@
+  * interrupt either), then report and overwrite. */
+ static void gcm_walker_user_command(u32 cmd)
+ {
++    LDS_IN(RSX_SPB_PARK);   /* KZ2 patch 6091: the walker waiting for the guest's pump */
+     for (int spin = 0; spin < 50; spin++) {
+         if (!GCM_USER_PENDING_PEEK()) break;
+ #ifdef _WIN32
+@@ -5644,6 +5751,7 @@
+         { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
+ #endif
+     }
++    LDS_OUT();
+     if (kz3_ft_on()) { u64 o = GCM_USER_PENDING_PEEK();
+         fprintf(stderr, "[ft] %llu ucmd cmd=0x%08X get=0x%08X pending=%s0x%08X\n", ps3_ms_now(), cmd, s_fifo_getoff,
+                 o ? "STILL " : "", (u32)o); }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -2634,7 +2634,9 @@
+         return 0;
+     }
+     const long long w0 = rsx_perf_now();
++    LDS_IN(RSX_SPB_SUBMIT);   /* KZ2 patch 6091: queue back-pressure (frame slot, tile allocator, resource reuse) */
+     const DWORD wait_rc = WaitForSingleObject(g.fence_event, INFINITE);
++    LDS_OUT();
+     rsx_perf_add(RSX_PERF_GPUWAIT_T, rsx_perf_now() - w0);
+     /* patch 2157: a wait that did not signal, or a fence that did not reach v (device removal completes the event
+      * with an all-ones value), is a failure: the caller must not treat the range as free. */
+@@ -2964,6 +2966,7 @@
+         }
+         if (done > seen) seen = done;
+         if ((double)(now - win0) * tk >= 1000.0) {
++            g_rsx_split_gpu_busy_ms = busy; g_rsx_split_gpu_win_ms = (double)(now - win0) * tk;   /* KZ2 patch 6091 */
+             fprintf(stderr, "[perf-gpu] t=%us lists %u busy %.1f ms of %.0f longest %.1f missed %u\n",
+                     ++secs, lists, busy, (double)(now - win0) * tk, longest, missed);
+             if (g_gt.on > 0 && g_gt.gp) { static u32 gfr0; ld_gp_report(secs, g_ld_frames - gfr0, busy); gfr0 = g_ld_frames; }   /* patch 2086 */
+@@ -2987,7 +2990,7 @@
+ {
+     if (g_gm_on < 0) {
+         const char* e = getenv("RSX_PERF_GPU");
+-        g_gm_on = e && *e && *e != '0';
++        g_gm_on = (e && *e && *e != '0') || g_rsx_split_on;   /* KZ2 patch 6091: the split's gpu= needs the poller */
+         if (g_gm_on) rsx_vtx_prof_clock = rsx_perf_now;
+         const char* gpe = getenv("RSX_PERF_GPUPASS");   /* patch 2086: implies the 2052 timestamps */
+         const int gp = gpe && *gpe && *gpe != '0';
+@@ -3307,7 +3310,9 @@
+             return;
+         }
+         { const long long w0 = rsx_perf_now();
++          if (reason == LD_FLUSH_READBACK) LDS_IN(RSX_SPB_RBWAIT);   /* KZ2 patch 6091: other reasons stay in submit */
+           WaitForSingleObject(g.fence_event, INFINITE);
++          if (reason == LD_FLUSH_READBACK) LDS_OUT();
+           rsx_perf_add(RSX_PERF_GPUWAIT_T, rsx_perf_now() - w0);
+           if (rsx_perf_walk_on())   /* patch 2029: which flushes wait */
+               rsx_perf_add(reason == LD_FLUSH_READBACK ? RSX_PERF_W_WAIT_RB_T : RSX_PERF_W_WAIT_OTHER_T,
+@@ -3345,7 +3350,9 @@
+ {
+     if (!rsx_perf_enabled()) { ld_flush_body(reason); return; }
+     const long long t0 = rsx_perf_now();
++    LDS_IN(RSX_SPB_SUBMIT);   /* KZ2 patch 6091: list close/execute, frame-slot and non-readback fence waits */
+     ld_flush_body(reason);
++    LDS_OUT();
+     rsx_perf_add(RSX_PERF_FLUSH_T, rsx_perf_now() - t0);
+     rsx_perf_add(RSX_PERF_FLUSH_N, 1);
+     rsx_perf_add(reason == LD_FLUSH_PRESENT ? RSX_PERF_FLUSH_PRESENT_N
+@@ -10141,6 +10148,7 @@
+             if (FAILED(ld_pl_create(&pd, &j->rs, j->key, &j->pso, &lib_hit))) j->pso = NULL;
+         }
+         QueryPerformanceCounter(&q2);
++        if (g_rsx_split_on) __atomic_fetch_add(&g_rsx_split_w_busy, (long long)(q2.QuadPart - q0.QuadPart), __ATOMIC_RELAXED);   /* KZ2 patch 6091 */
+         j->compile_us = (unsigned)((q1.QuadPart - q0.QuadPart) * 1000000 / f.QuadPart);
+         j->create_us = (unsigned)((q2.QuadPart - q1.QuadPart) * 1000000 / f.QuadPart);
+         EnterCriticalSection(&g_apso.cs);
+@@ -10261,8 +10269,9 @@
+ static ID3D12PipelineState* ld_apso_await(u32 idx)
+ {
+     LARGE_INTEGER t0, t1, f; QueryPerformanceCounter(&t0);
++    LDS_IN(RSX_SPB_BAR);   /* KZ2 patch 6091: the walker blocked on the build workers */
+     ld_apso_drain();
+-    if (!g.psos[idx].pending) return g.psos[idx].pso;
++    if (!g.psos[idx].pending) { LDS_OUT(); return g.psos[idx].pso; }
+     while (g.psos[idx].pending) {
+         EnterCriticalSection(&g_apso.cs);
+         while (!g_apso.done) SleepConditionVariableCS(&g_apso.cv, &g_apso.cs, INFINITE);
+@@ -10270,6 +10279,7 @@
+         ld_apso_drain();
+     }
+     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&f);
++    LDS_OUT();
+     const u64 us = (u64)((t1.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart);
+     g_apso.awaits++; g_apso.await_us += us; if (us > g_apso.max_await_us) g_apso.max_await_us = us;
+     return g.psos[idx].pso;
+@@ -14818,6 +14828,7 @@
+ #endif
+     LDW_ADD(RSX_PERF_W_D_PRE_T, pre_t0);
+     LDW_T0(vtx_t0);
++    LDS_IN(RSX_SPB_VPLAN);   /* KZ2 patch 6091 */
+     ld_vc_entry* vc_hit = NULL; ld_vc_entry* vc_fill = NULL; int vc_verify = 0;   /* patch 2047 */
+     int vcn_reason = 0;   /* KZ2 patch 6078 (LD_VC_NEW diagnostic) */
+     if (ld_vertex_compact_payload() && ld_vc_mode() && !ld_vtx_gpu_on()) {   /* 2076: no payload to cache */
+@@ -14848,6 +14859,7 @@
+     if (!dc.n_source_refs)
+         dc.n_source_refs = dc.n_verts;
+     LDW_ADD(RSX_PERF_W_VTX_T, vtx_t0);
++    LDS_OUT();
+     ld_vreg_draw(prim, &used_layout, vc_hit != NULL);   /* patch 2160: counters only, after the timed region */
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.vertex_fetch_pack_qpc +=
+@@ -14908,6 +14920,7 @@
+         g.smp_ring_used = 0;
+     }
+     LDW_T0(vcopy_t0);
++    LDS_IN(RSX_SPB_FILL);   /* KZ2 patch 6091 */
+     if (draw_payload_bytes)
+         memcpy(
+             g.vb_mapped + g.vb_used, vertex_data,
+@@ -14935,12 +14948,15 @@
+     LDW_ADD(RSX_PERF_W_VTX_IB_T, vib_t0);   /* patch 6075 */
+     LDW_ADD(RSX_PERF_W_VTX_T, vcopy_t0);
+     LDW_ADD(RSX_PERF_W_VTX_COPY_T, vcopy_t0);   /* patch 2033 */
++    LDS_OUT();
+ 
+     LDW_T0(pso_t0);
++    LDS_IN(RSX_SPB_PSO);   /* KZ2 patch 6091 */
+     ID3D12PipelineState* pso = get_pso(
+         ld_vertex_mask_signature() ? &used_layout : NULL,
+         ld_vertex_compact_payload() ? (dc.vg ? 2 : 1) : 0);   /* patch 2076: 2 = GPU fetch variant */
+     LDW_ADD(RSX_PERF_W_PSO_T, pso_t0);
++    LDS_OUT();
+     if (dc.vg) {   /* patch 2076: the shader compiler must take the GPU-fetch vertex shaders, or the mode goes off */
+         static u32 vg_ok, vg_fail;
+         if (pso) vg_ok++;
+@@ -15127,6 +15143,7 @@
+     if (current_zslot) g.zdepths[current_zslot - 1].depth_format = sf.depth_format;
+     LDW_ADD(RSX_PERF_W_D_SURF_T, surf_t0);
+     LDW_T0(texloop_t0);   /* patch 2045: the texture loop, TEX_T binds included */
++    LDS_IN(RSX_SPB_TEX);   /* KZ2 patch 6091 */
+     u32 slots[SRV_TABLE_SIZE], smp_slots[SMP_TABLE_SIZE];
+     u32 surf_used[SRV_TABLE_SIZE], n_surf_used = 0;
+     u32 zdepth_used[SRV_TABLE_SIZE], n_zdepth_used = 0;
+@@ -15580,7 +15597,9 @@
+             g_ld_vtex_unsupported++;
+     }
+     LDW_ADD(RSX_PERF_W_D_TEXLOOP_T, texloop_t0);
++    LDS_OUT();
+     LDW_T0(desc_t0);   /* patch 2045 */
++    LDS_IN(RSX_SPB_DESC);   /* KZ2 patch 6091 */
+     const u32 required_srv_tables = 1u + (vtex_mask != 0);
+     const int srv_ring_full = g.srv_ring_used + required_srv_tables > SRV_RING_TABLES;
+     const int smp_ring_full = !srv_ring_full && sampler_table_needs_flush(smp_slots);
+@@ -15592,7 +15611,7 @@
+          * commands recorded while resolving slots are also completed here;
+          * no render-state command for this draw has been recorded yet. */
+         ld_flush(LD_FLUSH_DESCRIPTOR_RING);
+-        if (!g.ready) return;
++        if (!g.ready) { LDS_OUT(); return; }   /* KZ2 patch 6091: close the desc bucket */
+         g.srv_ring_used = 0; g_srv_desc_gen++;   /* patch 2045: the memo's bases are reused */
+         g.smp_ring_used = 0;
+     }
+@@ -15701,7 +15720,9 @@
+         descriptor_signature =
+             fnv1a(vtex_slots, sizeof(vtex_slots), descriptor_signature);
+     LDW_ADD(RSX_PERF_W_D_DESC_T, desc_t0);
++    LDS_OUT();
+     LDW_T0(rec_t0);   /* patch 2045: recording, CONST_T (the VS constant copy) included */
++    LDS_IN(RSX_SPB_REC);   /* KZ2 patch 6091 */
+ 
+     const float W = sf.clip_w ? (float)sf.clip_w : (float)g.width;
+     const float H = sf.clip_h ? (float)sf.clip_h : (float)g.height;
+@@ -15919,6 +15940,7 @@
+     ld_oq_after_draw(oq_pred);
+     if (g_gt.on > 0) ld_gt_draw(target, n_mrt, mrt, current_zslot, n_tri, sf.clip_w * sf.clip_h, (u32)__builtin_popcount(texture_mask));   /* patch 2052 */
+     LDW_ADD(RSX_PERF_W_D_REC_T, rec_t0);
++    LDS_OUT();
+     LDW_T0(post_t0);   /* patch 2045 */
+     ld_surface_note_write(target, LD_SURFACE_WRITE_DRAW);
+     for (u32 r = 1; r < n_mrt; r++)
+@@ -18994,7 +19016,9 @@
+         if (r0 <= s0 && r1 >= s1) ld_host_aa(i);
+     }
+     LDW_T0(wb_t0);
++    LDS_IN(RSX_SPB_WB);   /* KZ2 patch 6091 */
+     done = ld_writeback_batch(idx, n, offset, size);
++    LDS_OUT();
+     if (wb_t0 && n) { LDW_ADD(RSX_PERF_W_WB_NV0039_T, wb_t0); rsx_perf_add(RSX_PERF_W_WB_NV0039_N, 1); }
+     return done;
+ }
+@@ -19140,6 +19164,7 @@
+             { idx[n++] = i; if (g.surfaces[i].location == 0u) nlocal++; }
+     if (!n) return 0;
+     LDW_T0(wb_t0);
++    LDS_IN(RSX_SPB_WB);   /* KZ2 patch 6091 (closed after the local-writeback notes below) */
+     rsx_live_draw_vr_epoch();   /* KZ2 patch 6080: RSX output reaches guest memory */
+     const u32 done = ld_writeback_batch(idx, n, 0, 0);   /* patch 2018: one GPU wait */
+     if (nlocal) {   /* KZ2 patch 6008 */
+@@ -19150,6 +19175,7 @@
+                 if (!faked) { ld_fake_post(idx[k]); faked = 1; }
+             }
+     }
++    LDS_OUT();
+     if (wb_t0) { LDW_ADD(RSX_PERF_W_WB_SYNC_T, wb_t0); rsx_perf_add(RSX_PERF_W_WB_SYNC_N, 1); }
+     if (done) {
+         static u64 total; total += done;
+@@ -20454,7 +20480,9 @@
+     if (ld_pstat_on()) ld_pstat_flush_if_new_minute();   /* patch 2031: close the minute line on flips too */
+     if (!rsx_perf_enabled()) { ld_present_body(buffer_id); return; }
+     const long long t0 = rsx_perf_now();
++    LDS_IN(RSX_SPB_SUBMIT);   /* KZ2 patch 6091: the present (flush, swap-chain Present) when the flip is walked */
+     ld_present_body(buffer_id);
++    LDS_OUT();
+     rsx_perf_add(RSX_PERF_PRESENT_T, rsx_perf_now() - t0);
+     rsx_perf_add(RSX_PERF_PRESENT_N, 1);
+ }
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -284,6 +284,19 @@
+     RSX_PERF_W_VTX_VC_T, RSX_PERF_W_VTX_IB_T, RSX_PERF_W_VTX_HIT_BYTES,
+     RSX_PERF_COUNT
+ };
++/* KZ2 patch 6091 (RSX_PERF_SPLIT=1): exclusive walker buckets. A walk-owned clock charges every tick of one walk to
++ * exactly one bucket; the instrumented regions switch it (stack: enter/leave, flat: base). Off (the default):
++ * g_rsx_split_on is 0 and every site is one load and a not-taken branch. The buckets (RSX_SPB_*) and the clock's
++ * arithmetic are in rsx_perf_split.h. */
++#include "rsx_perf_split.h"
++extern volatile int g_rsx_split_on;
++extern volatile long long g_rsx_split_w_busy;    /* async-PSO worker ticks (compile + create), added by the workers */
++extern volatile double g_rsx_split_gpu_busy_ms, g_rsx_split_gpu_win_ms;   /* last GPU-busy window (RSX_PERF_GPU poller) */
++void rsx_split_enter(int b);   /* walker thread inside a walk only; anything else is ignored */
++void rsx_split_leave(void);
++void rsx_split_base(int b);    /* set the base bucket and drop any open enters (a skipped leave cannot leak) */
++#define LDS_IN(b)  do { if (g_rsx_split_on) rsx_split_enter(b); } while (0)
++#define LDS_OUT()  do { if (g_rsx_split_on) rsx_split_leave(); } while (0)
+ extern volatile int g_rsx_perf_walk_on;    /* patch 6068: the flag itself, set by cellGcmSys.c's [perf] ticker */
+ static inline int rsx_perf_walk_on(void) { return g_rsx_perf_walk_on; }   /* patch 2029: inside the RSX_PERF_PROF window */
+ void      rsx_live_draw_perf_dump(void);       /* patch 2045: [perf-redecode] when the window closes */
+diff --git a/libs/video/rsx_perf_split.h b/libs/video/rsx_perf_split.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_perf_split.h
+@@ -0,0 +1,84 @@
++/* KZ2 patch 6091 (RSX_PERF_SPLIT=1): the exclusive-bucket clock behind [perf-split], as plain functions of a struct and a
++ * timestamp so the host test (tools/runtime/perf/test_perf_split_clock.sh) runs the same arithmetic the walker does.
++ * cellGcmSys.c owns the one instance, gates every call on the owner thread and passes rsx_perf_now().
++ *
++ * One walk at a time owns the clock (s_gcm_fifo_lock). Every clock read charges the ticks since the last read to the
++ * current bucket, so the buckets add up to (end - begin) + the lock wait (PARK) exactly. enter/leave nest (a stack of
++ * RSX_SPLIT_DEPTH, deeper enters are counted but fall back to OTHER on leave); base sets the bucket and drops any open
++ * enters (a skipped leave cannot leak past the next method boundary).
++ *
++ * Cost counters (after KZ3 patch 2203's [perf-split-cost], Project Helghast, same author and licence): commands and
++ * words walked through the method region, and the clock reads the split itself made, so a run can see what the split
++ * costs. They are plain adds on the owner's struct, published at the walk end. */
++#ifndef RSX_PERF_SPLIT_H
++#define RSX_PERF_SPLIT_H
++#include <stdio.h>
++#include <string.h>
++
++enum { RSX_SPB_OTHER = 0, RSX_SPB_DECODE, RSX_SPB_TEX, RSX_SPB_PSO, RSX_SPB_DESC, RSX_SPB_VPLAN, RSX_SPB_FILL,
++       RSX_SPB_REC, RSX_SPB_WB, RSX_SPB_RBWAIT, RSX_SPB_SUBMIT, RSX_SPB_PARK, RSX_SPB_BAR, RSX_SPB_N };
++#define RSX_SPLIT_DEPTH 16
++
++typedef struct rsx_split_clk {
++    int active, depth, cur;
++    unsigned char stk[RSX_SPLIT_DEPTH];
++    long long last, lockwait, acc[RSX_SPB_N];
++    unsigned long long words, cmds, reads;   /* this walk's cost counters */
++} rsx_split_clk;
++
++static inline void rsx_split_clk_charge(rsx_split_clk* c, long long now)
++{
++    c->acc[c->cur] += now - c->last;
++    c->last = now;
++    c->reads++;
++}
++static inline void rsx_split_clk_enter(rsx_split_clk* c, int b, long long now)
++{
++    rsx_split_clk_charge(c, now);
++    if (c->depth < RSX_SPLIT_DEPTH) c->stk[c->depth] = (unsigned char)c->cur;
++    c->depth++; c->cur = b;
++}
++static inline void rsx_split_clk_leave(rsx_split_clk* c, long long now)   /* an unmatched leave reads no clock */
++{
++    if (c->depth <= 0) return;
++    rsx_split_clk_charge(c, now);
++    c->depth--; c->cur = c->depth < RSX_SPLIT_DEPTH ? c->stk[c->depth] : RSX_SPB_OTHER;
++}
++static inline void rsx_split_clk_base(rsx_split_clk* c, int b, long long now)
++{
++    rsx_split_clk_charge(c, now);
++    c->depth = 0; c->cur = b;
++}
++/* t0: before the lock acquire; now: after it. The lock wait goes to PARK at the end. */
++static inline void rsx_split_clk_begin(rsx_split_clk* c, long long t0, long long now)
++{
++    memset(c, 0, sizeof *c);
++    c->lockwait = now - t0; c->last = now; c->cur = RSX_SPB_OTHER; c->reads = 1;
++    c->active = 1;
++}
++static inline void rsx_split_clk_end(rsx_split_clk* c, long long now)
++{
++    rsx_split_clk_charge(c, now);
++    c->acc[RSX_SPB_PARK] += c->lockwait;
++    c->active = 0;
++}
++static inline void rsx_split_clk_cmd(rsx_split_clk* c, unsigned words)   /* one method command of `words` data words */
++{
++    c->cmds++; c->words += words;
++}
++static inline long long rsx_split_clk_total(const rsx_split_clk* c)
++{
++    long long s = 0;
++    for (int i = 0; i < RSX_SPB_N; i++) s += c->acc[i];
++    return s;
++}
++/* [perf-split-cost]: per flip over the period, what the split costs in calls: method commands and their data words, and
++ * the clock reads the split made (two per command for the decode boundary, one per enter/leave/base, two per walk). */
++static inline int rsx_split_fmt_cost(char* out, size_t n, double t, long long flips, unsigned long long words,
++                                     unsigned long long cmds, unsigned long long reads)
++{
++    const double f = flips > 0 ? (double)flips : 1.0;
++    return snprintf(out, n, "[perf-split-cost] t=%.0fs flips=%lld words=%.0f commands=%.0f reads=%.0f\n", t, flips,
++                    (double)words / f, (double)cmds / f, (double)reads / f);
++}
++#endif

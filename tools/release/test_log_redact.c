@@ -24,24 +24,24 @@ int main(void)
     char small[16];
     memset(&rd, 0, sizeof rd);
     /* the order the port adds them; the table sorts longest first */
-    kz2_redact_add(&rd, "C:\\Users\\Bob\\AppData\\Roaming", "%APPDATA%");
-    kz2_redact_add(&rd, "C:\\Users\\Bob\\AppData\\Local\\", "%LOCALAPPDATA%");
-    kz2_redact_add(&rd, "C:\\Users\\Bob", "%USERPROFILE%");
+    kz2_redact_add(&rd, "C:\\Users\\ExampleBob\\AppData\\Roaming", "%APPDATA%");
+    kz2_redact_add(&rd, "C:\\Users\\ExampleBob\\AppData\\Local\\", "%LOCALAPPDATA%");
+    kz2_redact_add(&rd, "C:\\Users\\ExampleBob", "%USERPROFILE%");
     expect("APPDATA path (issue #16's [display] line)",
-           red(&rd, "[display] C:\\Users\\Bob\\AppData\\Roaming\\Project Pyrrhus\\display.ini: mode borderless\n"),
+           red(&rd, "[display] C:\\Users\\ExampleBob\\AppData\\Roaming\\Project Pyrrhus\\display.ini: mode borderless\n"),
            "[display] %APPDATA%\\Project Pyrrhus\\display.ini: mode borderless\n");
     expect("keybinds line, other case",
-           red(&rd, "[keybinds] c:\\users\\bob\\appdata\\roaming\\Project Pyrrhus\\keybinds.ini: read\n"),
+           red(&rd, "[keybinds] c:\\users\\examplebob\\appdata\\roaming\\Project Pyrrhus\\keybinds.ini: read\n"),
            "[keybinds] %APPDATA%\\Project Pyrrhus\\keybinds.ini: read\n");
     expect("forward slashes (kz2_exe_dir's form)",
-           red(&rd, "[log] session log: C:/Users/Bob/Games/Project Pyrrhus/build/logs/kz2-1.log\n"),
+           red(&rd, "[log] session log: C:/Users/ExampleBob/Games/Project Pyrrhus/build/logs/kz2-1.log\n"),
            "[log] session log: %USERPROFILE%/Games/Project Pyrrhus/build/logs/kz2-1.log\n");
     expect("LOCALAPPDATA (trailing separator dropped when added)",
-           red(&rd, "x C:\\Users\\Bob\\AppData\\Local\\Temp\\a.txt"), "x %LOCALAPPDATA%\\Temp\\a.txt");
-    expect("a longer user name is not cut", red(&rd, "C:\\Users\\Bobby\\x C:\\Users\\Bob.old\\y"),
-           "C:\\Users\\Bobby\\x C:\\Users\\Bob.old\\y");
-    expect("the folder itself at the end, in quotes", red(&rd, "home='C:\\Users\\Bob'"), "home='%USERPROFILE%'");
-    expect("several on one line", red(&rd, "C:\\Users\\Bob\\a;C:\\Users\\Bob\\AppData\\Roaming\\b"),
+           red(&rd, "x C:\\Users\\ExampleBob\\AppData\\Local\\Temp\\a.txt"), "x %LOCALAPPDATA%\\Temp\\a.txt");
+    expect("a longer user name is not cut", red(&rd, "C:\\Users\\ExampleBobby\\x C:\\Users\\ExampleBob.old\\y"),
+           "C:\\Users\\ExampleBobby\\x C:\\Users\\ExampleBob.old\\y");
+    expect("the folder itself at the end, in quotes", red(&rd, "home='C:\\Users\\ExampleBob'"), "home='%USERPROFILE%'");
+    expect("several on one line", red(&rd, "C:\\Users\\ExampleBob\\a;C:\\Users\\ExampleBob\\AppData\\Roaming\\b"),
            "%USERPROFILE%\\a;%APPDATA%\\b");
     expect("other paths untouched", red(&rd, "[boot] VFS root: C:\\KZ2\\Project Pyrrhus\\vfs\n"),
            "[boot] VFS root: C:\\KZ2\\Project Pyrrhus\\vfs\n");
@@ -51,8 +51,8 @@ int main(void)
         memset(&t, 0, sizeof t);
         int a = kz2_redact_add(&t, "C:\\", "%X%");
         int b = kz2_redact_add(&t, "", "%X%");
-        int c = kz2_redact_add(&t, "C:\\Users\\Bob", "%USERPROFILE%");
-        int d = kz2_redact_add(&t, "c:/users/bob/", "%USERPROFILE%");
+        int c = kz2_redact_add(&t, "C:\\Users\\ExampleBob", "%USERPROFILE%");
+        int d = kz2_redact_add(&t, "c:/users/examplebob/", "%USERPROFILE%");
         char got[64];
         snprintf(got, sizeof got, "%d%d%d%d count=%d", a, b, c, d, t.count);
         expect("too short, empty and duplicate folders are not added", got, "0010 count=1");
@@ -61,10 +61,10 @@ int main(void)
     {
         kz2_redactor none;
         memset(&none, 0, sizeof none);
-        expect("no rules: unchanged", red(&none, "C:\\Users\\Bob\\x"), "C:\\Users\\Bob\\x");
+        expect("no rules: unchanged", red(&none, "C:\\Users\\ExampleBob\\x"), "C:\\Users\\ExampleBob\\x");
     }
     /* truncation stays NUL-terminated */
-    kz2_redact(&rd, "C:\\Users\\Bob\\AppData\\Roaming\\Project Pyrrhus", 40, small, sizeof small);
+    kz2_redact(&rd, "C:\\Users\\ExampleBob\\AppData\\Roaming\\Project Pyrrhus", 47, small, sizeof small);
     expect("output cap: truncated and terminated", small, "%APPDATA%\\Proje");
     /* line splitting for the copy thread */
     {

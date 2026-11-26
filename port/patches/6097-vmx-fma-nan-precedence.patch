@@ -1,0 +1,134 @@
+KZ2 patch 6097: vmaddfp / vnmsubfp NaN operand precedence behind KZ2_VMX_FMA_NAN=1, off by default.
+
+Cause: both paths of runtime/ppu/ppu_vmx.h (the scalar loop and 6094's four-lane -mfma path) turn every NaN result
+of vmaddfp / vnmsubfp into the default QNaN 0x7FC00000 (vmx_fix), so an operand NaN loses its payload and sign. Every
+other vector float op in the file propagates the quieted operand NaN (vmx_vnan2 / vmx_vnan1).
+
+Rule (KZ2_VMX_FMA_NAN=1), from the AltiVec Programming Environments Manual (NaN operand precedence): with one NaN operand it is the result; with several, the first in register-field order vA,
+vB, vC; an SNaN is quieted by setting the top fraction bit, payload and sign kept; a NaN made by the operation
+(0 * inf, inf - inf) is the default QNaN. vmaddfp vD,vA,vC,vB computes vA*vC + vB, so the field order is vA (first
+multiplicand), vB (the addend), vC (second multiplicand), not the multiplication order. vnmsubfp returns the operand
+NaN without its negation (as the scalar fnmadd/fnmsub: "QNaNs propagate with no effect on their sign").
+ASSUMPTION: no Cell document confirms that the PPU's VMX follows the PEM for these two, so the rule stays off until
+a hardware trace (PS3 vmaddfp / vnmsubfp with NaN operands in each position, VSCR 0 and NJ) confirms it. RPCS3 (read,
+not copied) states vA, vB, vC precedence for other vector float ops but returns 0x7FC00000 for these two with its NaN
+fix on, which is what the flag-off build does.
+
+Change: vmx_fma_nan_on() (getenv once per translation unit, relaxed atomics), vmx_vnan3 (scalar, field order),
+vmx_vnan3x4 (four lanes: the vmx_fix blend, then vC, vB, vA blended in, lowest precedence first) and vmx_st4fn (stores
+the vmx_vnan3x4 result when the flag is on, else calls the unchanged vmx_st4f). Flag off: every result bit is the
+pre-6097 one (tools/runtime/test_ppu_vmx_fma_nan.sh compares against the header with this patch reversed); the cost
+is one predictable load and branch per call.
+
+Host test: tools/runtime/test_ppu_vmx_fma_nan.sh: flag off == pre-6097 on both paths over random, special and NaN
+operands; flag on: all 7 NaN-operand combinations of vA, vB, vC with every QNaN/SNaN assignment, both ops, both paths,
+VSCR 0 and NJ, against the rule; negative controls (multiplication order vA, vC, vB; the flag ignored).
+
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+index 4b487c9..31f5872 100644
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -18,6 +18,7 @@
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
++#include <stdlib.h>   /* KZ2 patch 6097: getenv for KZ2_VMX_FMA_NAN */
+ /* KZ2 patch 6094 (from KZ3 patch 2236): the four-lane vmaddfp / vnmsubfp (below) when the lifted code is built with -mfma. */
+ #if defined(__FMA__) && defined(__SSE4_1__) && (defined(__x86_64__) || defined(__i386__)) && !defined(VMX_NO_SIMD_FMA)
+ #include <immintrin.h>
+@@ -76,6 +77,34 @@ VMX_INL uint32_t vmx_vnan2(uint32_t r, uint32_t a, uint32_t b) {
+     if (vmx_isnan(b)) return b | 0x7FC00000u;
+     return vmx_fix(r);
+ }
++/* KZ2 patch 6097 begin: vmaddfp / vnmsubfp NaN operand precedence, KZ2_VMX_FMA_NAN=1 only (off by default).
++ * Off: every NaN result of these two is the default QNaN 0x7FC00000 (vmx_fix), the code before 6097.
++ * On: the first NaN operand in register-field order vA, vB, vC, quieted (top fraction bit set, sign and payload kept);
++ * a NaN made by the operation (0 * inf, inf - inf) is the default QNaN. vmaddfp vD,vA,vC,vB computes vA*vC + vB, so
++ * field order is the first multiplicand, then the addend (vB), then the second multiplicand (vC), not the
++ * multiplication order. vnmsubfp returns the operand NaN without its negation.
++ * Source: the AltiVec Programming Environments Manual (NaN operand precedence). ASSUMPTION: no Cell document
++ * confirms that the PPU's VMX follows the manual here, so this stays off until a
++ * hardware trace (vmaddfp / vnmsubfp with NaN operands in each position, VSCR 0 and NJ) confirms it.
++ * The flag is read once per translation unit (each lifted TU keeps its own copy; relaxed atomics: every thread reads
++ * the same environment, so the race is benign). */
++VMX_INL int vmx_fma_nan_on(void) {
++    static int s_on = -1;
++    int v = __atomic_load_n(&s_on, __ATOMIC_RELAXED);
++    if (__builtin_expect(v < 0, 0)) {
++        const char* e = getenv("KZ2_VMX_FMA_NAN");
++        v = e && e[0] == '1' && e[1] == 0;
++        __atomic_store_n(&s_on, v, __ATOMIC_RELAXED);
++    }
++    return v;
++}
++VMX_INL uint32_t vmx_vnan3(uint32_t r, uint32_t a, uint32_t b, uint32_t c) {   /* field order vA, vB, vC */
++    if (vmx_isnan(a)) return a | 0x7FC00000u;
++    if (vmx_isnan(b)) return b | 0x7FC00000u;
++    if (vmx_isnan(c)) return c | 0x7FC00000u;
++    return vmx_fix(r);
++}
++/* KZ2 patch 6097 end */
+ VMX_INL uint32_t vmx_vnan1(uint32_t r, uint32_t b) {
+     if (vmx_isnan(b)) return b | 0x7FC00000u;
+     return vmx_fix(r);
+@@ -289,7 +318,8 @@ VMX_FBIN(vmx_vminfp, vmx_minf(vmx_f(x), vmx_f(y)), 0)
+  *   - vmaddfp = a*c + b fused (_mm_fmadd_ps, = a correctly rounded fmaf(x, z, y));
+  *   - vnmsubfp = -(a*c - b): fmsub, then a sign flip, as the scalar -fmaf(x, z, -y). Not fnmadd: for an exact zero
+  *     (a*c == b) fnmadd gives +0 where the scalar path (and the instruction) gives -0;
+- *   - a NaN result becomes the default QNaN 0x7FC00000 (vmx_fix: these two never propagated NaN payloads);
++ *   - a NaN result becomes the default QNaN 0x7FC00000 (vmx_fix: these two never propagated NaN payloads); with
++ *     KZ2_VMX_FMA_NAN=1 an operand NaN in field order vA, vB, vC instead (vmx_vnan3 / vmx_vnan3x4, patch 6097);
+  *   - flush the result under NJ, swap back, store 16 bytes.
+  * Bit-identical to the scalar #else path WHEN fmaf is correctly rounded (glibc; hardware FMA). MinGW's software
+  * fmaf is not (it sums a split product with several roundings), so on the Windows build this path is a correctness
+@@ -311,26 +341,46 @@ VMX_INL void vmx_st4f(void* p, __m128 r, uint32_t vscr) {
+     const __m128 fixed = _mm_blendv_ps(r, _mm_castsi128_ps(_mm_set1_epi32(0x7FC00000)), _mm_cmpunord_ps(r, r));   /* vmx_fix */
+     _mm_storeu_si128((__m128i*)p, vmx_bswap32x4(vmx_flush4(_mm_castps_si128(fixed), vscr)));
+ }
++/* KZ2 patch 6097: vmx_vnan3 on each lane (the vmx_fix blend, then vC, vB, vA blended in, lowest precedence first) */
++VMX_INL __m128 vmx_vnan3x4(__m128 r, __m128 a, __m128 b, __m128 c) {
++    const __m128 q = _mm_castsi128_ps(_mm_set1_epi32(0x7FC00000));
++    r = _mm_blendv_ps(r, q, _mm_cmpunord_ps(r, r));
++    r = _mm_blendv_ps(r, _mm_or_ps(c, q), _mm_cmpunord_ps(c, c));
++    r = _mm_blendv_ps(r, _mm_or_ps(b, q), _mm_cmpunord_ps(b, b));
++    return _mm_blendv_ps(r, _mm_or_ps(a, q), _mm_cmpunord_ps(a, a));
++}
++/* KZ2 patch 6097: KZ2_VMX_FMA_NAN=1 stores the vmx_vnan3x4 result; off, vmx_st4f as before 6097 */
++VMX_INL void vmx_st4fn(void* p, __m128 r, __m128 a, __m128 b, __m128 c, uint32_t vscr) {
++    if (__builtin_expect(vmx_fma_nan_on(), 0)) {
++        _mm_storeu_si128((__m128i*)p, vmx_bswap32x4(vmx_flush4(_mm_castps_si128(vmx_vnan3x4(r, a, b, c)), vscr)));
++        return;
++    }
++    vmx_st4f(p, r, vscr);
++}
+ VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {
+     const __m128 a = vmx_ld4f(a_, vscr), b = vmx_ld4f(b_, vscr), c = vmx_ld4f(c_, vscr);
+-    vmx_st4f(d_, _mm_fmadd_ps(a, c, b), vscr);
++    vmx_st4fn(d_, _mm_fmadd_ps(a, c, b), a, b, c, vscr);
+ }
+ VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {
+     const __m128 a = vmx_ld4f(a_, vscr), b = vmx_ld4f(b_, vscr), c = vmx_ld4f(c_, vscr);
+-    vmx_st4f(d_, _mm_xor_ps(_mm_fmsub_ps(a, c, b), _mm_set1_ps(-0.0f)), vscr);
++    vmx_st4fn(d_, _mm_xor_ps(_mm_fmsub_ps(a, c, b), _mm_set1_ps(-0.0f)), a, b, c, vscr);
+ }
+ #else
+ /* ---- KZ2 patch 6094 end ---- */
+ VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
++    const int nanp = vmx_fma_nan_on();   /* KZ2 patch 6097 */
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+-        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(fmaf(x, z, y))), vscr)); } VMX_OUT; }
++        const uint32_t u = vmx_u(fmaf(x, z, y));
++        vmx_sw(r, i, vmx_flush(nanp ? vmx_vnan3(u, vmx_u(x), vmx_u(y), vmx_u(z)) : vmx_fix(u), vscr)); } VMX_OUT; }
+ VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
++    const int nanp = vmx_fma_nan_on();   /* KZ2 patch 6097 */
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+-        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(-fmaf(x, z, -y))), vscr)); } VMX_OUT; }
++        const uint32_t u = vmx_u(-fmaf(x, z, -y));
++        vmx_sw(r, i, vmx_flush(nanp ? vmx_vnan3(u, vmx_u(x), vmx_u(y), vmx_u(z)) : vmx_fix(u), vscr)); } VMX_OUT; }
+ #endif   /* KZ2 patch 6094: VMX_SIMD_FMA */
+ 
+ #define VMX_FUN(name, expr, flush_in, nanmode) \

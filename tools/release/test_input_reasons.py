@@ -114,8 +114,8 @@ def main():
         check("update with PARAM.SFO only: says what it holds and keeps U2", rc == 1 and f"{half} holds PARAM.SFO." in
               rs[0] and "Found: 1.29 update: no USRDIR/EBOOT.BIN" in rs[0], rs)
         rc, rs, _ = run(["--dump", d, "--update", os.path.dirname(u), "--eboot", elf])
-        check("the folder above the update", rc == 1 and
-              f"one folder down, the 1.29 update looks like {u}: pick that folder" in rs[0], rs)
+        check("the folder above the update (dev_hdd0/game): names the disc's own folder in it", rc == 1 and
+              f"the one for your disc (BCUS98116) is {u}: pick that folder" in rs[0], rs)
         rc, rs, _ = run(["--dump", d, "--update", os.path.join(u, "USRDIR")])
         check("a pick of the update's USRDIR passes", rc == 0 and rs == [], rs)
 
@@ -272,10 +272,13 @@ def main():
         rc, rs, _ = run(["--dump", eu, "--update", u])
         s = os.sep
         check("mixed set: the update's reason names both regions and dev_hdd0/game/<the disc's id>", rc == 1
-              and len(rs) == 2 and rs[0].startswith(f"1.29 update failed: {u} holds PARAM.SFO")
-              and f"(dev_hdd0{s}game{s}BCES00081)" in rs[0]
-              and "this is the US update (BCUS98116), but the disc dump is the European disc (BCES00081)" in rs[0]
-              and rs[1].startswith("Passed: the disc dump"), rs)
+              and len(rs) == 3 and rs[1].startswith(f"1.29 update failed: {u} holds PARAM.SFO")
+              and f"(dev_hdd0{s}game{s}BCES00081)" in rs[1]
+              and "this is the US update (BCUS98116), but the disc dump is the European disc (BCES00081)" in rs[1]
+              and rs[2].startswith("Passed: the disc dump"), rs)
+        check("mixed set: the region line comes first, in plain words (2026-11-26)", rs[0] ==
+              "Your disc is the European version (BCES00081), but this update is from the US release (BCUS98116). "
+              "The disc, the update and the EBOOT must all come from the same release.", rs)
 
         # text output: the reasons follow "first-run checks: FAIL", indented (firstrun.text_reasons reads them)
         import contextlib

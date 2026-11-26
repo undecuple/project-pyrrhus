@@ -67,8 +67,8 @@ personal paths and host names.
 
 ## Versions and releases
 
-Tags are `vMAJOR.MINOR.PATCH`: a fix bumps the last number, a feature the middle one. Every release stays a GitHub
-pre-release until `v1.0.0`. No suffixes (no `-alpha`, `-rc`). A tag is never moved or reused: if a release is wrong,
+Tags are `vMAJOR.MINOR.PATCH`: a fix bumps the last number, a feature the middle one. Up to `v0.1.13` every release was a
+GitHub pre-release; from `v0.1.14` they are full releases (`release_version.py` `FIRST_FULL_RELEASE`). No suffixes (no `-alpha`, `-rc`). A tag is never moved or reused: if a release is wrong,
 publish the next version (the first tag, `v0.1.0`, was never published as a release for that reason). Put the checksum
 files next to the assets.
 
@@ -76,7 +76,7 @@ One file holds the version: `installer/VERSION` (`MAJOR.MINOR.PATCH`, nothing el
 `python3 tools/release/bump_version.py X.Y.Z` (`--check` lists what would change): it writes `installer/VERSION`,
 `CITATION.cff` (`version`, `date-released`), the `<!-- version -->...<!-- /version -->` spans in the README, the docs
 and the site, any literal version in the resource scripts, `installer/kz2.iss` or `port/kz2/CMakeLists.txt`, and turns
-`## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - DATE (pre-release)`; then it regenerates the site and runs
+`## [Unreleased]` in `CHANGELOG.md` into `## [X.Y.Z] - DATE (release)` (`(pre-release)` before 0.1.14); then it regenerates the site and runs
 `tools/release/test_version_agree.py`. Write the changes for players under `## [Unreleased]` as you make them.
 `tools/release/release_version.py --check --tag vX.Y.Z` confirms that a release tag matches the version. The release
 workflow writes the release notes from the tag's `CHANGELOG.md` entry (`tools/release/release_notes.py`) and stops
@@ -94,7 +94,7 @@ when there is none.
 `assemble_payload.py` refuses a `--version` that is not the one in `installer/VERSION`. `port/kz2/CMakeLists.txt`'s
 `project()` line carries no version.
 
-Checksums: `tools/release/pack_zip.py` writes `<zip>.sha256` ("hash, two spaces, name") beside the portable zip, and
+Checksums: `tools/release/pack_zip.py` writes `<zip>.sha256` ("hash, two spaces, name") beside the portable zip (`Project-Pyrrhus-<version>-Windows-x64.zip`), and
 `version_check.py` looks for a `.sha256` asset named after the installer. Publish one for each asset you upload.
 
 ## CI and GitHub settings
@@ -161,6 +161,10 @@ your fork, including in test fixtures.
   published only after such a scan; the script that runs it is not part of the export, so write your own.
 - Keep the opt-in rule for network features and the test that guards it (`tools/release/test_version_check.py`).
 - Keep the host tests in `tools/host-tests.txt` passing; they need no game and no network.
+- In tests and docs, a user folder (`C:\Users\<name>`, a Wine or network home, `/Users/<name>`) is named with a
+  placeholder that begins with `Example` (`C:\Users\Example José\AppData`, `\\fs01\home\exampledoe`) or is one
+  letter (`C:\Users\a`); any other name fails `tools/release/user_folders.py --check`, which the pre-push check
+  `tools/release/gate_check.py` applies too.
 - `.github/SECURITY.md` names this repository as the place to report problems. Change it to yours.
 
 ## What is not here

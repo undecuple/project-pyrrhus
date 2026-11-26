@@ -46,5 +46,5 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Log file
-      description: "Attach the newest log file next to the exe (and the crash file there, if any). Before attaching, open the log and remove your Windows or Linux user name, home folder paths and any host name (search for your user name). Never attach game files, decrypted binaries, saves or keys."
+      label: Support package or log files
+      description: "Best: attach a support package. Choose \"Make a support package\" in the Start menu (in a portable folder, run Project Pyrrhus.exe --support-package there): it puts the logs, crash reports and settings in one zip in the logs folder, with your user folders and PC name already replaced. If you cannot make one, attach the newest log from build\\logs (and a crash-*.txt there, if any) after opening it and removing your Windows or Linux user name, home folder paths and PC name yourself. Never attach game files, decrypted binaries, saves or keys."

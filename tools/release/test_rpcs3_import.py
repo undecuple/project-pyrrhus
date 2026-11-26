@@ -520,7 +520,7 @@ def main():
         for ending in (EOFError, StopIteration):
             a = A()
             a.rpcs3 = str(root2)
-            a.build = os.path.join(tmp, "bld5b")
+            a.build = os.path.join(tmp, "bld5b" + ending.__name__)   # its own: a second same failure shows the guide (2026-11-26)
             first = iter(["", "n", "n", ""])
             left = {"n": 0, "fix": 0}
 

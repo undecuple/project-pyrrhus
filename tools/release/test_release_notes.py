@@ -115,7 +115,7 @@ def main():
             paras = out.strip().split("\n\n")
             check(rc == 0 and len(paras) == 7, f"{layout}: v0.2.0 gives seven paragraphs", (rc, err, paras))
             if len(paras) == 7:
-                check(paras[0] == "Project Pyrrhus 0.2.0, a pre-release: partly playable, see [docs/RELEASE-CRITERIA.md]"
+                check(paras[0] == "Project Pyrrhus 0.2.0, an early, experimental release: partly playable, see [docs/RELEASE-CRITERIA.md]"
                       "(https://github.com/undecuple/project-pyrrhus/blob/v0.2.0/docs/RELEASE-CRITERIA.md).",
                       f"{layout}: first line", paras[0])
                 check(paras[1] == "New in 0.2.0:\n- A new thing, with a [link](https://github.com/undecuple/project-pyrrhus/blob/v0.2.0/docs/A.md).\n- A long item that wraps onto a "

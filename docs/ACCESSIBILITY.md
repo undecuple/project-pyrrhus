@@ -2,7 +2,7 @@
 
 What the port offers today to adjust how the game is played, seen and read. Facts only: where something is missing,
 this page says so. Last checked 2026-11-02; see also [KNOWN_ISSUES.md](KNOWN_ISSUES.md). The installer and portable zip are
-published as pre-releases; the installer and Start menu entries below belong to the installer.
+early, experimental releases; the installer and Start menu entries below belong to the installer.
 
 ## Controls
 

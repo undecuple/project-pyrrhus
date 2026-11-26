@@ -1,0 +1,384 @@
+KZ2 patch 1095: SPURS workload teardown and priorities on the default kernel (KZ2_SPURS_TEARDOWN=1, off by default),
+and louder logs for silent HLE gaps (always on, logging only).
+
+Written for this port from the SDK's documented workload states and the port's own kernel; no firmware, RPCS3 or
+other third-party code used. Findings: a 2026-11-25 review of the HLE firmware and RSX/LV2 coverage gaps (four
+firmware gaps and one RSX/LV2 gap, with corrections).
+
+The game shuts down, waits for and removes jm_post (wid 7) on every level transition, then adds it again. Shutdown
+and Wait were no-ops and Remove freed the wid at once, so a jm_post module still running on a kernel thread could
+overlap the re-add. With KZ2_SPURS_TEARDOWN=1, on the default kernel (kz3_spu_loop / kz3_ksel; the state transitions
+in the new runtime/spu/spurs_wkl_teardown.h, host-tested by tools/spu/test_spurs_teardown.sh):
+- cellSpursShutdownWorkload clears the workload's ENABLED bit and sets STATE1 to 3 under the instance line's stripe,
+  so kz3_ksel no longer picks it and a running module is told to switch at its next poll;
+- cellSpursWaitForWorkloadShutdown waits (1 ms steps, a log line each second) until the guest CURCONT[wid] is 0 and
+  no kernel thread is inside its module (s_run_wid / s_run_t0; s_wkl_busy for the old kernel), then sets STATE1 4.
+  It has NO timeout yet: a module that never polls would hold the caller forever (logged each second). Before this
+  flag may ever be on by default, Wait needs a cap (log, then return or fall through after 5-10 s);
+- cellSpursRemoveWorkload returns BUSY while CURCONT[wid] != 0 or a kernel thread is inside, otherwise clears
+  READY1, IDLE2, the signal bit, the ENABLED bit and STATE1 and forgets s_wkl_pm[wid];
+- cellSpursFinalize clears only its own instance's workloads and forgets their s_wkl_pm entries;
+- cellSpursSetPriorities also writes the 8 priority bytes at wklInfo + 0x18 that kz3_ksel reads, under the instance
+  line's and the wklInfo line's stripes.
+Flag off: the old behaviour. Logs, always on: every Shutdown, Wait, Remove and SetPriorities call; ReadyCountStore on
+the default kernel (the first 16 calls, then per-wid counts at every power of two); the first 8 calls of
+cellGcmSortRemapEaIoAddress; cellSaveDataDelete2 says "STUB: nothing deleted" (cellSaveData.c keeps its mixed line
+endings; only that hunk changes); ppu_loader's unregistered-syscall path logs each distinct number once with r3-r10
+and lr (it had one 30-line cap for all numbers; a relaxed load before the exchange once a number is seen).
+General ps3recomp fixes, upstream candidates (shared with KZ3).
+
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -16,6 +16,7 @@
+ #include "spu_workload.h"   /* SPU image -> lifted-entry dispatch (runtime/spu) */
+ #include "spurs_taskset.h"  /* REAL BE CellSpursTaskset layout builders (fork Option-B) */
+ #include "../../runtime/spu/spurs_kern_sched.h" /* KZ3 patch 1074: per-SPU kernel selection (from PR #213) */
++#include "../../runtime/spu/spurs_wkl_teardown.h" /* KZ2 patch 1095: workload shutdown/remove state transitions */
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
+ #include "ps3emu/ps3_tprof.h"    /* PS3_TPROF: in-process samples of the SPU workers */
+ #include "../../runtime/ppu/ppu_context.h"  /* g_active_ctx: 9th argument on the guest stack */
+@@ -532,6 +533,29 @@
+     return NULL;
+ }
+ 
++/* KZ2 patch 1095 (KZ2_SPURS_TEARDOWN=1, off by default): real ShutdownWorkload / WaitForWorkloadShutdown /
++ * RemoveWorkload on the default kernel (state transitions in runtime/spu/spurs_wkl_teardown.h), SetPriorities
++ * written to the guest wklInfo bytes the kernel reads, and Finalize clearing only its own instance's workloads.
++ * Off: those calls behave as before (Shutdown and Wait no-ops, Remove frees the wid at once), only logged. */
++static int kz2_spurs_teardown(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("KZ2_SPURS_TEARDOWN"); v = (e && *e == '1') ? 1 : 0;
++                 if (v) printf("[cellSpurs] KZ2_SPURS_TEARDOWN=1: workload shutdown/remove and priorities on the guest instance (patch 1095)\n"); }
++    return v;
++}
++/* A kernel thread of instance ea is inside wid's module (kz3_spu_loop's s_run_wid/s_run_t0, set after the pick and
++ * cleared before kz3_kleave), or the old poll kernel holds its claim (s_wkl_busy). */
++static int kz2_wkl_host_busy(u32 ea, u32 wid)
++{
++    for (int j = 0; j < MAX_SPURS_INST; j++) {
++        if (s_inst[j].ea != ea) continue;
++        for (int kt = 0; kt < KZ3_KT_MAX; kt++)
++            if (s_run_t0[j][kt] && s_run_wid[j][kt] == wid) return 1;
++    }
++    return s_wkl_busy[wid] != 0;
++}
++
+ /* KZ3 patch 1058: the port kernel's side of the selectWorkload answer (spurs_policy.c
+  * kz3_pm_select). A running policy module keeps its SPU (the answer is its own wklCurrentId) unless another
+  * workload of the instance is enabled, state 2, not claimed by a kernel thread, and
+@@ -659,6 +683,7 @@
+ 
+ static void spurs_cancel_attached_queues(u32 spurs_ea);  /* defined with the queue table */
+ 
++static void kz2_wkl_pm_forget(u32 wid);   /* KZ2 patch 1095, with s_wkl_pm below */
+ s32 cellSpursFinalize(CellSpurs* spurs)
+ {
+     if (!spurs)
+@@ -682,6 +707,10 @@
+         return CELL_SPURS_CORE_ERROR_STAT;
+ 
+     printf("[cellSpurs] Finalize(ea=0x%08X)\n", si->ea);
++    if (kz2_spurs_teardown()) {   /* KZ2 patch 1095: only this instance's workloads */
++        for (u32 w = 0; w < CELL_SPURS_MAX_WORKLOAD; w++)
++            if (s_workloads[w].spurs_ea == si->ea) { memset(&s_workloads[w], 0, sizeof s_workloads[w]); kz2_wkl_pm_forget(w); }
++    } else
+     memset(s_workloads, 0, sizeof(s_workloads));
+     si->ea = 0;   /* kernel thread sees a dead instance and idles */
+     return CELL_OK;
+@@ -803,6 +832,25 @@
+     if (!s_workloads[wid].in_use) return CELL_SPURS_CORE_ERROR_SRCH;
+ 
+     memcpy(s_workloads[wid].priority, priorities_h, CELL_SPURS_MAX_SPU);
++    printf("[cellSpurs] SetPriorities(wid=%u, %02X %02X %02X %02X %02X %02X %02X %02X)%s\n", wid,
++           priorities_h[0], priorities_h[1], priorities_h[2], priorities_h[3], priorities_h[4], priorities_h[5],
++           priorities_h[6], priorities_h[7], kz2_spurs_teardown() ? " -> guest wklInfo" : "");
++    if (kz2_spurs_teardown()) {
++        /* KZ2 patch 1095: kz3_ksel weighs and gates on the guest bytes (wklInfo + 0x18 + spu), not the host copy.
++         * Written under the instance line's stripe (the kernel's pick) and the wklInfo line's (a policy module's
++         * GETLLAR of it); both lines' reservations are lost, and idle SPUs re-evaluate. */
++        const u32 ea = s_workloads[wid].spurs_ea;
++        const u32 info = ea + SPURS_WKL_INFO1 + wid * SPURS_WKL_INFO_SZ;
++        u8 pr[8];
++        memcpy(pr, priorities_h, 8);
++        const uint64_t m = spu_ll_mask(ea, 128) | spu_ll_mask(info & ~0x7Fu, 128);
++        spu_ll_lock_mask(m);
++        kz2_wkl_set_priorities(vm_base + ea, wid, pr);
++        spu_coh_notify_write(ea);
++        spu_coh_notify_write(info & ~0x7Fu);
++        spu_ll_unlock_mask(m);
++        kz3_kern_wake_ea(ea);
++    }
+     return CELL_OK;
+ }
+ 
+@@ -1884,6 +1932,27 @@
+     if (wid >= CELL_SPURS_MAX_WORKLOAD) return CELL_SPURS_CORE_ERROR_INVAL;
+     if (!s_workloads[wid].in_use) return CELL_SPURS_CORE_ERROR_SRCH;
+ 
++    if (kz2_spurs_teardown()) {
++        /* KZ2 patch 1095: BUSY while an SPU or a kernel thread still holds the workload; otherwise its instance
++         * bytes are cleared under the instance line's stripe and the PM resolution is forgotten (a re-added wid may
++         * carry another module). */
++        const u32 ea = s_workloads[wid].spurs_ea;
++        const int hb = kz2_wkl_host_busy(ea, wid);
++        const uint64_t m = spu_ll_mask(ea, 128);
++        spu_ll_lock_mask(m);
++        const u8 cont = *(vm_base + ea + SPURS_WKL_CURCONT + wid), st = *(vm_base + ea + SPURS_WKL_STATE1 + wid);
++        const int rc = kz2_wkl_remove(vm_base + ea, wid, hb);
++        if (rc == KZ2_WKL_OK) spu_coh_notify_write(ea);
++        spu_ll_unlock_mask(m);
++        if (rc != KZ2_WKL_OK) {
++            printf("[cellSpurs] RemoveWorkload(wid=%u) BUSY (state=%u cont=%u host=%d)\n", wid, st, cont, hb);
++            return CELL_SPURS_CORE_ERROR_BUSY;
++        }
++        s_workloads[wid].in_use = 0;
++        kz2_wkl_pm_forget(wid);
++        printf("[cellSpurs] RemoveWorkload(wid=%u) removed (state was %u)\n", wid, st);
++        return CELL_OK;
++    }
+     s_workloads[wid].in_use = 0;
+     printf("[cellSpurs] RemoveWorkload(wid=%u)\n", wid);
+     return CELL_OK;
+@@ -1931,6 +2000,7 @@
+     int                 resolved;   /* 0=not tried, 1=found, -1=missing */
+ } WklPm;
+ static WklPm s_wkl_pm[CELL_SPURS_MAX_WORKLOAD];
++static void kz2_wkl_pm_forget(u32 wid) { memset(&s_wkl_pm[wid], 0, sizeof s_wkl_pm[wid]); }   /* KZ2 patch 1095 */
+ 
+ static WklPm* spurs_resolve_pm(u32 wid)
+ {
+@@ -2674,7 +2744,21 @@
+     if (!spurs) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+     if (wid >= CELL_SPURS_MAX_WORKLOAD) return CELL_SPURS_CORE_ERROR_INVAL;
+     if (!s_workloads[wid].in_use) return CELL_SPURS_CORE_ERROR_SRCH;
+-    if (!kz3_kern_old()) { (void)kz3_ready_update((u32)(uintptr_t)spurs, wid, 0, 0, value); return CELL_OK; }   /* KZ3 patch 1074 */
++    if (!kz3_kern_old()) {   /* KZ3 patch 1074 */
++        (void)kz3_ready_update((u32)(uintptr_t)spurs, wid, 0, 0, value);
++        /* KZ2 patch 1095 (logging only): the first 16 calls, then a per-wid count at every power of two. */
++        /* 64-bit counts: long is 32 bits on Windows and would wrap negative (then print on every call). */
++        static volatile uint64_t s_rcs_n[CELL_SPURS_MAX_WORKLOAD], s_rcs_total;
++        __atomic_add_fetch(&s_rcs_n[wid], 1, __ATOMIC_RELAXED);
++        const uint64_t t = __atomic_add_fetch(&s_rcs_total, 1, __ATOMIC_RELAXED);
++        if (t <= 16) printf("[cellSpurs] ReadyCountStore(wid=%u, value=%u)\n", wid, value);
++        else if ((t & (t - 1)) == 0) {
++            char b[256]; int o = 0;
++            for (u32 w = 0; w < CELL_SPURS_MAX_WORKLOAD && o < (int)sizeof b - 24; w++)
++                if (s_rcs_n[w]) o += snprintf(b + o, sizeof b - o, " %u:%llu", w, (unsigned long long)s_rcs_n[w]);
++            printf("[cellSpurs] ReadyCountStore calls=%llu per wid:%s\n", (unsigned long long)t, b);
++        }
++        return CELL_OK; }
+ 
+     s_workloads[wid].readyCount = value;
+     /* The real store: the instance byte the kernel (poll thread) watches. */
+@@ -4046,18 +4130,68 @@
+     return CELL_OK;
+ }
+ 
++/* KZ2 patch 1095: every call is logged (the game shuts down, waits for and removes jm_post, wid 7, on each level
++ * transition, then adds it again). With KZ2_SPURS_TEARDOWN=1 they act on the default kernel's instance bytes
++ * (spurs_wkl_teardown.h): Shutdown clears the ENABLED bit and sets state 3 under the instance line's stripe, so
++ * kz3_ksel no longer picks the workload and a running module is told to switch at its next poll; Wait returns
++ * once no SPU holds it (guest CURCONT[wid] == 0) and no kernel thread is inside its module (s_run_wid), and marks it
++ * removable (state 4). */
+ s32 cellSpursShutdownWorkload(u64 spurs_ea, u32 wid)
+ {
+-    static int _n = 0;
+-    if (PS3_LOG_FIRST(_n, 8)) printf("[cellSpurs] ShutdownWorkload(wid=%u)\n", wid);
+-    return CELL_OK;
++    const u32 ea = (u32)spurs_ea;
++    if (!kz2_spurs_teardown() || !ea || wid >= CELL_SPURS_MAX_WORKLOAD) {
++        printf("[cellSpurs] ShutdownWorkload(ea=0x%08X, wid=%u) (no-op)\n", ea, wid);
++        return CELL_OK;
++    }
++    if (!s_workloads[wid].in_use || s_workloads[wid].spurs_ea != ea) {
++        printf("[cellSpurs] ShutdownWorkload(ea=0x%08X, wid=%u) SRCH\n", ea, wid);
++        return CELL_SPURS_CORE_ERROR_SRCH;
++    }
++    const uint64_t m = spu_ll_mask(ea, 128);
++    spu_ll_lock_mask(m);
++    const u8 st = *(vm_base + ea + SPURS_WKL_STATE1 + wid), cont = *(vm_base + ea + SPURS_WKL_CURCONT + wid);
++    const int rc = kz2_wkl_shutdown(vm_base + ea, wid);
++    if (rc == KZ2_WKL_OK) spu_coh_notify_write(ea);
++    spu_ll_unlock_mask(m);
++    printf("[cellSpurs] ShutdownWorkload(ea=0x%08X, wid=%u) state %u -> %u cont=%u%s\n", ea, wid, st,
++           *(vm_base + ea + SPURS_WKL_STATE1 + wid), cont, rc == KZ2_WKL_OK ? "" : " STAT");
++    kz3_kern_wake_ea(ea);
++    return rc == KZ2_WKL_OK ? CELL_OK : CELL_SPURS_CORE_ERROR_STAT;
+ }
+ 
+ s32 cellSpursWaitForWorkloadShutdown(u64 spurs_ea, u32 wid)
+ {
+-    static int _n = 0;
+-    if (PS3_LOG_FIRST(_n, 8)) printf("[cellSpurs] WaitForWorkloadShutdown(wid=%u)\n", wid);
+-    return CELL_OK;
++    const u32 ea = (u32)spurs_ea;
++    if (!kz2_spurs_teardown() || !ea || wid >= CELL_SPURS_MAX_WORKLOAD) {
++        printf("[cellSpurs] WaitForWorkloadShutdown(ea=0x%08X, wid=%u) (no-op)\n", ea, wid);
++        return CELL_OK;
++    }
++    if (!s_workloads[wid].in_use || s_workloads[wid].spurs_ea != ea) {
++        printf("[cellSpurs] WaitForWorkloadShutdown(ea=0x%08X, wid=%u) SRCH\n", ea, wid);
++        return CELL_SPURS_CORE_ERROR_SRCH;
++    }
++    const uint64_t m = spu_ll_mask(ea, 128), t0 = GetTickCount64();
++    uint64_t next = t0 + 1000;
++    for (;;) {
++        const int hb = kz2_wkl_host_busy(ea, wid);
++        spu_ll_lock_mask(m);
++        const u8 cont = *(vm_base + ea + SPURS_WKL_CURCONT + wid);
++        const int rc = kz2_wkl_wait_step(vm_base + ea, wid, hb);
++        if (rc == KZ2_WKL_OK) spu_coh_notify_write(ea);
++        spu_ll_unlock_mask(m);
++        const uint64_t now = GetTickCount64();
++        if (rc != KZ2_WKL_BUSY) {
++            printf("[cellSpurs] WaitForWorkloadShutdown(ea=0x%08X, wid=%u) %s after %llu ms\n", ea, wid,
++                   rc == KZ2_WKL_OK ? "removable" : "STAT (not shut down)", (unsigned long long)(now - t0));
++            return rc == KZ2_WKL_OK ? CELL_OK : CELL_SPURS_CORE_ERROR_STAT;
++        }
++        if (now >= next) {   /* a module that never polls would hold it: say so every second */
++            printf("[cellSpurs] WaitForWorkloadShutdown(ea=0x%08X, wid=%u) still held after %llu ms (cont=%u host=%d)\n",
++                   ea, wid, (unsigned long long)(now - t0), cont, hb);
++            next = now + 1000;
++        }
++        Sleep(1);
++    }
+ }
+ 
+ /* =========================================================================
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1324,7 +1324,8 @@
+ 
+ s32 cellSaveDataDelete2(u32 container)
+ {
+-    printf("[cellSaveData] Delete2(container=%u)\n", container);
++    /* KZ2 patch 1095: say plainly that nothing was deleted (the call still returns CELL_OK). */
++    printf("[cellSaveData] Delete2(container=%u) STUB: nothing deleted\n", container);
+ 
+     /* Without a directory name we can't delete anything meaningful.
+        This variant typically shows a UI for deletion - just succeed. */
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -5760,6 +5760,9 @@
+ void cellGcmSortRemapEaIoAddress(void)
+ {
+     /* No-op: IO address remapping not required for recomp */
++    /* KZ2 patch 1095 (logging only): the first calls, so a title that relies on the remap is seen. */
++    static int _n = 0;
++    if (_n < 8) printf("[cellGcmSys] SortRemapEaIoAddress (no-op, call %d)\n", ++_n);
+ }
+ 
+ /* Report data with location parameter */
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -3751,11 +3751,17 @@
+                 return;
+             }
+         }
+-        static int logged = 0;
+-        if (logged < 30) {
+-            fprintf(stderr, "[ppu] lv2_syscall %llu (stub)\n", (unsigned long long)num);
+-            logged++;
+-        }
++        /* KZ2 patch 1095: each distinct unregistered number once, with its arguments and caller (a shared cap of 30
++         * lines hid every number that came after the first ones). Numbers past 1023 share one slot. */
++        { static volatile unsigned char s_sc_seen[1025];
++          const unsigned slot = num < 1024 ? (unsigned)num : 1024u;
++          if (!__atomic_load_n(&s_sc_seen[slot], __ATOMIC_RELAXED)   /* seen: one plain load, no locked write */
++              && !__atomic_exchange_n(&s_sc_seen[slot], (unsigned char)1, __ATOMIC_RELAXED))
++              fprintf(stderr, "[ppu] lv2_syscall %llu (stub, first call) r3=0x%llx r4=0x%llx r5=0x%llx r6=0x%llx"
++                      " r7=0x%llx r8=0x%llx r9=0x%llx r10=0x%llx lr=0x%llx\n", (unsigned long long)num,
++                      (unsigned long long)ctx->gpr[3], (unsigned long long)ctx->gpr[4], (unsigned long long)ctx->gpr[5],
++                      (unsigned long long)ctx->gpr[6], (unsigned long long)ctx->gpr[7], (unsigned long long)ctx->gpr[8],
++                      (unsigned long long)ctx->gpr[9], (unsigned long long)ctx->gpr[10], (unsigned long long)ctx->lr); }
+         /* The UNIMPLEMENTED syscalls are the ones a trace is most wanted for, and
+          * they were the only ones it skipped: sc_trace ran on both handled paths
+          * but not here, so PS3_SCTRACE showed everything except the gaps. Snapshot
+diff --git a/runtime/spu/spurs_wkl_teardown.h b/runtime/spu/spurs_wkl_teardown.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/spu/spurs_wkl_teardown.h
+@@ -0,0 +1,78 @@
++/* KZ2 patch 1095: SPURS workload teardown and priority updates on the instance bytes the default kernel reads
++ * (kz3_ksel, spurs_kern_sched.h), as pure C on a byte image of the CellSpurs instance so
++ * tools/spu/test_spurs_teardown.sh checks the state transitions on the host. Used by libs/spurs/cellSpurs.c only with
++ * KZ2_SPURS_TEARDOWN=1. The caller holds the instance line's stripe lock (and, for the priorities, the wklInfo line's).
++ *
++ * Workload states (STATE1 byte per wid, the SDK's CELL_SPURS_WKL_STATE_*): 0 non-existent, 2 runnable, 3 shutting
++ * down, 4 removable. kz3_k_runnable admits a workload only with its ENABLED bit set and state 2, so a shut-down
++ * workload is never picked again and a running module is told to switch at its next poll. It becomes removable once
++ * no SPU holds it (CURCONT[wid] == 0, which kz3_ksel raises at the pick and kz3_kleave lowers when the module returns;
++ * the caller also checks that no kernel thread is inside the module). Written for this port from the SDK's documented
++ * states; no firmware or RPCS3 code used. */
++#ifndef SPURS_WKL_TEARDOWN_H
++#define SPURS_WKL_TEARDOWN_H
++#include <stdint.h>
++#include "spurs_kern_sched.h"
++
++enum { KZ2_WKL_ST_NONE = 0, KZ2_WKL_ST_RUNNABLE = 2, KZ2_WKL_ST_SHUTTING_DOWN = 3, KZ2_WKL_ST_REMOVABLE = 4 };
++enum { KZ2_WKL_OK = 0, KZ2_WKL_BUSY = 1, KZ2_WKL_STAT = 2 };
++
++static inline void kz2_wkl_enabled_clear(uint8_t* S, uint32_t wid)
++{
++    const uint32_t m = 0x80000000u >> wid;
++    uint8_t* e = S + KZ3_K_ENABLED;
++    const uint32_t v = (kz3_k_be32(e) & ~m);
++    e[0] = (uint8_t)(v >> 24); e[1] = (uint8_t)(v >> 16); e[2] = (uint8_t)(v >> 8); e[3] = (uint8_t)v;
++}
++
++/* cellSpursShutdownWorkload: a runnable workload stops being picked. A workload already shutting down or removable
++ * is left as it is (KZ2_WKL_OK, nothing written); any other state is KZ2_WKL_STAT. */
++static inline int kz2_wkl_shutdown(uint8_t* S, uint32_t wid)
++{
++    if (wid >= 16) return KZ2_WKL_STAT;
++    const uint8_t st = S[KZ3_K_STATE1 + wid];
++    if (st == KZ2_WKL_ST_SHUTTING_DOWN || st == KZ2_WKL_ST_REMOVABLE) return KZ2_WKL_OK;
++    if (st != KZ2_WKL_ST_RUNNABLE) return KZ2_WKL_STAT;
++    kz2_wkl_enabled_clear(S, wid);
++    S[KZ3_K_STATE1 + wid] = KZ2_WKL_ST_SHUTTING_DOWN;
++    return KZ2_WKL_OK;
++}
++
++/* One pass of cellSpursWaitForWorkloadShutdown. host_busy: a kernel thread is inside the workload's module (the
++ * caller's s_run_wid / s_wkl_busy check). KZ2_WKL_OK: no SPU holds it any more, the state is now removable;
++ * KZ2_WKL_BUSY: still held, wait and call again; KZ2_WKL_STAT: it was never shut down. */
++static inline int kz2_wkl_wait_step(uint8_t* S, uint32_t wid, int host_busy)
++{
++    if (wid >= 16) return KZ2_WKL_STAT;
++    const uint8_t st = S[KZ3_K_STATE1 + wid];
++    if (st == KZ2_WKL_ST_REMOVABLE) return KZ2_WKL_OK;
++    if (st != KZ2_WKL_ST_SHUTTING_DOWN) return KZ2_WKL_STAT;
++    if (S[KZ3_K_CURCONT + wid] != 0 || host_busy) return KZ2_WKL_BUSY;
++    S[KZ3_K_STATE1 + wid] = KZ2_WKL_ST_REMOVABLE;
++    return KZ2_WKL_OK;
++}
++
++/* cellSpursRemoveWorkload's instance part: KZ2_WKL_BUSY while an SPU or a kernel thread holds the workload;
++ * otherwise its ready count, idle-SPU request, signal bit, ENABLED bit and state are cleared (the wid can be added
++ * again). ASSUMPTION: a workload that was never shut down is removed too when nothing holds it (the stub before
++ * removed it unconditionally); the SDK documents CELL_SPURS_POLICY_MODULE_ERROR_STAT for that case. */
++static inline int kz2_wkl_remove(uint8_t* S, uint32_t wid, int host_busy)
++{
++    if (wid >= 16) return KZ2_WKL_STAT;
++    if (S[KZ3_K_CURCONT + wid] != 0 || host_busy) return KZ2_WKL_BUSY;
++    S[KZ3_K_READY1 + wid] = 0;
++    S[KZ3_K_IDLE2 + wid] = 0;
++    S[KZ3_K_SIGNAL1 + (wid >> 3)] &= (uint8_t)~(0x80u >> (wid & 7));
++    kz2_wkl_enabled_clear(S, wid);
++    S[KZ3_K_STATE1 + wid] = KZ2_WKL_ST_NONE;
++    return KZ2_WKL_OK;
++}
++
++/* cellSpursSetPriorities' instance part: the 8 per-SPU priority bytes at wklInfo + 0x18 that kz3_ksel weighs. */
++static inline void kz2_wkl_set_priorities(uint8_t* S, uint32_t wid, const uint8_t prio[8])
++{
++    if (wid >= 16) return;
++    uint8_t* p = S + KZ3_K_INFO1 + wid * KZ3_K_INFO_SZ + 0x18;
++    for (int i = 0; i < 8; i++) p[i] = prio[i];
++}
++#endif

@@ -63,7 +63,7 @@ thread. KZ3_SPU_PCORES=0 also turns this off. Upstream candidate (the mechanism;
 + * 1000 ms/s (saturated): units per second fell below the 187.5 real-time rate and port 0 got 100-560 holes per 10 s
 + * (the in-level stutter). The thread has a real-time deadline and no margin on an E-core, as the Bink decoder (1136).
 + * KZ3_SPU_PCORES_SPURS = comma-separated SPURS name prefixes (exact match); unset = "LoPrio" (KZ3's audio instance,
-+ * ASSUMPTION: the only one with a deadline; the HiPrio frame SPUs stay free, the an earlier change "all" A/B was worse);
++ * ASSUMPTION: the only one with a deadline; the HiPrio frame SPUs stay free, the "all" A/B was worse);
 + * empty = none. KZ3_SPU_PCORES=0 turns this off too. kz3_spurs_pcore_match() is the pure part (test_r112_sched.c). */
 +static inline int kz3_spurs_pcore_match(const char* list, const char* prefix)
 +{

@@ -1,0 +1,83 @@
+KZ2 patch 6101 (2026-11-25): SPU poll counters, step 0 of the SPU poll backoff work
+(measure first, then patch). KZ2_SPU_POLL_STATS=1 counts, process-wide, the policy-module poll
+answers at SPURS_PM_SELECT_WORKLOAD_LS (all, and the plain "keep running" answer) and the GETLLARs (all; those on the
+same line as the thread's previous GETLLAR; those whose 128 bytes are also unchanged since that read, i.e. the re-reads
+a backoff such as RetroRemakes' RR_SPU_LLAR_PARK_US would park), and prints `[spu-poll] 10.0 s: pm-poll N/s (continue
+N/s) getllar N/s same-line N/s unchanged N/s` every 10 s. Read together with KZ3_SPURS_CPU=1's [spurs-cpu] lines (the
+HLE kernel threads' CPU ms/s) to see whether idle polling burns host cores. Off by default: one cached flag test at
+each point, nothing counted. Counters only, no behaviour change. RetroRemakes Killzone 2 1.2 patch 7007 (RemakerGamee,
+MIT) was read for what to count; no code taken from it.
+
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -83,6 +83,39 @@
+ #endif
+ }
+ 
++/* ---- KZ2 patch 6101 begin: SPU poll counters (KZ2_SPU_POLL_STATS=1) ---- */
++/* KZ2 patch 6101: step 0 of the SPU poll backoff work (measure first). KZ2_SPU_POLL_STATS=1 counts, process-wide,
++ * the policy-module poll answers (cellSpursModulePoll at SPURS_PM_SELECT_WORKLOAD_LS: all of them, and the plain
++ * "no contention, keep running" answer) and the GETLLARs (all; the ones on the same line as this thread's previous
++ * GETLLAR; and those whose 128 bytes are also unchanged since that read: the re-reads a backoff would park), and
++ * prints one [spu-poll] line every 10 s with the rates. Off (default): one cached flag test at each point, nothing
++ * counted, nothing printed. Counters only, no behaviour change. */
++static int g_kz2_pps_on = -1;
++static volatile long long g_kz2_pps_pm, g_kz2_pps_pm_cont, g_kz2_pps_ll, g_kz2_pps_ll_same, g_kz2_pps_ll_unch;
++static volatile uint64_t g_kz2_pps_t0;
++static int kz2_pps_init(void)
++{
++    const char* e = getenv("KZ2_SPU_POLL_STATS");
++    int on = (e && e[0] == '1') ? 1 : 0;
++    if (on) { g_kz2_pps_t0 = spu_host_ns(); fprintf(stderr, "[spu-poll] counters on (KZ2_SPU_POLL_STATS=1)\n"); }
++    g_kz2_pps_on = on;
++    return on;
++}
++static inline int kz2_pps_on(void) { int v = g_kz2_pps_on; return v >= 0 ? v : kz2_pps_init(); }
++static void kz2_pps_tick(void)
++{
++    const uint64_t now = spu_host_ns(), t0 = g_kz2_pps_t0;
++    if (now - t0 < 10000000000ull) return;
++    if (!__sync_bool_compare_and_swap(&g_kz2_pps_t0, t0, now)) return;   /* one thread prints */
++    const double s = (double)(now - t0) / 1e9;
++    const long long pm = __sync_lock_test_and_set(&g_kz2_pps_pm, 0), pc = __sync_lock_test_and_set(&g_kz2_pps_pm_cont, 0);
++    const long long ll = __sync_lock_test_and_set(&g_kz2_pps_ll, 0), ls_ = __sync_lock_test_and_set(&g_kz2_pps_ll_same, 0);
++    const long long lu = __sync_lock_test_and_set(&g_kz2_pps_ll_unch, 0);
++    fprintf(stderr, "[spu-poll] %.1f s: pm-poll %.0f/s (continue %.0f/s) getllar %.0f/s same-line %.0f/s unchanged %.0f/s\n",
++            s, pm / s, pc / s, ll / s, ls_ / s, lu / s);
++}
++/* ---- KZ2 patch 6101 end ---- */
++
+ /* ---------------------------------------------------------------------------
+  * Clean SPU job abort (longjmp). The `br .` halt idiom and other terminal
+  * spins can't be escaped by setting a status flag (lifted code never checks
+@@ -844,6 +877,14 @@
+          * once per line with the line's head, so the stuck word is visible
+          * without a per-function probe. */
+         { static SPU_THREAD_LOCAL uint32_t t_ea; static SPU_THREAD_LOCAL unsigned long t_n;
++          if (__builtin_expect(kz2_pps_on(), 0)) {   /* KZ2 patch 6101 */
++              static SPU_THREAD_LOCAL uint8_t t_pps_line[128];
++              __sync_fetch_and_add(&g_kz2_pps_ll, 1);
++              if (ea == t_ea) { __sync_fetch_and_add(&g_kz2_pps_ll_same, 1);
++                                if (!memcmp(t_pps_line, ls, 128)) __sync_fetch_and_add(&g_kz2_pps_ll_unch, 1); }
++              memcpy(t_pps_line, ls, 128);
++              kz2_pps_tick();
++          }
+           if (ea != t_ea) { t_ea = ea; t_n = 0; }
+           else if (++t_n == 4000000) {
+               const uint8_t* m = vm_base + ea;
+@@ -3129,6 +3170,7 @@
+             return;
+         }
+         if (ctx->pc == SPURS_PM_SELECT_WORKLOAD_LS) {
++            if (__builtin_expect(kz2_pps_on(), 0)) { __sync_fetch_and_add(&g_kz2_pps_pm, 1); kz2_pps_tick(); }   /* KZ2 patch 6101 */
+             /* KZ3 patch 1048: past the run budget answer "another workload" so the module exits by its own path. */
+             { extern uint64_t kz3_pm_run_over_budget(int factor);
+               uint64_t over = kz3_pm_run_over_budget(1);
+@@ -3178,6 +3220,7 @@
+             /* cellSpursModulePoll: report "no contention — keep running".
+              * (One virtual SPU per workload here, so nothing ever preempts.) */
+             unsigned n = ++g_spurs_pm_polls;
++            if (__builtin_expect(kz2_pps_on(), 0)) __sync_fetch_and_add(&g_kz2_pps_pm_cont, 1);   /* KZ2 patch 6101 */
+             /* The count restarts with every policy-module run, and a job
+              * manager runs dozens of times a second, so these lines follow the
+              * RUN/END trace: SPURS_PM_TRACE=1 (#521) -- and even with the

@@ -254,15 +254,15 @@ def main():
         check("a check given PS3_GAME/USRDIR and the update's USRDIR passes", rc == 0 and "FAIL" not in out, out)
 
         # OneDrive (adapted from Project Helghast v0.1.2): O1 install/build folder, O2 online-only files, O3 INFO
-        env = {"OneDrive": "C:\\Users\\someone\\OneDrive", "OneDriveCommercial": "D:\\Work\\OneDrive - Corp"}
+        env = {"OneDrive": "C:\\Users\\examplesomeone\\OneDrive", "OneDriveCommercial": "D:\\Work\\OneDrive - Corp"}
         check("O1 prefix match, case-insensitive",
-              fc.onedrive_root_of("c:\\users\\SOMEONE\\onedrive\\Desktop\\Project Pyrrhus", env) == env["OneDrive"]
+              fc.onedrive_root_of("c:\\users\\EXAMPLESOMEONE\\onedrive\\Desktop\\Project Pyrrhus", env) == env["OneDrive"]
               and fc.onedrive_root_of("D:/Work/OneDrive - Corp/x", env) == env["OneDriveCommercial"])
         check("O1 whole components only, empty env is nothing",
-              fc.onedrive_root_of("C:\\Users\\someone\\OneDrive2\\x", env) == ""
-              and fc.onedrive_root_of("C:\\Users\\someone\\Programs", {}) == "")
+              fc.onedrive_root_of("C:\\Users\\examplesomeone\\OneDrive2\\x", env) == ""
+              and fc.onedrive_root_of("C:\\Users\\examplesomeone\\Programs", {}) == "")
         r = fc.Report()
-        fc.check_onedrive_tree(r, "C:\\Users\\someone\\OneDrive\\Desktop\\Project Pyrrhus", "C:\\b\\build", env)
+        fc.check_onedrive_tree(r, "C:\\Users\\examplesomeone\\OneDrive\\Desktop\\Project Pyrrhus", "C:\\b\\build", env)
         check("O1 fails for a root inside OneDrive only", [(c["code"], c["level"]) for c in r.checks] == [("O1", "FAIL")]
               and "outside OneDrive" in r.checks[0]["message"] and "Project Pyrrhus" in r.checks[0]["message"], r.checks)
         r = fc.Report()
@@ -278,6 +278,20 @@ def main():
         fc.check_path_chars(r, "C:\\Games\\Project Pyrrhus (copy) #2", "D:\\b[1]\\build")
         check("P1: parentheses and # are fine; a build folder with [ fails", [c["code"] for c in r.checks] == ["P1"]
               and "build folder" in r.checks[0]["message"] and "'[' and ']'" in r.checks[0]["message"], r.checks)
+        # P2 (WARN): letters outside ASCII; spaces and plain names are silent (negative control)
+        for odd in ("C:\\Users\\ExampleJosé\\AppData\\Local\\Programs\\Project Pyrrhus", "D:\\Spiele\\Größe", "C:\\ゲーム\\kz2"):
+            r = fc.Report()
+            fc.check_path_ascii(r, odd, "C:\\b\\build")
+            check(f"P2 warns for {odd!r}", [(c["code"], c["level"]) for c in r.checks] == [("P2", "WARN")]
+                  and "outside A to Z" in r.checks[0]["message"] and all(ch in r.checks[0]["message"] for ch in fc.path_non_ascii(odd)),
+                  r.checks)
+        r = fc.Report()
+        fc.check_path_ascii(r, "C:\\Users\\ExampleJose Smith\\AppData\\Local\\Programs\\Project Pyrrhus (2)", "C:\\b\\build")
+        check("P2 is silent for an ASCII folder with spaces", r.checks == [], r.checks)
+        r = fc.Report()
+        fc.check_path_ascii(r, "C:\\ok", "D:\\Bücher\\build")
+        check("P2 names the build folder too", len(r.checks) == 1 and "build folder" in r.checks[0]["message"], r.checks)
+        check("path_non_ascii lists each letter once", fc.path_non_ascii("C:\\éé\\ñé") == "éñ")
         rc, out = run(["--dump", d, "--update", u, "--root", os.path.join(tmp, "inst[1]")] + small)
         check("P1 from the command line: --root with [ fails", rc == 1 and "P1" in out and "cannot handle" in out, out)
         old = os.environ.get("OneDrive")
@@ -680,7 +694,8 @@ def main():
         v, facts = verdict(e129, table(entry()))
         check("whole-file match, tested: E1 OK and H1 OK by SHA-256", v["E1"][0] == "OK" and v["H1"][0] == "OK"
               and "by SHA-256" in v["H1"][1] and facts["sha256"] == sha and facts["segment_sha256"] == seg
-              and facts["match"] == {"by": "sha256", "title_id": "BCUS98116", "app_ver": "01.29", "status": "tested"}, v)
+              and facts["match"] == {"by": "sha256", "title_id": "BCUS98116", "app_ver": "01.29", "status": "tested",
+                                 "title_ids": ["BCUS98116"]}, v)
         v, facts = verdict(e129, table(entry(sha256="ab" * 32)))
         check("segment fallback: the whole hash differs, the segments match: OK by its segments",
               v["E1"][0] == "OK" and v["H1"] == ("OK", "EBOOT matches the known build Killzone 2 1.29 (BCUS98116, US), "
@@ -731,8 +746,10 @@ def main():
         open(enc, "wb").write(fc.SELF_MAGIC + b"\0" * 200)
         v, _ = verdict(enc, table(entry()), disc="BCJS30032")
         check("encrypted SELF: E1 FAIL naming the needed build of the disc's region", v == {"E1": (
-            "FAIL", "This EBOOT is an encrypted SELF, not an ELF. This release needs Killzone 2 1.29 (BCJS30032, Japan) "
-                    "as an ELF file.")}, v)
+            "FAIL", fc.ENCRYPTED_EBOOT_TEXT + " This release needs Killzone 2 1.29 (BCJS30032, Japan).")}, v)
+        check("encrypted SELF: one plain line, the encrypted EBOOT.BIN and the decrypted EBOOT.elf, GETTING-FILES.md",
+              v["E1"][1].startswith("This is the encrypted EBOOT.BIN; the port needs the decrypted EBOOT.elf (see ")
+              and "docs/GETTING-FILES.md" in v["E1"][1], v)
         junk = os.path.join(tmp, "seg", "junk.elf")
         open(junk, "wb").write(b"MZ" + b"\0" * 200)
         v, _ = verdict(junk, table(entry()))

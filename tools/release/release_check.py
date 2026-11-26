@@ -10,9 +10,9 @@ workflow), with this project's names and version source. Run by .github/workflow
 
 --release is the release JSON (GitHub REST: tag_name, name, draft, prerelease, body, assets[].name). Checks:
   1 tag = "v" + installer/VERSION at the checked-out tag (release_version.py, the one version source)
-  2 published (not a draft), pre-release exactly while the version is 0.x, title = tag, body names the version
+  2 published (not a draft), pre-release exactly for the versions before 0.1.14, title = tag, body names the version
   3 assets are exactly the ones release.yml publishes: Project-Pyrrhus-setup.exe and its .sha256,
-    Project-Pyrrhus-<version>-portable.zip (pack_zip.py) and its .sha256, SHA256SUMS
+    Project-Pyrrhus-<version>-Windows-x64.zip (pack_zip.py; -portable.zip up to 0.1.13) and its .sha256, SHA256SUMS
   4 (with --assets) every .sha256 matches its file and agrees with SHA256SUMS, and SHA256SUMS matches the files
   5 (with --root) README.md and site/index.html link releases/tag/<tag> (either layout: public/ here, the root in the
     public repository)
@@ -34,8 +34,9 @@ SETUP = "Project-Pyrrhus-setup.exe"          # kz2.iss OutputBaseFilename; relea
 
 
 def zip_name(version):
-    """The portable zip's name (release.yml: Project-Pyrrhus-$VERSION-portable.zip, written by pack_zip.py)."""
-    return f"Project-Pyrrhus-{version}-portable.zip"
+    """The zip's name for that version (release_version.zip_name: -portable.zip up to 0.1.13, -Windows-x64.zip from
+    0.1.14, as release.yml names it)."""
+    return release_version.zip_name(version)
 
 
 def expected_assets(version):
@@ -51,7 +52,7 @@ def check_release(rel, tag, version):
         errs.append(f"release tag_name {rel.get('tag_name')!r} is not {tag!r}")
     if rel.get("draft"):
         errs.append("release is still a draft")
-    want_pre = version.split(".")[0] == "0"
+    want_pre = release_version.is_prerelease(version)   # full releases from 0.1.14 (release_version.FIRST_FULL_RELEASE)
     if bool(rel.get("prerelease")) != want_pre:
         errs.append(f"prerelease is {bool(rel.get('prerelease'))} but version {version} needs {want_pre}")
     if rel.get("name") != tag:

@@ -6,7 +6,8 @@
 
 The shape follows Project Helghast's release notes (the Killzone 3 PC port, same author, MIT), with this project's
 wording:
-  Project Pyrrhus X.Y.Z, a pre-release: partly playable, see docs/RELEASE-CRITERIA.md.
+  Project Pyrrhus X.Y.Z, an early, experimental release (a pre-release before 0.1.14): partly playable, see
+  docs/RELEASE-CRITERIA.md.
   New in X.Y.Z: <the CHANGELOG entry's new items, one bullet each>
   Fixed: <its fixes, one bullet each; part of the list above for the first published release>
   If you have an earlier version, install this one over it: ...   (only when an earlier version was published)
@@ -100,8 +101,8 @@ def notes(version, entry, first=False, today=None):
     blob = f"{REPO}/blob/v{version}"
     new = [sentence(t, blob) for s, t in entry["items"] if s in NEW_SECTIONS or not s]
     fixed = [sentence(t, blob) for s, t in entry["items"] if s == "Fixed"]
-    major = int(version.split(".")[0])
-    kind = "a pre-release" if major == 0 else "a release"
+    # full GitHub releases from 0.1.14 (release_version.FIRST_FULL_RELEASE), still early and experimental
+    kind = "a pre-release" if release_version.is_prerelease(version) else "an early, experimental release"
     # One bullet per item: 0.1.2's dozen items ran into one 6 KB paragraph as prose. The first published release lists
     # its fixes as part of what it does, not as fixes of an unpublished version.
     bullets = lambda items: "\n".join(f"- {t}" for t in items)
@@ -117,7 +118,7 @@ def notes(version, entry, first=False, today=None):
         *lists,
         *over,
         f"See [CHANGELOG.md]({blob}/CHANGELOG.md) for the full list.",
-        "Windows installer (Project-Pyrrhus-setup.exe, recommended) and portable zip. You need your own Killzone 2 disc "
+        f"Windows installer (Project-Pyrrhus-setup.exe, recommended) and portable zip ({release_version.zip_name(version)}). You need your own Killzone 2 disc "
         "dump (US, BCUS98116; the European, Asian and Japanese discs are accepted but untested), the 1.29 update of the "
         "same region and a decrypted EBOOT made from your own copy; none of them is included "
         f"or downloaded. What each must contain: [docs/GETTING-FILES.md]({blob}/docs/GETTING-FILES.md). SHA-256 sums: "

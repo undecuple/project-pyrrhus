@@ -1039,7 +1039,8 @@ def s_eboot_101(st, a):
                                        f"{os.path.dirname(e)}\nq\n")
         ex("The EBOOT must be the 1.29 update's one, not the disc's" in text, "the console asks for the EBOOT alone")
         ex(f"using {e}" in text, "a folder answer is taken as the EBOOT.elf in it ('using ...')")
-        ex(text.count("FAIL E1") >= 2, "checked again, refused again")
+        ex(text.count("FAIL E1") >= 2 and "Still failing: E1. The same check failed again" in text,
+           "checked again, refused again: the same lines, then the short guide (2026-11-26)")
         ex("Disc dump: the folder holding PS3_GAME" not in text, "the disc dump was not asked")
         ex("Nothing was built. The next start checks your game files again." in text, "q ends the console's start")
         ex("RESULT ok=0 step=quit" in status and "REASON EBOOT failed:" in status,

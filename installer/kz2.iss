@@ -91,6 +91,9 @@
 #define SiteURL "https://github.com/undecuple/project-pyrrhus"
 #define SiteText "github.com/undecuple/project-pyrrhus"
 #define LauncherExe "Project Pyrrhus.exe"
+; Written into {app} by every install (OwnedDir, InstallDirProblem): the folder is this project's, so the deletes
+; below may run there
+#define OwnedMarker "kz2-owned.txt"
 #define FileBase "Project-Pyrrhus"
 #define SetupBase "Project-Pyrrhus-setup"
 ; the EBOOT version this release is built for (firstrun.py EBOOT_VERS, tools/lift.sh VER default 129) and the disc's
@@ -228,10 +231,10 @@ Source: "art\kz2-uninstall.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; dropped cannot linger and be compiled or run. Inno keeps each file's own time stamp, so ninja recompiles only the
 ; sources that changed. Never listed here: build (the lift and objects; firstrun.py's markers decide what re-runs),
 ; vfs (the link to the dump), logs, gamedata, cache, kz2-install.ini.
-Type: filesandordirs; Name: "{app}\kz2-setup"
-Type: filesandordirs; Name: "{app}\port"
-Type: filesandordirs; Name: "{app}\ps3recomp"
-Type: filesandordirs; Name: "{app}\toolchain"
+Type: filesandordirs; Name: "{app}\kz2-setup"; Check: OwnedSub('kz2-setup')
+Type: filesandordirs; Name: "{app}\port"; Check: OwnedSub('port')
+Type: filesandordirs; Name: "{app}\ps3recomp"; Check: OwnedSub('ps3recomp')
+Type: filesandordirs; Name: "{app}\toolchain"; Check: OwnedSub('toolchain')
 
 [Dirs]
 Name: "{app}\logs"
@@ -270,6 +273,9 @@ Name: "{group}\Display"; Filename: "{app}\{#LauncherExe}"; Parameters: "--displa
 ; repsn.ini and community.ini in the shared folder %APPDATA%\PS3Recomp (every port's; never removed by this uninstaller)
 ; or {app}\shared for a portable install (the player's settings, kept like keybinds.ini)
 Name: "{group}\Online settings"; Filename: "{app}\{#LauncherExe}"; Parameters: "--online"; WorkingDir: "{app}"
+; --support-package: one zip of the logs, crash reports, settings and system facts for a bug report, user folders and
+; the PC name left out (launch.py, support.py; from Project Vekta, MIT); written to {app}\logs, nothing uploaded
+Name: "{group}\Make a support package"; Filename: "{app}\{#LauncherExe}"; Parameters: "--support-package"; WorkingDir: "{app}"
 Name: "{group}\Project page"; Filename: "{#SiteURL}"
 Name: "{group}\Uninstall {#AppDirName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\kz2-uninstall.ico"
 Name: "{autodesktop}\{#AppDirName}"; Filename: "{app}\{#LauncherExe}"; WorkingDir: "{app}"; Tasks: desktopicon
@@ -281,62 +287,65 @@ Filename: "{#ProjectURL}/issues"; Description: "Report a problem (attach the ins
 Filename: "{#SiteURL}"; Description: "Open the project page ({#SiteText})"; Flags: shellexec postinstall skipifsilent unchecked
 
 [UninstallDelete]
+; Every {app} line runs only in a folder this setup owns (Check: OwnedDir; the [InstallDelete] lines too): an empty or
+; new folder, or an earlier Project Pyrrhus install. InstallDirProblem refuses any other non-empty folder. A folder
+; deleted whole also needs no junction or symbolic link on its way (OwnedSub, DataSub: NoLinkOnWay).
 ; The generated derivative goes with the port; the player's dump, update and RPCS3 folder are never touched.
-Type: filesandordirs; Name: "{app}\build"
-Type: filesandordirs; Name: "{app}\logs"
+Type: filesandordirs; Name: "{app}\build"; Check: OwnedSub('build')
+Type: filesandordirs; Name: "{app}\logs"; Check: OwnedSub('logs')
 ; The game's writable VFS root (launch.py ensure_vfs; from 0.1.8 the cache root, launch.py cache_root, and link-free: an update
 ; drops the link, the folder with the player's caches stays, the recorded alt folder too). Before: vfs\PS3_GAME is a directory junction to the
 ; player's dump and is removed as a link by CurUninstallStepChanged(usUninstall) before this list runs; nothing
 ; here recurses into vfs itself, so the dump is never reached even when the junction could not be removed.
 ; RemoveVfsFolders (CurUninstallStepChanged) deletes each VFS folder whole once its links are gone; these lines are
 ; what is left to do when a link could not be removed.
-Type: filesandordirs; Name: "{app}\vfs\psarc-cache"
-Type: filesandordirs; Name: "{app}\vfs\cache"
-Type: files; Name: "{app}\vfs\link.json"
-Type: dirifempty; Name: "{app}\vfs"
+Type: filesandordirs; Name: "{app}\vfs\psarc-cache"; Check: OwnedSub('vfs\psarc-cache')
+Type: filesandordirs; Name: "{app}\vfs\cache"; Check: OwnedSub('vfs\cache')
+Type: files; Name: "{app}\vfs\link.json"; Check: OwnedDir
+Type: dirifempty; Name: "{app}\vfs"; Check: OwnedDir
 ; The second VFS place (launch.py alt_vfs_root, issue #20), one per install: {localappdata}\{#AppDirName}\vfs-<key>
 ; (InstallKey), used when the install folder's drive cannot hold the link; removed by RemoveVfsFolders like the one
 ; above. Only the folder itself goes once the last install's place is gone.
 Type: dirifempty; Name: "{localappdata}\{#AppDirName}"
 ; Portable layout: the runtime's caches sit in the install folder (saves: AskDeleteSaves).
-Type: filesandordirs; Name: "{app}\cache"
-Type: files; Name: "{app}\kz2-install.ini"
+Type: filesandordirs; Name: "{app}\cache"; Check: OwnedSub('cache')
+Type: files; Name: "{app}\kz2-install.ini"; Check: OwnedDir
 ; version.ini (launch.py write_version_ini): what the game's menu shows, rewritten at each start; not
 ; a setting, so it goes either way (in {app} when portable, else in the data folder below).
-Type: files; Name: "{app}\version.ini"
-Type: files; Name: "{app}\version.ini.tmp"
-Type: files; Name: "{app}\kz2-uninstall.ico"
+Type: files; Name: "{app}\version.ini"; Check: OwnedDir
+Type: files; Name: "{app}\version.ini.tmp"; Check: OwnedDir
+Type: files; Name: "{app}\kz2-uninstall.ico"; Check: OwnedDir
 ; What the launcher and firstrun.py write into {app} that Inno did not install (adapted from Project Helghast, KZ3
 ; Project Helghast v0.1.1: an uninstall left the folder behind): the first-run log the launcher names (launch.FIRSTRUN_LOG) with its
 ; time-stamped earlier copies (firstrun.rotate), and a setup log written here. tools/release/test_uninstall_covers.py
 ; keeps this list complete.
-Type: files; Name: "{app}\{#FileBase}-firstrun*.log"
-Type: files; Name: "{app}\{#SetupBase}*.log"
+Type: files; Name: "{app}\{#FileBase}-firstrun*.log"; Check: OwnedDir
+Type: files; Name: "{app}\{#SetupBase}*.log"; Check: OwnedDir
 ; A decrypted disc ISO's files, copied out of it by firstrun.py (iso_dest: {app}\game\disc). The player's ISO itself
 ; stays where it is, so this copy goes with the port (vfs\PS3_GAME, the link to it, is removed first).
-Type: filesandordirs; Name: "{app}\game"
+Type: filesandordirs; Name: "{app}\game"; Check: OwnedSub('game')
 ; KZ3's uninstall test: Python's byte-code caches (kz2-setup\release\__pycache__, written when the launcher imports
 ; firstrun.py) kept the install folder alive, and caches in the data folder outlived a "keep my saves" answer.
 ; Caches are not saves: they go either way; gamedata stays unless asked.
-Type: filesandordirs; Name: "{app}\kz2-setup"
+Type: filesandordirs; Name: "{app}\kz2-setup"; Check: OwnedSub('kz2-setup')
 ; The VM kit pre-flight: the SPU lift imports the toolkit's scripts, leaving ps3recomp\tools\__pycache__ behind after
 ; an uninstall. The payload's own folders go whole (as [InstallDelete] replaces them whole).
-Type: filesandordirs; Name: "{app}\ps3recomp"
-Type: filesandordirs; Name: "{app}\port"
-Type: filesandordirs; Name: "{app}\toolchain"
-Type: filesandordirs; Name: "{app}\re"
-Type: filesandordirs; Name: "{userappdata}\{#AppDirName}\cache"
+Type: filesandordirs; Name: "{app}\ps3recomp"; Check: OwnedSub('ps3recomp')
+Type: filesandordirs; Name: "{app}\port"; Check: OwnedSub('port')
+Type: filesandordirs; Name: "{app}\toolchain"; Check: OwnedSub('toolchain')
+Type: filesandordirs; Name: "{app}\re"; Check: OwnedSub('re')
+Type: filesandordirs; Name: "{userappdata}\{#AppDirName}\cache"; Check: DataSub('cache')
 ; The runtime's shader cache and pipeline record (scratch\rsx_shader_cache_v*, pso-template-own.bin) and its debug
 ; dumps sit in scratch\ under the working folder: caches, not saves.
-Type: filesandordirs; Name: "{userappdata}\{#AppDirName}\scratch"
-Type: filesandordirs; Name: "{app}\scratch"
+Type: filesandordirs; Name: "{userappdata}\{#AppDirName}\scratch"; Check: DataSub('scratch')
+Type: filesandordirs; Name: "{app}\scratch"; Check: OwnedSub('scratch')
 ; vkd3d-proton's own cache when the launcher's VKD3D_SHADER_CACHE_PATH is not used (an older launcher, a direct start):
 ; vkd3d-proton.cache, or vkd3d-proton.kz2.exe.cache in newer Proton builds (seen with Proton GE in a Wine test)
 Type: files; Name: "{userappdata}\{#AppDirName}\vkd3d-proton*.cache*"
 ; gameplay.ini (launch.py ensure_gameplay_ini, firstrun.py, an earlier change) is the player's settings file like keybinds.ini: kept
 Type: files; Name: "{userappdata}\{#AppDirName}\version.ini"
 Type: files; Name: "{userappdata}\{#AppDirName}\version.ini.tmp"
-Type: files; Name: "{app}\vkd3d-proton*.cache*"
+Type: files; Name: "{app}\vkd3d-proton*.cache*"; Check: OwnedDir
 Type: dirifempty; Name: "{userappdata}\{#AppDirName}"
 
 [Code]
@@ -355,6 +364,10 @@ var
   StopBtn: TNewButton;
   StopFile: String;
   OurLog: String;
+  { InstallDirProblem: the folder is empty, new or an earlier Project Pyrrhus install; the install-folder deletes need it }
+  DirOwned: Boolean;
+  { the same answer in the uninstaller (OwnedDir), taken once before the first delete }
+  UninstOwned, UninstOwnedSet: Boolean;
   CheckBtn, ReleaseBtn: TNewButton;
   CheckLbl: TNewStaticText;
   ReleaseURL: String;
@@ -668,6 +681,134 @@ begin
   Result := (Pos('[', Dir) > 0) or (Pos(']', Dir) > 0) or (Pos(';', Dir) > 0);
 end;
 
+{ True when Dir holds nothing (or does not exist). }
+function DirIsEmpty(Dir: String): Boolean;
+var
+  R: TFindRec;
+begin
+  Result := True;
+  if FindFirst(AddBackslash(Dir) + '*', R) then begin
+    try
+      repeat
+        if (R.Name <> '.') and (R.Name <> '..') then begin
+          Result := False;
+          Break;
+        end;
+      until not FindNext(R);
+    finally
+      FindClose(R);
+    end;
+  end;
+end;
+
+{ True when Dir is a Project Pyrrhus install: our marker file, or an install from before the marker (every installer
+  since the first, b86025b0, put kz2-setup\release\firstrun.py there), or the launcher exe with a kz2-install.ini
+  that names a game folder ([paths] dump, WritePaths). A launcher exe next to some manifest.json is not enough. }
+function DirIsOurs(Dir: String): Boolean;
+var
+  D: String;
+begin
+  D := AddBackslash(Dir);
+  Result := FileExists(D + '{#OwnedMarker}') or FileExists(D + 'kz2-setup\release\firstrun.py') or
+    (FileExists(D + '{#LauncherExe}') and IniKeyExists('paths', 'dump', D + 'kz2-install.ini'));
+end;
+
+{ True when Path itself (not what it points to) is a junction, a symbolic link or another reparse point. No recursive
+  delete goes through one, so a link to the player's own folder never takes that folder with it. }
+function IsReparse(Path: String): Boolean;
+var
+  R: TFindRec;
+begin
+  Result := False;
+  if FindFirst(RemoveBackslashUnlessRoot(Path), R) then begin
+    try
+      { $400 = FILE_ATTRIBUTE_REPARSE_POINT (a local const section does not compile in Pascal Script: ISCC 6.7.3 }
+      {   "'BEGIN' expected", the 2026-11-26 compile) }
+      Result := (R.Attributes and $400) <> 0;
+    finally
+      FindClose(R);
+    end;
+  end;
+end;
+
+{ True when no folder from Base down to Base\Rel (Rel: "build", "vfs\cache") is a reparse point (IsReparse). }
+function NoLinkOnWay(Base, Rel: String): Boolean;
+var
+  P, Rest: String;
+  I: Integer;
+begin
+  Result := True;
+  P := RemoveBackslashUnlessRoot(Base);
+  Rest := Rel;
+  while Rest <> '' do begin
+    I := Pos('\', Rest);
+    if I = 0 then begin
+      P := P + '\' + Rest;
+      Rest := '';
+    end else begin
+      P := P + '\' + Copy(Rest, 1, I - 1);
+      Rest := Copy(Rest, I + 1, Length(Rest));
+    end;
+    if IsReparse(P) then begin
+      Log('kept (a junction or symbolic link, never followed): ' + P);
+      Result := False;
+      Exit;
+    end;
+  end;
+end;
+
+{ Check: of every install-folder line in [InstallDelete] and [UninstallDelete]: set by PrepareToInstall, true only for an
+  empty or new folder or one of ours, so neither an install nor an uninstall deletes files this setup did not make. }
+function OwnedDir: Boolean;
+begin
+  if IsUninstaller then begin
+    { the uninstaller decides once, before anything is removed (the marker or the launcher is still there) }
+    if not UninstOwnedSet then begin
+      UninstOwned := DirIsOurs(ExpandConstant('{app}'));
+      UninstOwnedSet := True;
+    end;
+    Result := UninstOwned;
+  end else
+    Result := DirOwned;
+end;
+
+{ Check: of every [InstallDelete] and [UninstallDelete] line that deletes an install-folder folder whole: the folder is
+  ours (OwnedDir) and no folder on the way is a junction or symbolic link (NoLinkOnWay). }
+function OwnedSub(Rel: String): Boolean;
+begin
+  Result := OwnedDir and NoLinkOnWay(ExpandConstant('{app}'), Rel);
+end;
+
+{ Check: the same for a folder in the per-user data folder (Roaming AppData, Project Pyrrhus). }
+function DataSub(Rel: String): Boolean;
+begin
+  Result := NoLinkOnWay(ExpandConstant('{userappdata}\{#AppDirName}'), Rel);
+end;
+
+{ True when Dir has a character outside ASCII (an accented Windows user name in the default folder, say) }
+function HasNonAscii(Dir: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to Length(Dir) do
+    if Ord(Dir[I]) > 127 then begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+{ '' or a warning for the folder page (firstrun_check.py P2, the same words): letters outside A to Z are not tested
+  with the build. Not a refusal: the default folder holds the Windows user name, so many players would be shut out. }
+function InstallDirNote(Dir: String): String;
+begin
+  Result := '';
+  if HasNonAscii(Dir) then
+    Result := 'The folder ' + RemoveBackslashUnlessRoot(Dir) + ' has letters outside A to Z in its path. The build ' +
+      'is not tested with them and may stop. If it does, install again into a folder whose path has only A to Z, ' +
+      'digits, spaces and - _ . ( ), for example C:\Games\{#AppDirName}.' + #13#10 + #13#10 + 'Use this folder anyway?';
+end;
+
 { '' when Dir (the final install folder) is acceptable, else the reason }
 function InstallDirProblem(Dir: String): String;
 var
@@ -675,6 +816,13 @@ var
 begin
   Result := '';
   D := RemoveBackslashUnlessRoot(Dir);
+  if DirExists(D) and not DirIsEmpty(D) and not DirIsOurs(D) then begin
+    Result := 'The folder ' + D + ' already holds files that are not from {#AppDirName}. Setup installs only into an ' +
+      'empty or new folder, or over an earlier {#AppDirName} install, so that installing, updating or uninstalling ' +
+      'never deletes files it did not put there. Choose an empty or new folder (the default, ' +
+      '%LOCALAPPDATA%\Programs\{#AppDirName}, is fine).';
+    Exit;
+  end;
   if InOneDrive(D) then
     Result := 'The folder ' + D + ' is inside OneDrive, which syncs the build''s thousands of files while it runs ' +
       'and locks them. Choose a folder outside OneDrive (the default, %LOCALAPPDATA%\Programs\{#AppDirName}, is fine).'
@@ -885,6 +1033,52 @@ end;
 
 { '' when the folder holds a Killzone 2 disc (KnownDiscId) with its archive, else the message; Id = the title id
   found ('' when none) }
+{ Added 2026-11-26 (as firstrun_check.py single_iso): a disc pick that is a folder with no PS3_GAME and exactly one .iso file
+  in it -> that file's path; else ''. The dump page offers it with one Yes (a player picked the folder of their ISO). }
+function SingleIso(Dir: String): String;
+var
+  R: TFindRec;
+  N: Integer;
+  F: String;
+begin
+  Result := '';
+  if (Dir = '') or not DirExists(Dir) or DirExists(AddBackslash(Dir) + 'PS3_GAME') then Exit;
+  N := 0;
+  F := '';
+  if FindFirst(AddBackslash(Dir) + '*.iso', R) then begin
+    try
+      repeat
+        { FindFirst's *.iso also matches a short 8.3 name (KZ2DIS~1.ISO for a longer extension such as .isox): only a
+          long name that itself ends in .iso counts, as single_iso in firstrun_check.py }
+        if ((R.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) and (CompareText(ExtractFileExt(R.Name), '.iso') = 0) then begin
+          N := N + 1;
+          F := R.Name;
+        end;
+      until not FindNext(R);
+    finally
+      FindClose(R);
+    end;
+  end;
+  if N = 1 then Result := AddBackslash(Dir) + F;
+end;
+
+{ dev_hdd0\game\<id> for the update hints, as firstrun_check.py game_dir: the player's own disc's title id when the
+  dump page found one in PS3_GAME\PARAM.SFO; for a disc ISO the setup does not read the image (firstrun_check.py
+  own_disc_id does, in the build's first check, and names the id then), so the hint says so; else the same
+  placeholder as firstrun_check.py. }
+function GameDirHint(Dump: String): String;
+var
+  Id: String;
+begin
+  if IsIsoPick(Dump) then begin
+    Result := 'dev_hdd0\game\<your disc''s title id> (the build''s first check reads it from your ISO and names it)';
+    Exit;
+  end;
+  Id := SfoField(DiscSfo(Dump), 'TITLE_ID');
+  if KnownDiscId(Id) then Result := 'dev_hdd0\game\' + Id
+  else Result := 'dev_hdd0\game\<your disc''s title id>';
+end;
+
 function DumpProblem(Dir: String; var Id: String): String;
 var
   Title, Sub: String;
@@ -1173,6 +1367,10 @@ var
 begin
   Result := InstallDirProblem(ExpandConstant('{app}'));
   if Result <> '' then Log('install folder refused: ' + Result);
+  if (Result = '') and (InstallDirNote(ExpandConstant('{app}')) <> '') then
+    Log('install folder note (P2): letters outside A to Z in ' + ExpandConstant('{app}'));
+  { Refused above otherwise; a folder that is empty, new or ours may have its named folders replaced }
+  DirOwned := (Result = '');
   E := ExpandConstant('{param:EBOOT|}');
   if (Result = '') and WizardSilent and (E <> '') and FileExists(E) then begin
     if EbootProblem(E, ResolveUpdate(ExpandConstant('{param:UPDATE|}'))) <> '' then begin
@@ -1438,7 +1636,7 @@ end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  D, EbootMsg, Problem, Id: String;
+  D, EbootMsg, Problem, Id, Iso: String;
   FreeB, TotalB: Int64;
 begin
   Result := True;
@@ -1451,7 +1649,9 @@ begin
     if Problem <> '' then begin
       MsgBox(Problem, mbError, MB_OK);
       Result := False;
-    end;
+    end else if InstallDirNote(WizardDirValue) <> '' then
+      { a warning, not a refusal: the folder is taken when the player says Yes (firstrun_check P2 says it again) }
+      Result := MsgBox(InstallDirNote(WizardDirValue), mbConfirmation, MB_YESNO or MB_DEFBUTTON1) = IDYES;
   end;
   if CurPageID = RpcsPage.ID then begin
     D := AddBackslash(RpcsPage.Values[0]);
@@ -1466,6 +1666,15 @@ begin
   if CurPageID = DumpPage.ID then begin
     { The folder that holds PS3_GAME is used from here on, whichever level was picked }
     DumpPage.Values[0] := ResolveDump(DumpPage.Values[0]);
+    Iso := SingleIso(DumpPage.Values[0]);
+    if Iso <> '' then begin
+      if WizardSilent then
+        Log('disc dump: the folder holds no PS3_GAME and one ISO, ' + ExtractFileName(Iso) + ': using it')
+      else if MsgBox('This folder holds no PS3_GAME folder, but one disc image:' + #13#10 + ExtractFileName(Iso) + #13#10#13#10 +
+                     'Use it?', mbConfirmation, MB_YESNO) <> IDYES then
+        Iso := '';
+      if Iso <> '' then DumpPage.Values[0] := Iso;
+    end;
     Problem := DumpProblem(DumpPage.Values[0], Id);
     if Problem <> '' then begin
       MsgBox(Problem, mbError, MB_OK);
@@ -1510,8 +1719,8 @@ begin
         what is wrong there (Project Helghast PR #14).
         ASSUMPTION: the exact RPCS3/PS3 wording is to be checked against RPCS3's own docs before release. }
       MsgBox('The 1.29 update was not found in this folder: ' + UpdateProblem(UpdatePage.Values[0]) + #13#10 + #13#10 +
-        'The update folder is the installed update of your disc''s region (dev_hdd0\game\<the disc''s title id>, ' +
-        'such as BCUS98116) and holds PARAM.SFO, USRDIR\EBOOT.BIN, ' +
+        'The update folder is the installed update of your disc''s region (' +
+        GameDirHint(DumpPage.Values[0]) + ') and holds PARAM.SFO, USRDIR\EBOOT.BIN, ' +
         'USRDIR\added_data_ps3.psarc and the folder USRDIR\patch_data_ps3. The port is built on 1.29.' + #13#10 + #13#10 +
         'To add it:' + #13#10 +
         '  - on your PS3: install the 1.29 update for Killzone 2, then copy the game''s update ' +
@@ -1908,6 +2117,10 @@ begin
     if BuildOK and SourcePage.Values[0] and (RpcsRoot <> '') and not WizardSilent then OfferSaveImport;
   end;
   if CurStep = ssPostInstall then WritePaths;
+  { The folder is ours from now on (DirIsOurs): a later update or this uninstaller may delete what it made here }
+  if (CurStep = ssPostInstall) and DirOwned then
+    SaveStringToFile(ExpandConstant('{app}\{#OwnedMarker}'),
+      'This folder is a Project Pyrrhus install. Its setup and uninstaller delete only the folders they made here.' + #13#10, False);
   if CurStep = ssDone then MergeInnoLog;
 end;
 
@@ -1921,6 +2134,8 @@ end;
 
 procedure AskDeletePortableSaves(App: String);
 begin
+  { only our own install's gamedata, never through a junction or symbolic link }
+  if not OwnedDir or not NoLinkOnWay(App, 'gamedata') then Exit;
   if not DirExists(App + '\gamedata') or UninstallSilent then Exit;
   if MsgBox('Delete your Project Pyrrhus saves and settings too?' + #13#10 + App + '\gamedata' + #13#10 + #13#10 +
             'No keeps them for a later install.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then begin
@@ -1952,6 +2167,10 @@ end;
 procedure RemoveVfsFolder(Dir: String);
 begin
   if (Dir = '') or not DirExists(Dir) then Exit;
+  if IsReparse(Dir) then begin
+    Log('VFS folder kept (it is itself a junction or symbolic link): ' + Dir);
+    Exit;
+  end;
   RemoveDir(Dir + '\PS3_GAME');
   RemoveDir(Dir + '\link-test');
   RemoveDir(Dir + '\link-test-target');
@@ -1971,10 +2190,28 @@ begin
             (CompareText(Copy(ExtractFileName(Dir), 1, 4), 'vfs-') = 0) and (Length(ExtractFileName(Dir)) > 4);
 end;
 
+{ The shared second place of an earlier unreleased launcher (vfs in our LOCALAPPDATA folder) served whichever install
+  linked it last; launch.py migrate_alt leaves "a link to another game folder ... for its own install". The same rule
+  here: it is this install's only when its link.json target is this install's game folder ([paths] dump + PS3_GAME,
+  as json.dump writes it: "target": "...", backslashes doubled). No record, another target or a name json.dump
+  escapes (non-ASCII) keeps it. }
+function LegacyVfsIsOurs(Dir: String): Boolean;
+var
+  J: AnsiString;
+  T: String;
+begin
+  Result := False;
+  T := GetIniString('paths', 'dump', '', ExpandConstant('{app}\kz2-install.ini'));
+  if (T = '') or not LoadStringFromFile(Dir + '\link.json', J) then Exit;
+  T := AddBackslash(T) + 'PS3_GAME';
+  StringChangeEx(T, '\', '\\', True);
+  Result := Pos(Lowercase('"target": "' + T + '"'), Lowercase(String(J))) > 0;
+end;
+
 { Every VFS folder this install made: vfs in the install folder, its own second place (computed, and as the launcher
   recorded it in kz2-install.ini [vfs] alt, in case the two spell the folder differently), and the one shared second
-  place of an earlier unreleased launcher (vfs in our LOCALAPPDATA folder; no launcher uses it any more, the launcher
-  only moves it into its own place). }
+  place of an earlier unreleased launcher (vfs in our LOCALAPPDATA folder) when it links this install's game folder
+  (LegacyVfsIsOurs; another install may still use it). }
 procedure RemoveVfsFolders;
 var
   Rec: String;
@@ -1984,7 +2221,36 @@ begin
   Rec := GetIniString('vfs', 'alt', '', ExpandConstant('{app}\kz2-install.ini'));
   if IsOwnAltVfs(Rec) then
     RemoveVfsFolder(Rec);
-  RemoveVfsFolder(ExpandConstant('{localappdata}\{#AppDirName}\vfs'));
+  Rec := ExpandConstant('{localappdata}\{#AppDirName}\vfs');
+  if LegacyVfsIsOurs(Rec) then
+    RemoveVfsFolder(Rec)
+  else if DirExists(Rec) then
+    Log('shared VFS folder kept (it does not link this install''s game folder): ' + Rec);
+end;
+
+{ True when App holds nothing but our marker and the uninstaller's own files (unins000.exe, .dat, .msg, which Inno
+  removes after this step): only then may the marker go. }
+function OnlyUninstallerLeft(App: String): Boolean;
+var
+  R: TFindRec;
+  N, E: String;
+begin
+  Result := True;
+  if FindFirst(AddBackslash(App) + '*', R) then begin
+    try
+      repeat
+        N := R.Name;
+        E := Lowercase(ExtractFileExt(N));
+        if (N <> '.') and (N <> '..') and (CompareText(N, '{#OwnedMarker}') <> 0) and
+           not ((CompareText(Copy(N, 1, 5), 'unins') = 0) and ((E = '.exe') or (E = '.dat') or (E = '.msg'))) then begin
+          Result := False;
+          Break;
+        end;
+      until not FindNext(R);
+    finally
+      FindClose(R);
+    end;
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -1992,12 +2258,31 @@ begin
   { Ask before removing saves, default keep (silent uninstall keeps them). A normal install keeps saves in
     APPDATA, a portable one in the install folder (launch.py data_dir: gamedata). }
   if CurUninstallStep = usUninstall then begin
+    { Never in a folder that is not ours (DirIsOurs: the marker, or an install from before it) }
+    if not OwnedDir then begin
+      Log('uninstall: ' + ExpandConstant('{app}') + ' has no {#OwnedMarker} and no launcher; its folders are left alone');
+      Exit;
+    end;
     { The links to the dump go first (RemoveDirectory on a junction removes the link only, never the target). }
     RemoveVfsFolders;
     Exit;
   end;
   if CurUninstallStep <> usPostUninstall then Exit;
   AskDeleteSaves(ExpandConstant('{userappdata}\{#AppDirName}'));
+  { Nothing more in a folder that is not ours: not its gamedata, not its marker, not the folder }
+  if not OwnedDir then Exit;
   { Portable: launch.py's data folder is the install folder itself (gamedata = cellSaveData). }
   AskDeletePortableSaves(ExpandConstant('{app}'));
+  { The marker goes last, in code, so every [UninstallDelete] line above still found the folder ours, and only when
+    nothing but the uninstaller's own files is left. Kept gamedata (a "No", a silent uninstall) or a locked file keeps
+    it (an install from before the marker gets one), so a reinstall into the same folder is not refused. }
+  if OnlyUninstallerLeft(ExpandConstant('{app}')) then
+    DeleteFile(ExpandConstant('{app}\{#OwnedMarker}'))
+  else begin
+    if not FileExists(ExpandConstant('{app}\{#OwnedMarker}')) then
+      SaveStringToFile(ExpandConstant('{app}\{#OwnedMarker}'),
+        'This folder is a Project Pyrrhus install. Its setup and uninstaller delete only the folders they made here.' + #13#10, False);
+    Log('uninstall: ' + ExpandConstant('{app}') + ' still holds files; {#OwnedMarker} stays');
+  end;
+  RemoveDir(ExpandConstant('{app}'));
 end;

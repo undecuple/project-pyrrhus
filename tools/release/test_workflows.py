@@ -8,10 +8,13 @@ tree). Text checks only (standard library, no YAML parser, no network):
   - pages.yml: both jobs run only when the repository variable PAGES_ENABLED is "true"; the page's ../assets images
     are staged;
   - release.yml: a tag push or workflow_dispatch only; the tag must be v + installer/VERSION; the draft pre-release
-    command is `gh release create TAG --draft --prerelease --verify-tag --title TAG --notes-file`, with no
+    command is `gh release create TAG --draft --verify-tag --title TAG --notes-file` (a full release from 0.1.14, no
+    --prerelease), with no
     --clobber, upload, edit or delete; only the publish job can write and it is skipped on workflow_dispatch;
     SHA256SUMS and .sha256 files; the notes are generated from the tag's CHANGELOG entry (release_notes.py) before
     the build and passed to publish;
+    the attest job (from Project Vekta, MIT) signs both files' provenance on tag pushes before publish, with
+    actions:read, id-token:write and attestations:write only, each with its reason, and verifies them;
   - issue-labels.yml: every rule's heading is the first field label of one issue form and every label it may add is
     one the forms use; with node on PATH the rules block itself is run on sample issues;
   - release-check.yml: a published release or a dispatch only, every permission read-only (its logic is tested by
@@ -30,9 +33,9 @@ import sys
 import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-GH = os.path.join(ROOT, "public", ".github")
-if not os.path.isdir(GH):
-    GH = os.path.join(ROOT, ".github")          # the public tree ships public/ at its root
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import public_layout  # noqa: E402
+GH = public_layout.public_path(ROOT, ".github")   # public/.github here, .github in the public repository
 WF = os.path.join(GH, "workflows")
 FAILS = []
 USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
@@ -103,6 +106,20 @@ def test_pages():
               "pages.yml stages docs/screenshots/ (the page shows the screens) and runs when they change")
 
 
+def test_release_check_zip():
+    t = read(os.path.join(WF, "release-check.yml"))
+    check(re.search(r"python3 tools/release/release_check\.py --tag \"\$TAG\"", t) is not None,
+          "release-check.yml: the asset names come from release_check.py for the checked tag (zip name by version)")
+    check("-portable.zip before 0.1.14" in t and "Windows-x64.zip" in t,
+          "release-check.yml: says which zip name each version has")
+    check("Project-Pyrrhus-" not in "".join(ln for ln in t.splitlines() if not ln.lstrip().startswith("#")),
+          "release-check.yml: no zip name written into its steps (one place: release_version.zip_name)")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import release_check as rc
+    check([rc.zip_name(v).rsplit("-", 1)[-1] for v in ("0.1.3", "0.1.13", "0.1.14")]
+          == ["portable.zip", "portable.zip", "x64.zip"], "release_check.zip_name: -portable.zip to 0.1.13, -Windows-x64.zip after")
+
+
 def test_release():
     t = read(os.path.join(WF, "release.yml"))
     on = t[t.index("\non:"):t.index("\npermissions:")]
@@ -128,17 +145,38 @@ def test_release():
           "release.yml: the installer job copies the CJK collection to work/release/fonts before assembling")
     writers = [j for j, b in js.items() if "contents: write" in b]
     check(writers == ["publish"], "release.yml: only the publish job can write", writers)
+    # the attest job (from Project Vekta's release.yml, MIT): signs the two files' build provenance on tag pushes
+    att = js.get("attest", "")
+    perm = re.search(r"^    permissions:\n((?:      [^\n]*\n)+)", att, re.M)
+    lines = [ln.strip() for ln in perm.group(1).splitlines()] if perm else []
+    check(sorted(ln.split(":")[0] for ln in lines) == ["actions", "attestations", "id-token"]
+          and all(re.fullmatch(r"[a-z-]+: (read|write)\s+#\s*\S.*", ln) for ln in lines)
+          and "actions: read" in att and "id-token: write" in att and "attestations: write" in att,
+          "release.yml: attest has only actions:read, id-token:write and attestations:write, each with a reason", lines)
+    check([j for j, b in js.items() if re.search(r"id-token: write|attestations: write", b)] == ["attest"],
+          "release.yml: no other job may sign or store attestations")
+    check("if: github.event_name == 'push' && github.ref_type == 'tag'" in att and "actions/checkout" not in att
+          and "needs: installer" in att, "release.yml: attest runs on tag pushes only, after the build, with no checkout")
+    check(re.search(r"uses: actions/attest@[0-9a-f]{40}\s+#\s*v4\.", att) is not None
+          and "subject-checksums: assets/SHA256SUMS" in att and "sha256sum Project-Pyrrhus-setup.exe \"$zip\" > SHA256SUMS" in att,
+          "release.yml: actions/attest pinned, subjects from the same SHA256SUMS lines as publish")
+    check("gh attestation verify" in att and "--signer-workflow" in att and "--source-ref" in att,
+          "release.yml: attest verifies each file against the stored attestation")
     pub = js.get("publish", "")
     check("if: github.event_name == 'push' && github.ref_type == 'tag'" in pub and "actions/checkout" not in pub,
           "release.yml: publish runs on tag pushes only and checks out no code")
+    check("needs: [installer, attest]" in pub, "release.yml: publish waits for attest (no release without provenance)")
     check("--check --tag \"$GITHUB_REF_NAME\"" in t and '[ "$GITHUB_REF_NAME" = "v$VERSION" ]' in pub,
           "release.yml: the tag must be v + installer/VERSION (build and publish)")
     cmd = re.search(r"gh release create ((?:[^\n]*\\\n)*[^\n]*)", t)
     c = cmd.group(1) if cmd else ""
-    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft \$pre --verify-tag --title "\$GITHUB_REF_NAME" '
+    check(cmd is not None and re.match(r'"\$GITHUB_REF_NAME" --draft --verify-tag --title "\$GITHUB_REF_NAME" '
                                        r"--notes-file ", c) is not None,
-          "release.yml: gh release create TAG --draft --prerelease --verify-tag --title TAG --notes-file", c)
-    check('0.*) pre="--prerelease"' in t, "release.yml: a 0.x version is a pre-release")
+          "release.yml: gh release create TAG --draft --verify-tag --title TAG --notes-file", c)
+    check("--prerelease" not in t and "$pre" not in t, "release.yml: a full release (from 0.1.14), never --prerelease")
+    zips = set(re.findall(r'zip="([^"]+)"', t)) | set(re.findall(r'--out "installer/Output/([^"]+\.zip)"', t))
+    check(zips == {"Project-Pyrrhus-$VERSION-Windows-x64.zip"} and "Project-Pyrrhus-*-Windows-x64.zip" in t
+          and "-portable.zip" not in t, "release.yml: the zip is Project-Pyrrhus-<version>-Windows-x64.zip everywhere", zips)
     check(not re.search(r"--clobber|gh release (upload|edit|delete)|git (tag|push)", t),
           "release.yml: no clobber, upload, edit or delete; no tag or push")
     check("> SHA256SUMS" in t and "SHA256SUMS" in c and ".sha256" in c, "release.yml: SHA256SUMS and .sha256 files beside the assets")
@@ -235,6 +273,7 @@ def main():
     test_pages()
     test_release()
     test_release_check()
+    test_release_check_zip()
     test_issue_labels()
     test_dependabot()
     print(f"\n{'PASS' if not FAILS else 'FAIL'}: {len(FAILS)} failure(s)")

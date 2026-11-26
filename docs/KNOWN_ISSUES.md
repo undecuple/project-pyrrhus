@@ -16,7 +16,7 @@ If something does not start, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). If yo
   has not been played from start to finish, and the other missions have not been tried. Checkpoint saves are written
   in the first level. Loading a checkpoint back is not checked yet. Nor is loading a save copied over from RPCS3 (those
   are copied unchanged, with no promise that they load).
-- **Pre-release; native Windows play so far from player reports only.** The installer and portable zip are published as pre-releases on the
+- **Early and experimental; native Windows play so far from player reports only.** The installer and portable zip are on the
   [releases page](https://github.com/undecuple/project-pyrrhus/releases). On 2026-10-27 and again on 2026-10-28 (the last
   run) the installer ran in a Windows 10 virtual machine with no GPU. These all worked:
   - The silent install and the check of every installed file.

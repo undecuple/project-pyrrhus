@@ -2,7 +2,7 @@
 """Pack an assembled payload (assemble_payload.py --out DIR) into the portable zip. From Project Helghast
 tools/release/pack_zip.py. Standard library only.
 
-    pack_zip.py --payload DIR --out Project-Pyrrhus-<version>-portable.zip [--top "Project Pyrrhus"] [--replace]
+    pack_zip.py --payload DIR --out Project-Pyrrhus-<version>-Windows-x64.zip [--top "Project Pyrrhus"] [--replace]
 
 Before writing anything it checks the payload against its own manifest.json: every listed file present with the
 listed size and SHA-256, nothing on disk that the manifest does not list (besides manifest.json and VERSION.txt),
@@ -31,6 +31,7 @@ import assemble_payload as ap_mod  # noqa: E402
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 NOT_LISTED = {"manifest.json", "VERSION.txt"}      # written by assemble_payload itself, not entries of the manifest
 REQUIRED = ("run.cmd", "manifest.json", "VERSION.txt",
+            "recomplauncher.json",   # RecompLauncher reads it at the top of the zip (test_recomplauncher.py)
             # the runtime's error-notice fonts and their licence (assemble_payload FONTS; rsx 38)
             "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
             "fonts/NotoSans-Regular.ttf", "licenses/NotoSans-OFL.txt",   # patch 6061 (issue #39)

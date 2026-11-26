@@ -39,7 +39,8 @@ PS3_EDAT_CACHE=<root>/build/cache/edat (port/patches/5002); VKD3D_SHADER_CACHE_P
 vkd3d-proton pipeline cache, made first; Windows ignores it). Working folder <data> (where cellSaveData's ./gamedata
 lands): the install folder when kz2-install.ini says portable=1, else %APPDATA%/Project Pyrrhus.
 
-Version check (opt-in, kz2-install.ini [online] check_updates=1): at most once a day, version_check.py runs in the
+Version check (never under RecompLauncher, RECOMPLAUNCHER=1: no check, no offer, even from an older result; else
+opt-in, kz2-install.ini [online] check_updates=1): at most once a day, version_check.py runs in the
 background (no window, 8 s timeout) and leaves its line in <root>/logs/version-check.txt; the next start shows
 "a new version is out" once per version (a "No" is remembered in [online] dismissed). When the release has a setup
 and its .sha256, the first question is "Update this installation now?": Yes downloads both from the project's release
@@ -76,6 +77,11 @@ community.ini in the shared folder (online_ini.shared_dir: PS3RECOMP_SHARED_DIR,
 when both methods are enabled (the game then refuses online play); the game reads the files itself
 (port/kz2/kz2_online.cpp). The launcher sets no online variable.
 
+--support-package ("Make a support package", Start menu): support.py's zip of the last logs, up to 10 crash reports,
+the settings and the system facts, every file through firstrun.redactor(), text only, at most 20 MB, written to
+<install>\\logs; the message says where it is and the folder opens. Nothing is uploaded (adapted from Project Vekta,
+MIT; support.py's header). Every failure message (REPORT) names it.
+
 --print: show the decision, the command, the working folder and the variables it sets, as JSON; starts nothing.
 """
 import argparse
@@ -104,7 +110,10 @@ SAVE_FOLDER = "Project Pyrrhus"         # under %APPDATA% when not portable
 FIRSTRUN_LOG = "Project-Pyrrhus-firstrun.log"
 ISSUES_URL = "https://github.com/undecuple/project-pyrrhus/issues"
 # every failure message says where to report it (the log holds no personal folders)
-REPORT = f"\n\nTo report a problem, attach this log on the issues page: {ISSUES_URL}"
+SUPPORT_ENTRY = "Make a support package"   # its Start menu entry (installer/kz2.iss); launch.py --support-package
+REPORT = (f"\n\nTo report a problem, attach this log on the issues page: {ISSUES_URL}\n"
+          f"Or attach a support package (all the logs in one zip, your folders left out): \"{SUPPORT_ENTRY}\" in the "
+          f"Start menu, or \"Project Pyrrhus.exe --support-package\" in a portable folder.")
 GAME_VARS = ("KZ2_PAD_LAYOUT", "KZ2_PROMPTS", "KZ2_DISPLAY", "PS3_VFS_ROOT", "KZ2_UPDATE_DIR", "PS3_HDD0_ROOT", "PS3_EDAT_CACHE",
              "VKD3D_SHADER_CACHE_PATH", "KZ2_CACHE_ROOT")
 # firstrun.py --status-file: its last RESULT line and, after RESULT ok=0, the REASON lines (why it stopped), shown in
@@ -853,6 +862,31 @@ def fetch_update(setup_url, sha_url, dest_dir, get=None):
 
 
 # ------------------------------------------------------------------------------------------------------- the UI
+def support_package(root, data, ui, opener=None):
+    """--support-package: support.py's zip; says where it is and opens its folder (Windows). Never uploads."""
+    import support
+    try:
+        dest = support.build(root, data)
+    except OSError as e:
+        note(root, f"support package: not written ({e})")
+        ui.info(f"The support package could not be written: {e}.")
+        return 1
+    if not dest:
+        ui.info("Nothing to put in a support package yet: no logs and no settings. Start the game once, then try again.")
+        return 1
+    note(root, f"support package: {os.path.basename(dest)}")
+    ui.info(f"The support package is ready:\n{dest}\n\nIt holds the logs, the crash reports, the settings and a few "
+            f"facts about this PC, with your user folders and the PC's name left out. Nothing was sent anywhere: "
+            f"attach it to your report on the issues page: {ISSUES_URL}")
+    opener = opener or getattr(os, "startfile", None)
+    if opener:
+        try:
+            opener(os.path.dirname(dest))
+        except OSError:
+            pass
+    return 0
+
+
 class UI:
     """Message boxes on Windows (pythonw has no console), the terminal elsewhere (developer runs)."""
 
@@ -1024,6 +1058,8 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                     help="set the display mode in kz2-install.ini (no value: the next mode in the cycle) and exit")
     ap.add_argument("--online", action="store_true",
                     help="open Online settings (Off, re-psn or a community server; online_dialog.py) and exit")
+    ap.add_argument("--support-package", action="store_true",
+                    help='"Make a support package": a zip of the logs and settings for a bug report (uploads nothing)')
     ap.add_argument("--repair", action="store_true",
                     help='"Verify and rebuild": check the install and the game files again, rebuild what changed')
     a, extra = ap.parse_known_args(argv)
@@ -1041,6 +1077,8 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         return set_prompts(root, a.prompts, ini, ui, shown)
     if a.display:
         return set_display(root, a.display, ini, ui, shown)
+    if a.support_package:
+        return support_package(root, data_dir(root, ini["portable"], environ), ui)
     if a.online:
         import online_dialog
         note(root, "online settings opened")
@@ -1077,7 +1115,13 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
         note(root, f"kz2-install.ini [controls] prompts = {ini['prompts_bad']!r} is unknown; using auto")
     note(root, f"start: {action}" + (f" ({reason})" if reason else ""))
     note(root, version_line(root))
-    nv = newer_from_result(os.path.join(logs, "version-check.txt"), ini["dismissed"])
+    # Under RecompLauncher (RECOMPLAUNCHER=1) the launcher brings every release itself: never offer an update or a
+    # release page, not even from an older version-check.txt, and start no check (its docs/DEVELOPERS.md, "Where your
+    # game writes"; the manifest also writes check_updates=0 on each start)
+    managed = environ.get("RECOMPLAUNCHER") == "1"
+    if managed:
+        note(root, "updates: left to RecompLauncher (no check, no offer)")
+    nv = None if managed else newer_from_result(os.path.join(logs, "version-check.txt"), ini["dismissed"])
     if nv and nv[2] and nv[3] and ui.ask(
             f"{TITLE} {nv[0]} is out. Update this installation now?\n\nYes downloads its setup from the project's "
             "releases on GitHub, checks it against its published SHA-256 and starts it for this folder. Your build is "
@@ -1095,7 +1139,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
                 ui.open_url(nv[1])
         else:
             try_write_ini(root, "online", "dismissed", nv[0], ui, shown)
-    if check_due(ini, today):
+    if not managed and check_due(ini, today):
         os.makedirs(logs, exist_ok=True)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         start([sys.executable, os.path.join(HERE, "version_check.py"), "--current", fr.port_version(root),
@@ -1172,7 +1216,7 @@ def main(argv=None, ui=None, run=run_wait, start=spawn, today=None, environ=None
     gerr = ensure_gameplay_ini(cwd)
     if gerr:
         note(root, "gameplay.ini: " + gerr)
-    info = version_info(root, ini["check_updates"])
+    info = version_info(root, ini["check_updates"] and not managed)
     verr = write_version_ini(cwd, info)
     note(root, "version.ini: " + (verr or ", ".join(f"{k} {v}" for k, v in info)))
     rc = run(gargv + extra, cwd=cwd, env=env)

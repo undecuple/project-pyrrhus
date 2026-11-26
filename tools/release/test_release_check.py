@@ -21,12 +21,12 @@ import release_check as rc  # noqa: E402
 import release_version  # noqa: E402
 
 ROOT = release_version.REPO
-GH = os.path.join(ROOT, "public", ".github")
-if not os.path.isdir(GH):
-    GH = os.path.join(ROOT, ".github")          # the public tree ships public/ at its root
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import public_layout  # noqa: E402
+GH = public_layout.public_path(ROOT, ".github")   # public/.github here, .github in the public repository
 V = release_version.read(ROOT)
 TAG = "v" + V
-GOOD = {"tag_name": TAG, "name": TAG, "draft": False, "prerelease": V.startswith("0."),
+GOOD = {"tag_name": TAG, "name": TAG, "draft": False, "prerelease": release_version.is_prerelease(V),
         "body": f"Project Pyrrhus {V}, a pre-release. SHA256SUMS.",
         "assets": [{"name": n} for n in rc.expected_assets(V)]}
 fails = []
@@ -52,7 +52,14 @@ expect("duplicate asset", rc.check_release(variant(assets=GOOD["assets"] + GOOD[
 expect("wrong tag", rc.check_release(variant(tag_name="v9.9.9"), "v9.9.9", V), "is not v" + V)
 expect("tag_name differs", rc.check_release(variant(tag_name="v9.9.9"), TAG, V), "tag_name")
 expect("draft", rc.check_release(variant(draft=True), TAG, V), "draft")
-expect("not prerelease", rc.check_release(variant(prerelease=False), TAG, V), "prerelease")
+expect("prerelease flag flipped", rc.check_release(variant(prerelease=not GOOD["prerelease"]), TAG, V), "prerelease")
+old = dict(tag_name="v0.1.13", name="v0.1.13", body="0.1.13", assets=[{"name": n} for n in rc.expected_assets("0.1.13")])
+expect("0.1.13 good as a pre-release", rc.check_release(variant(prerelease=True, **old), "v0.1.13", "0.1.13"))
+expect("0.1.13 not flagged pre-release", rc.check_release(variant(prerelease=False, **old), "v0.1.13", "0.1.13"), "needs True")
+new = dict(tag_name="v0.1.14", name="v0.1.14", body="0.1.14", assets=[{"name": n} for n in rc.expected_assets("0.1.14")])
+expect("0.1.14 pre-release flagged (full releases from 0.1.14)",
+       rc.check_release(variant(prerelease=True, **new), "v0.1.14", "0.1.14"), "needs False")
+expect("0.1.14 good as a full release", rc.check_release(variant(prerelease=False, **new), "v0.1.14", "0.1.14"))
 one = dict(tag_name="v1.0.0", name="v1.0.0", body="1.0.0", assets=[{"name": n} for n in rc.expected_assets("1.0.0")])
 expect("1.x pre-release flagged", rc.check_release(variant(prerelease=True, **one), "v1.0.0", "1.0.0"), "needs False")
 expect("1.x good", rc.check_release(variant(prerelease=False, **one), "v1.0.0", "1.0.0"))
@@ -66,17 +73,26 @@ zip_def = re.search(r'^\s*zip="([^"]+)"', rel_yml, re.M)
 if not m or not zip_def:
     fails.append("release.yml: gh release create file list or zip= not found")
 else:
-    zipn = zip_def.group(1).replace("$VERSION", V)
+    # release.yml builds the next release, a full one from 0.1.14 on (the older ones are published, never rebuilt)
+    VR = rc.release_version.FIRST_FULL_RELEASE if rc.release_version.is_prerelease(V) else V
+    zipn = zip_def.group(1).replace("$VERSION", VR)
     files = [f.strip('"').replace("$zip", zipn) for f in m.group(1).split()]
-    if files != rc.expected_assets(V):
-        fails.append(f"asset list differs from release.yml: {files} != {rc.expected_assets(V)}")
+    if files != rc.expected_assets(VR):
+        fails.append(f"asset list differs from release.yml: {files} != {rc.expected_assets(VR)}")
 iss = open(os.path.join(ROOT, "installer", "kz2.iss"), encoding="utf-8").read()
 base = re.search(r'#define SetupBase "([^"]+)"', iss)
 if not base or base.group(1) + ".exe" != rc.SETUP:
     fails.append(f"kz2.iss SetupBase {base and base.group(1)!r} is not {rc.SETUP!r} without .exe")
-if "Project-Pyrrhus-<version>-portable.zip" not in open(os.path.join(HERE, "pack_zip.py"), encoding="utf-8").read() \
-        or rc.zip_name("1.2.3") != "Project-Pyrrhus-1.2.3-portable.zip":
+if "Project-Pyrrhus-<version>-Windows-x64.zip" not in open(os.path.join(HERE, "pack_zip.py"), encoding="utf-8").read() \
+        or rc.zip_name("1.2.3") != "Project-Pyrrhus-1.2.3-Windows-x64.zip" \
+        or rc.zip_name("0.1.14") != "Project-Pyrrhus-0.1.14-Windows-x64.zip" \
+        or rc.zip_name("0.1.14") == "Project-Pyrrhus-0.1.14-portable.zip":
     fails.append("zip name differs from pack_zip.py's usage line")
+# release-check.yml on an old tag: the asset it expects is the one that release had
+for v, want in (("0.1.3", "Project-Pyrrhus-0.1.3-portable.zip"), ("0.1.13", "Project-Pyrrhus-0.1.13-portable.zip"),
+                ("0.1.14", "Project-Pyrrhus-0.1.14-Windows-x64.zip"), ("0.2.0", "Project-Pyrrhus-0.2.0-Windows-x64.zip")):
+    if rc.zip_name(v) != want or want not in rc.expected_assets(v):
+        fails.append(f"zip name for {v}: {rc.zip_name(v)} (expected assets {rc.expected_assets(v)}), want {want}")
 
 
 def write_assets(d, tamper=None):

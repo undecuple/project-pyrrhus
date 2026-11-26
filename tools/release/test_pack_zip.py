@@ -52,6 +52,7 @@ def manifest(root):
 def payload(tmp):
     root = os.path.join(tmp, "payload")
     put(root, "run.cmd", "@echo off\r\n")
+    put(root, "recomplauncher.json", "{\"format\": 1}\n")
     put(root, "VERSION.txt", "0.1.0\n")
     put(root, "kz2-setup/release/firstrun.py", "print('x')\n")
     put(root, "port/kz2/main.cpp", "int main(){}\n")
@@ -113,7 +114,7 @@ def main():
             names = [i.filename for i in infos]
             same = all(z.read(f"Project Pyrrhus/{rel}") == open(p, "rb").read() for rel, p in pz.walk(root))
         check(names == sorted(names) and all(n.startswith("Project Pyrrhus/") for n in names)
-              and len(names) == 25 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
+              and len(names) == 26 and "Project Pyrrhus/manifest.json" in names, "sorted entries under the top folder",
               names)
         check({"Project Pyrrhus/runtime/SDL3.dll", "Project Pyrrhus/licenses/SDL3-LICENSE.txt"} <= set(names),
               "SDL3.dll and its licence are in the zip", names)

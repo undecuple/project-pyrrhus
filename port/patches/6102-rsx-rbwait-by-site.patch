@@ -1,0 +1,132 @@
+KZ2 patch 6102 (2026-11-25): what the walker's readback fence waits wait for. Patch
+6091's rbwait bucket (3.1-3.6 ms per flip in a gameplay test run) is the fence wait of every ld_flush(LD_FLUSH_READBACK), whatever asked
+for it. Callers now name their site in g_ld_rb_site (walker thread; the outermost site wins): nv0039 (the NV0039
+copy's source writeback, cellGcmSys.c), label (before_guest_sync from the 0x1D70/0x1D74 semaphore release in
+rsx_commands.c and the 0x6C label release in cellGcmSys.c), present (before_guest_sync at present), gv (guest-visible
+rows uploaded back, ld_gv_upload_rows), zp (z-pass readback, ld_zp_read_snapshot), other (the rest: dumps, debug
+reads). With RSX_PERF_SPLIT=1 each wait's QPC time and count go to its site and one line follows each [perf-split]:
+`[perf-split-rb] t=Ns other=MS/N nv0039=MS/N label=MS/N present=MS/N gv=MS/N zp=MS/N (ms/waits per flip)`.
+Off without RSX_PERF_SPLIT (the site stores are two plain int writes per call). Measurement only, no behaviour change.
+Not host-tested: the counting sits in the D3D12 flush path; checked by the build and the split run's line.
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -46,6 +46,7 @@
+ { (void)d; (void)o; (void)v; }
+ u32  rsx_live_draw_note_guest_write(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; return 0; }
+ u32  rsx_live_draw_writeback_range(u32 l, u32 o, u32 n) { (void)l; (void)o; (void)n; return 0; }
++volatile int g_ld_rb_site; volatile long long g_ld_rb_qpc[6], g_ld_rb_n[6];   /* KZ2 patch 6102 */
+ int  rsx_live_draw_host_aa_mode(void) { return 0; }
+ void rsx_live_draw_host_aa_arm(int on) { (void)on; }
+ int  rsx_live_draw_host_aa_active(void) { return 0; }
+@@ -3243,6 +3244,13 @@
+     else { if (off < g.ib_lo) g.ib_lo = off; if (off + (u32)bytes > g.ib_hi) g.ib_hi = off + (u32)bytes; }
+     return g.ibd;
+ }
++/* KZ2 patch 6102: what a READBACK fence wait (6091's rbwait bucket) is for. Callers name their site in g_ld_rb_site
++ * around the call that can flush (walker thread only); RSX_PERF_SPLIT=1 adds each wait's QPC time to its site and
++ * cellGcmSys.c prints [perf-split-rb] beside [perf-split]. Sites: other, nv0039 (NV0039 copy source writeback),
++ * label (semaphore/label release: before_guest_sync from 0x1D70/0x1D74 and the 0x6C release), present
++ * (before_guest_sync at present), gv (guest-visible rows uploaded back), zp (z-pass readback snapshot). */
++volatile int g_ld_rb_site;
++volatile long long g_ld_rb_qpc[6], g_ld_rb_n[6];
+ static void ld_flush_body(ld_flush_reason reason)
+ {
+     g_ld_unsubmitted = 0;
+@@ -3325,7 +3333,14 @@
+         }
+         { const long long w0 = rsx_perf_now();
+           if (reason == LD_FLUSH_READBACK) LDS_IN(RSX_SPB_RBWAIT);   /* KZ2 patch 6091: other reasons stay in submit */
+-          WaitForSingleObject(g.fence_event, INFINITE);
++          { LARGE_INTEGER q0, q1; extern volatile int g_rsx_split_on;
++            const int rbs = reason == LD_FLUSH_READBACK && g_rsx_split_on;   /* KZ2 patch 6102 */
++            if (rbs) QueryPerformanceCounter(&q0);
++            WaitForSingleObject(g.fence_event, INFINITE);
++            if (rbs) { QueryPerformanceCounter(&q1); const int s = g_ld_rb_site;
++                       const int k = s > 0 && s < 6 ? s : 0;
++                       __atomic_fetch_add(&g_ld_rb_qpc[k], (long long)(q1.QuadPart - q0.QuadPart), __ATOMIC_RELAXED);
++                       __atomic_fetch_add(&g_ld_rb_n[k], 1, __ATOMIC_RELAXED); } }
+           if (reason == LD_FLUSH_READBACK) LDS_OUT();
+           rsx_perf_add(RSX_PERF_GPUWAIT_T, rsx_perf_now() - w0);
+           if (rsx_perf_walk_on())   /* patch 2029: which flushes wait */
+@@ -5554,7 +5569,7 @@
+     if ((u64)pitch * rows > UPLOAD_SIZE) return 0;
+     u32 start = (g.upload_used + 511u) & ~511u;
+     if ((u64)start + (u64)pitch * rows > UPLOAD_SIZE) {
+-        ld_flush(LD_FLUSH_READBACK);
++        { const int rbs0 = g_ld_rb_site; if (!rbs0) g_ld_rb_site = 4; ld_flush(LD_FLUSH_READBACK); g_ld_rb_site = rbs0; }   /* KZ2 patch 6102 */
+         start = 0;
+     }
+     for (u32 y = 0; y < rows; y++) {
+@@ -14063,7 +14078,7 @@
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     b.Transition.StateAfter = z->snapshot_state;
+     g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
+-    ld_flush(LD_FLUSH_READBACK);
++    { const int rbs0 = g_ld_rb_site; if (!rbs0) g_ld_rb_site = 5; ld_flush(LD_FLUSH_READBACK); g_ld_rb_site = rbs0; }   /* KZ2 patch 6102 */
+     int ok = 0; u8* px = NULL; D3D12_RANGE rr = {0, 512u * 4u};
+     if (SUCCEEDED(rb->lpVtbl->Map(rb, 0, &rr, (void**)&px))) {
+         for (u32 k = 0; k < n; k++) memcpy(&out[k], px + 512u * k, 4);
+@@ -19682,7 +19697,7 @@
+     { static unsigned long long packets_at_last_frame = 0;
+       g_ld_last_frame_draws = (u32)(g_ld_stats.packets_seen - packets_at_last_frame);
+       packets_at_last_frame = g_ld_stats.packets_seen; }
+-    rsx_live_draw_before_guest_sync();   /* patch 2017 */
++    { const int rbs0 = g_ld_rb_site; if (!rbs0) g_ld_rb_site = 3; rsx_live_draw_before_guest_sync(); g_ld_rb_site = rbs0; }   /* patch 2017; KZ2 patch 6102 */
+     ld_pwd_flip();   /* patch 2084 diagnostic */
+     ld_gv_flip();
+     ld_td_flip();   /* patch 2033 */
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1790,8 +1790,10 @@
+      * owns that copy, and texture binds re-read it from guest memory. */
+     u32 wb = 0;
+     if (rsx_live_draw_enabled())
++    {   extern volatile int g_ld_rb_site; const int rbs0 = g_ld_rb_site; g_ld_rb_site = 1;   /* KZ2 patch 6102 */
+         wb = rsx_live_draw_writeback_range(sl ? 0u : 1u, (u32)(lo_in - (s64)src) + s_nv0039.off_in,
+                                            (u32)(hi_in - lo_in));
++        g_ld_rb_site = rbs0; }
+     s_nv0039_wb += wb;
+     const long long m2mf_t0 = rsx_perf_walk_on() ? rsx_perf_now() : 0;   /* patch 2029 */
+     for (u32 y = 0; y < n; y++) {
+@@ -2665,6 +2667,19 @@
+                 gcm_split_line(sl, sizeof sl, (double)(now.QuadPart - t0.QuadPart) * tk / 1000.0, d[RSX_PERF_FLIPS], wall,
+                                d[RSX_PERF_WALK_T] * tk, sp, wb, tk, g_rsx_split_gpu_busy_ms, g_rsx_split_gpu_win_ms);
+                 fputs(sl, stderr);
++                {   /* KZ2 patch 6102: the rbwait bucket by site, ms per flip (QPC), and waits per flip */
++                    extern volatile long long g_ld_rb_qpc[6], g_ld_rb_n[6];
++                    static long long rq_prev[6], rn_prev[6]; static double qf;
++                    if (!qf) { LARGE_INTEGER fq; QueryPerformanceFrequency(&fq); qf = (double)fq.QuadPart; }
++                    double ms[6], nn[6]; const double fl = (double)d[RSX_PERF_FLIPS];
++                    for (int i = 0; i < 6; i++) { const long long q = __atomic_load_n(&g_ld_rb_qpc[i], __ATOMIC_RELAXED),
++                                                                    c = __atomic_load_n(&g_ld_rb_n[i], __ATOMIC_RELAXED);
++                        ms[i] = (double)(q - rq_prev[i]) * 1000.0 / qf / fl; nn[i] = (double)(c - rn_prev[i]) / fl;
++                        rq_prev[i] = q; rn_prev[i] = c; }
++                    fprintf(stderr, "[perf-split-rb] t=%.0fs other=%.2f/%.2f nv0039=%.2f/%.2f label=%.2f/%.2f present=%.2f/%.2f"
++                            " gv=%.2f/%.2f zp=%.2f/%.2f (ms/waits per flip)\n", (double)(now.QuadPart - t0.QuadPart) * tk / 1000.0,
++                            ms[0], nn[0], ms[1], nn[1], ms[2], nn[2], ms[3], nn[3], ms[4], nn[4], ms[5], nn[5]);
++                }
+             }
+             {   /* the split's own cost (after KZ3 2203): per flip, printed with the [perf-split] line */
+                 const unsigned long long c[3] = { __atomic_load_n(&g_sp_words, __ATOMIC_RELAXED),
+@@ -3777,7 +3792,8 @@
+                     }
+                     if (m == 0x64u)      s_sema_offset = v;
+                     else if (m == 0x6Cu) {
+-                        if (rsx_live_draw_enabled()) rsx_live_draw_before_guest_sync();   /* patch 2017: RSX output in main memory first */
++                        if (rsx_live_draw_enabled()) { extern volatile int g_ld_rb_site; g_ld_rb_site = 2;   /* KZ2 patch 6102 */
++                            rsx_live_draw_before_guest_sync(); g_ld_rb_site = 0; }   /* patch 2017: RSX output in main memory first */
+                         /* The RSX has fetched past a RELEASE before its
+                          * semaphore write lands, so a guest that sees the
+                          * label must also see `get` past the command. `get`
+--- a/libs/video/rsx_commands.c
++++ b/libs/video/rsx_commands.c
+@@ -538,7 +538,8 @@
+       if (method == 0x1D70 || method == 0x1D74) {   /* patch 2017: RSX output in main memory first */
+         extern u32 rsx_live_draw_before_guest_sync(void);
+         extern int rsx_live_draw_enabled(void);
+-        if (rsx_live_draw_enabled()) rsx_live_draw_before_guest_sync();
++        if (rsx_live_draw_enabled()) { extern volatile int g_ld_rb_site; g_ld_rb_site = 2;   /* KZ2 patch 6102 */
++            rsx_live_draw_before_guest_sync(); g_ld_rb_site = 0; }
+       }
+       if ((method == 0x1D70 || method == 0x1D74) && s_sem_ctx == 0xFEED0001u) {
+         extern void vm_write32(uint32_t a, uint32_t v);

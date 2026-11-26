@@ -271,6 +271,30 @@ def check_path_chars(r, root, build):
                          "setup again")
 
 
+# P2 (WARN): letters outside plain ASCII (an accented user name in the default folder under %LOCALAPPDATA%, say). The
+# bundled CMake, clang and Ninja are not tested with such a path on Windows; refusing would shut out every player whose
+# Windows user name has such a letter, so the check only says so. Spaces are fine: the default folder ends in
+# "Project Pyrrhus" and the first-run build was verified there (test_cmake_path_chars.py configures and builds in a
+# folder with spaces).
+def path_non_ascii(path):
+    """-> the characters of path outside ASCII, each once, in order ("" when none)."""
+    out = ""
+    for ch in path or "":
+        if ord(ch) > 127 and ch not in out:
+            out += ch
+    return out
+
+
+def check_path_ascii(r, root, build):
+    """P2 (WARN): the install folder or the build folder has letters outside ASCII. Silent when fine."""
+    for what, path in (("install folder", root), ("build folder", build)):
+        odd = path_non_ascii(path)
+        if odd:
+            r.warn("P2", f"the {what} {path} has {' '.join(odd)} in its path. The build is not tested with letters "
+                         "outside A to Z there and may stop. If it does, choose a folder whose path has only A to Z, "
+                         "digits, spaces and - _ . ( ), for example C:\\Games\\Project Pyrrhus, and run the setup again")
+
+
 def game_files(dump, update, eboot):
     """The game files the build reads (the disc archive as one file or its FAT32 parts)."""
     f = []
@@ -852,6 +876,12 @@ def needed_eboot(target, disc=None):
     return build_name(target, disc if disc in REGIONS else TITLE_ID)
 
 
+# E1 for a picked file that starts with the SCE header (an encrypted SELF, the EBOOT.BIN of the disc or update):
+# one plain line and where the files are described (2026-11-26, a player's "it can't read EBOOT.BIN")
+ENCRYPTED_EBOOT_TEXT = ("This is the encrypted EBOOT.BIN; the port needs the decrypted EBOOT.elf (see "
+                        "https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md).")
+
+
 def check_eboot_elf(r, elf, target="1.29", update=None, hashes_file=None):
     """E1 (the file: present, a PS3 executable, which version) and H1 (which build: tested, untested, unsupported,
     another region's, unknown or modified), from the shared EBOOT id table. Matching: the whole file's SHA-256, else segment_sha256, else unknown. The version comes from
@@ -866,7 +896,7 @@ def check_eboot_elf(r, elf, target="1.29", update=None, hashes_file=None):
     h, size = head(elf, 64), os.path.getsize(elf)
     r.facts["eboot_elf"] = {"path": elf, "size": size}
     if h[:4] == SELF_MAGIC:
-        r.fail("E1", f"This EBOOT is an encrypted SELF, not an ELF. This release needs {need} as an ELF file.")
+        r.fail("E1", ENCRYPTED_EBOOT_TEXT + f" This release needs {need}.")
         return
     if len(h) < 64 or h[:4] != ELF_MAGIC or h[4] != 2 or h[5] != 2 or struct.unpack(">H", h[18:20])[0] != EM_PPC64:
         r.fail("E1", f"This file is not a PS3 executable (a 64-bit big-endian PowerPC ELF). This release needs {need}.")
@@ -893,7 +923,8 @@ def check_eboot_elf(r, elf, target="1.29", update=None, hashes_file=None):
     ver = pick["version"] if pick else EBOOT_ELF_SIZES.get(size)
     info["version"] = ver
     if pick:
-        info["match"] = {"by": how, "title_id": pick["title_id"], "app_ver": pick["app_ver"], "status": pick["status"]}
+        info["match"] = {"by": how, "title_id": pick["title_id"], "app_ver": pick["app_ver"], "status": pick["status"],
+                         "title_ids": sorted({m["title_id"] for m in match})}
     # E1: the version
     if ver == target:
         r.ok("E1", f"the EBOOT is the {ver} one ({size:,} bytes)")
@@ -1076,6 +1107,94 @@ def _isos(path):
     return out[:3]
 
 
+def single_iso(path):
+    """A disc-dump pick that is a folder with no PS3_GAME and exactly one .iso file directly in it (a player's
+    "the folder my ISO is in", 2026-11-26) -> that file's path; else "". firstrun.py uses it (asked first in the text
+    UI), as the setup's SingleIso does."""
+    if not path or not os.path.isdir(path):
+        return ""
+    dirs, files = _entries(path)
+    isos = [n for n in files if n.lower().endswith(".iso")]
+    return os.path.join(path, isos[0]) if len(isos) == 1 and not _find(dirs, "PS3_GAME") else ""
+
+
+def iso_title_id(path):
+    """The TITLE_ID in a disc ISO's PS3_GAME/PARAM.SFO, when it is one of the four Killzone 2 discs; else ""."""
+    try:
+        import iso9660
+        with iso9660.Iso(path) as im:
+            tid = parse_sfo(im.read("PS3_GAME/PARAM.SFO")).get("TITLE_ID", "")
+    except Exception:   # noqa: BLE001 (an unreadable image names no id; the D and I checks say why)
+        return ""
+    return tid if tid in REGIONS else ""
+
+
+def own_disc_id(dump):
+    """The player's own disc's title id: from PS3_GAME/PARAM.SFO, the ISO, or the one ISO in the picked folder;
+    "" when none of the four Killzone 2 ids is found."""
+    if not dump:
+        return ""
+    if os.path.isfile(dump):
+        return iso_title_id(dump) if dump.lower().endswith(".iso") else ""
+    try:
+        tid = read_sfo(os.path.join(resolve_dump(dump), "PS3_GAME", "PARAM.SFO")).get("TITLE_ID", "")
+    except (OSError, ValueError, struct.error, IndexError):
+        tid = ""
+    if tid in REGIONS:
+        return tid
+    one = single_iso(dump)
+    return iso_title_id(one) if one else ""
+
+
+def release_name(tid, word="version"):
+    """'the European version (BCES00081)' (word "release": 'the US release (BCUS98116)')."""
+    return f"the {REGIONS[tid]['adj']} {word} ({tid})"
+
+
+def region_line(r, dump=""):
+    """one plain sentence when the disc, the update and the EBOOT are not from the same release (title
+    ids of REGIONS); "" when they agree or the disc's id is not known. The 1.29 EBOOT is the same file for all four
+    releases, so it differs only when none of the ids it matches is the disc's (a 1.01 EBOOT, say)."""
+    disc = (r.facts.get("disc") or {}).get("TITLE_ID") or own_disc_id(dump)
+    if disc not in REGIONS:
+        return ""
+    bad = []
+    upd = (r.facts.get("update") or {}).get("TITLE_ID")
+    if upd in REGIONS and upd != disc:
+        bad.append(f"this update is from {release_name(upd, 'release')}")
+    ids = ((r.facts.get("eboot_elf") or {}).get("match") or {}).get("title_ids") or []
+    ids = [t for t in ids if t in REGIONS]
+    if ids and disc not in ids:
+        bad.append(f"this EBOOT is from {release_name(ids[0], 'release')}")
+    if not bad:
+        return ""
+    return (f"Your disc is {release_name(disc)}, but " + " and ".join(bad) + ". The disc, the update and the EBOOT "
+            "must all come from the same release.")
+
+
+def game_dir(tid):
+    """dev_hdd0<sep>game<sep><id>: the player's own id when known, else the placeholder."""
+    return f"dev_hdd0{os.sep}game{os.sep}" + (tid if tid in REGIONS else "<your disc's title id>")
+
+
+# shown instead of the same FAIL block when one check fails twice in a row with the same inputs. Short,
+# plain and numbered; it points to the public page and holds no decryption steps (public wording rules).
+GUIDE_HEAD = "The same check failed again with the same files. Step by step (more in " + \
+    "https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md):"
+GUIDE_STEPS = ("Disc: pick the folder that holds PS3_GAME, or your decrypted .iso file itself.",
+               "Update: pick the installed 1.29 update folder of the same release ({gamedir}), the one holding "
+               "PARAM.SFO and USRDIR.",
+               "EBOOT: pick EBOOT.elf, the decrypted 1.29 EBOOT made from your own copy (not EBOOT.BIN, and not the "
+               "disc's 1.01 EBOOT).",
+               "All three must come from the same release: US, Europe, Asia or Japan.")
+
+
+def repeat_guide(tid="", codes=()):
+    """The guide's lines: what failed (the check codes), the head, then the numbered steps."""
+    head = ("Still failing: " + ", ".join(sorted(codes)) + ". ") if codes else ""
+    return [head + GUIDE_HEAD] + [f"{i}. " + t.format(gamedir=game_dir(tid)) for i, t in enumerate(GUIDE_STEPS, 1)]
+
+
 def disc_found(path):
     """-> (what the disc input path holds, structural): structural = the input is the wrong thing altogether, so
     the D1-D3 messages add nothing."""
@@ -1117,8 +1236,23 @@ def disc_found(path):
     return what, True
 
 
-def update_found(path):
-    """-> (what the update input path holds, structural), as disc_found."""
+def update_in_parent(path, disc_id):
+    """path is a folder of title-id folders (dev_hdd0/game): -> the one named disc_id when it is an installed update
+    (or at least holds a PARAM.SFO), else "" (2026-11-26: a French player's "none is accepted")."""
+    if disc_id not in REGIONS or not path or not os.path.isdir(path):
+        return ""
+    hit = _find(_entries(path)[0], disc_id)
+    cand = os.path.join(path, hit) if hit else ""
+    return cand if cand and (looks_like_update(cand) or _is(cand, "PARAM.SFO")) else ""
+
+
+PKG_TEXT = ("an update package that is not installed yet; the port needs the installed update folder (see "
+            "https://github.com/undecuple/project-pyrrhus/blob/main/docs/GETTING-FILES.md)")
+
+
+def update_found(path, disc_id=""):
+    """-> (what the update input path holds, structural), as disc_found. disc_id: the player's disc's title id when
+    known (a folder of update folders names the one for that disc; others are named as another release's)."""
     if not path or not os.path.exists(path):
         return f"nothing is there (no such folder: {path})", True
     if os.path.isfile(path):
@@ -1135,18 +1269,36 @@ def update_found(path):
     have = [n for n in ("PARAM.SFO", os.path.join("USRDIR", "EBOOT.BIN")) if _is(path, n)] + update_marks(path)
     if not have:
         what = f"{path} holds none of these files"
-        hint = _hint(path, "update")
         pkgs = [n for n in files if n.lower().endswith(".pkg")]
-        if hint:
+        mine = update_in_parent(path, disc_id)
+        ids = [n for n in dirs if n.upper() in REGIONS]
+        if mine:
+            what += (f"; it holds the update folders of several games, and the one for your disc ({disc_id}) is "
+                     f"{mine}: pick that folder")
+            return what, True
+        if ids and disc_id in REGIONS:
+            what += (f"; it holds the update folder of {', '.join(release_name(i.upper()) for i in ids)}, but none "
+                     f"for your disc, {release_name(disc_id)}: each disc needs the update of its own release")
+            return what, True
+        hint = _hint(path, "update")
+        if pkgs:
+            what += f"; it holds the package {pkgs[0]}: " + PKG_TEXT
+        elif hint:
             what += hint
-        elif pkgs:
-            what += f"; it holds the package {pkgs[0]}, which is not an installed update"
         elif not dirs and not files:
             what += " (the folder is empty)"
         else:
             what += f" ({len(dirs)} folders, {len(files)} files)"
         return what, True
-    return f"{path} holds " + ", ".join(have), False
+    what = f"{path} holds " + ", ".join(have)
+    try:
+        app = read_sfo(os.path.join(path, "PARAM.SFO")).get("APP_VER", "")
+    except (OSError, ValueError, struct.error, IndexError):
+        app = ""
+    if app and app != UPDATE_APP_VER:
+        what += (f"; its PARAM.SFO says APP_VER {app}, the {app.lstrip('0') or app} update, not {UPDATE_APP_VER.lstrip('0')}"
+                 ": the port needs the 1.29 update")
+    return what, False
 
 
 def eboot_found(path):
@@ -1166,11 +1318,14 @@ UPDATE_NEED = ("It must be the installed 1.29 update folder (dev_hdd0{s}game{s}{
 EBOOT_NEED = "It must be EBOOT.elf, the decrypted 1.29 EBOOT of your own copy (see " + GETTING_FILES + ")"
 
 
-def update_id(r):
-    """The title id the update folder must carry: the disc's (r.facts), else a placeholder naming the US one (the
-    disc's region is not known)."""
+def update_id(r, dump=""):
+    """The title id the update folder must carry: the player's own disc's (r.facts, else read from the disc, the
+    ISO or the one ISO in the picked folder: own_disc_id), else a placeholder (2026-11-26: no "such as BCUS98116",
+    which sent a European disc's player to the US folder)."""
     tid = (r.facts.get("disc") or {}).get("TITLE_ID")
-    return tid if tid in REGIONS else "<your disc's title id, such as " + TITLE_ID + ">"
+    if tid not in REGIONS:
+        tid = own_disc_id(dump)
+    return tid if tid in REGIONS else "<your disc's title id>"
 
 
 def input_reasons(r, dump, update, eboot):
@@ -1182,7 +1337,8 @@ def input_reasons(r, dump, update, eboot):
     if not fails:
         return []
     of = {k: [c for c in r.checks if c["code"][:1] in v] for k, v in INPUT_CODES.items()}
-    found = {"disc": lambda: disc_found(dump), "update": lambda: update_found(update),
+    tid = update_id(r, dump)
+    found = {"disc": lambda: disc_found(dump), "update": lambda: update_found(update, tid),
              "eboot": lambda: eboot_found(eboot)}
     need = {"disc": DISC_NEED, "update": UPDATE_NEED, "eboot": EBOOT_NEED}
     lines, passed = [], []
@@ -1193,12 +1349,15 @@ def input_reasons(r, dump, update, eboot):
                 passed.append(INPUT_NAMES[k])
             continue
         what, structural = found[k]()
-        line = f"{INPUT_LABELS[k]} failed: {what}. " + need[k].format(s=os.sep, tid=update_id(r)) + "."
+        line = f"{INPUT_LABELS[k]} failed: {what}. " + need[k].format(s=os.sep, tid=tid) + "."
         if not structural:
             line += " Found: " + "; ".join(b.rstrip(".") for b in bad) + "."   # the E1/H1 texts are sentences
         lines.append(line)
     codes = tuple(x for v in INPUT_CODES.values() for x in v)
     lines += [c["message"] for c in fails if not c["code"].startswith(codes)]
+    region = region_line(r, dump)
+    if region:
+        lines.insert(0, region)
     if passed:
         lines.append("Passed: " + (", ".join(passed[:-1]) + " and " if len(passed) > 1 else "") + passed[-1] + ".")
     return lines
@@ -1297,6 +1456,7 @@ def main(argv=None):
     a.dump, a.update = dump, upd
     check_onedrive_tree(r, a.root, a.build)
     check_path_chars(r, a.root, a.build)
+    check_path_ascii(r, a.root, a.build)
     iso = os.path.isfile(a.dump)       # a decrypted disc ISO instead of a folder
     # before anything is read: opening an online-only placeholder would start a download of the 6.5 GiB archive
     if check_online_only(r, a.dump if os.path.exists(a.dump) else "",

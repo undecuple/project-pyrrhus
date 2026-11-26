@@ -59,6 +59,10 @@ static u32 s_fifo_getoff;
 static long long g_perf[NPERF];
 static void rsx_perf_add(int i, long long v) { g_perf[i] += v; }
 static long long rsx_perf_now(void) { return 1; }
+/* patch 6091: the fast block closes the split's decode bucket; off here (the split has its own test, perf/test_perf_split_clock.sh) */
+static int g_rsx_split_on;
+enum { RSX_SPB_OTHER = 0 };
+static void rsx_split_base(int b) { (void)b; }
 
 #include "walker73_cut.inc"
 

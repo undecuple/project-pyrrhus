@@ -1,0 +1,87 @@
+KZ2 patch 6100 (2026-11-25; follows up the review of patch 6094): the indirect-call
+guards and diagnostics name the dispatched target, not CTR. Since patch 6094 the target travels as the argument `addr`
+of ps3_indirect_call_impl_at / ps3_indirect_call_entry: CTR for ps3_indirect_call, but LR for ps3_indirect_call_to
+(b<cond>lrl; CTR is the guest's and unrelated), and opd[0] after PPU_OPD_RECOVER. The garbage-vcall no-op, the stuck-loop
+guard, the unresolved-call log, the 0x39800000 import-stub check, PS3_ICALL_GATE's histogram, PPU_CSCHECK's target and
+the BCTRL_RING / PS3_BREADCRUMB records read ctx->ctr, so for ps3_indirect_call_to they judged the wrong address (a
+valid target could be no-op'd as garbage, or a garbage one dispatched). All now read addr. For ps3_indirect_call the
+two are equal, so nothing changes there. PPU_TOCWATCH's "ctr=" field still prints CTR (it is labelled so).
+Host tests: tools/runtime/test_ppu_icall_to.sh and test_ppu_icall_diag.sh pass on the patched tree; neither reaches
+the guard code (it sits after the 6094 "dispatch core" block the first one compiles), so no case covers the change
+itself yet (a case would need that block marked out too).
+
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2770,18 +2770,18 @@
+  * the guest had it (b<cond>lrl branches through LR; CTR must not change).
+  * KZ2 patch 6094 (from KZ3 2236): the target is passed down as an argument (it
+  * was a thread-local flag pair set here and consumed at the top of the impl;
+- * between the two only diagnostics ran, never guest code). The diagnostics
+- * still name ctx->ctr, as before. */
++ * between the two only diagnostics ran, never guest code). KZ2 patch 6100: the diagnostics and guards name
++ * the target (addr), not ctx->ctr: for ps3_indirect_call_to CTR is the guest's, unrelated to the call. */
+ static void ps3_indirect_call_entry(ppu_context* ctx, uint32_t addr)
+ {
+     if (__builtin_expect(!ppu_icall_diag_armed(), 1)) { ps3_indirect_call_impl_at(ctx, addr); return; }   /* patch 6095 */
+     static int on = -1;
+     if (on < 0) { on = getenv("PPU_CSCHECK") ? 1 : 0; ppu_cost_log_start(); }
+     { static int hg = -1; if (hg < 0) hg = getenv("PS3_ICALL_GATE") ? 1 : 0;
+-      if (hg) { const uint32_t tgt = (uint32_t)ctx->ctr; icall_hist(ctx, tgt, 0);
++      if (hg) { const uint32_t tgt = addr;   /* KZ2 patch 6100: the target, not CTR */ icall_hist(ctx, tgt, 0);
+                 ps3_indirect_call_impl_at(ctx, addr); icall_hist(ctx, tgt, 1); return; } }
+     if (!on) { ps3_indirect_call_impl_at(ctx, addr); return; }
+-    uint64_t save[19]; uint32_t tgt = (uint32_t)ctx->ctr;
++    uint64_t save[19]; uint32_t tgt = addr;   /* KZ2 patch 6100 */
+     save[0] = ctx->gpr[1];
+     for (int r = 14; r < 32; r++) save[r - 13] = ctx->gpr[r];
+     ps3_indirect_call_impl_at(ctx, addr);
+@@ -2819,11 +2819,11 @@
+       if (on < 0) on = getenv("BCTRL_RING") ? 1 : 0;
+       if (on) {
+           unsigned t = (unsigned)ctx->thread_id & 15;
+-          g_bctrl_ring[t][g_bctrl_pos[t] & (BCTRL_RING_N - 1)] = (uint32_t)ctx->ctr;
++          g_bctrl_ring[t][g_bctrl_pos[t] & (BCTRL_RING_N - 1)] = addr;   /* KZ2 patch 6100 */
+           g_bctrl_pos[t]++;
+       } }
+     { static int bc=-2; if(bc==-2) bc=getenv("PS3_BREADCRUMB")?1:0;
+-      if(bc){ unsigned t=(unsigned)ctx->thread_id & 63; g_bc_last[t]=(uint32_t)ctx->ctr; g_bc_cnt[t]++; } }
++      if(bc){ unsigned t=(unsigned)ctx->thread_id & 63; g_bc_last[t]=addr;   /* KZ2 patch 6100 */ g_bc_cnt[t]++; } }
+ #ifdef _WIN32
+     { static int64_t tw=-2; if(tw==-2){const char*e=getenv("PPU_TOCWATCH"); tw=e?(int64_t)strtoul(e,0,16):-1;}
+       if(tw>=0 && (uint32_t)ctx->gpr[2]==(uint32_t)tw){ static int _n=0; if(PS3_LOG_FIRST(_n, 4)){
+@@ -3140,7 +3140,7 @@
+      * returning null. Treat it as such (r3=0) so the caller's loop makes progress
+      * instead of spinning forever on the same bogus pointer. */
+     {
+-        uint32_t tgt = (uint32_t)ctx->ctr;
++        uint32_t tgt = addr;   /* KZ2 patch 6100: the target being dispatched (ps3_indirect_call_to: LR, not CTR; OPD-RECOVER: opd[0]) */
+         /* A valid PPU function entry is 4-byte aligned and lies in game .text
+          * (0x10000..0xFFFFFFF) or the loaded-PRX region (0x30000000..0x3FFFFFFF).
+          * Anything else — the mapped data/heap range, a MISALIGNED address (never
+@@ -3175,7 +3175,7 @@
+      * stays fast and the log readable. */
+     static uint32_t last = 0xFFFFFFFFu; static uint32_t streak = 0;
+     static uint32_t stuckmax = 0; if (!stuckmax) { const char* e=getenv("PPU_STUCKMAX"); stuckmax = e?(uint32_t)strtoul(e,0,0):2000u; }
+-    uint32_t cur = (uint32_t)ctx->ctr;
++    uint32_t cur = addr;   /* KZ2 patch 6100 */
+     if (cur == last) {
+         if (++streak == stuckmax) {
+             fprintf(stderr, "[ppu] FATAL: stuck calling 0x%08X (%u times) -- aborting run\n", cur, streak);
+@@ -3209,7 +3209,7 @@
+     }
+     last = cur; streak = 0;
+     fprintf(stderr, "[ppu] unresolved indirect call -> 0x%08X (tid=%llu lr=0x%08X)\n",
+-            (uint32_t)ctx->ctr, (unsigned long long)ctx->thread_id, (uint32_t)ctx->lr);
++            addr, (unsigned long long)ctx->thread_id, (uint32_t)ctx->lr);
+     /* PPU_UNRES_DUMP="rN+OFF:LEN,...": dump guest words at register-relative addresses on the first 3
+      * unresolved calls (e.g. "r7+0xEA0:0x10,r7+0x16B0:0x700" shows a table the bad slot was read from
+      * next to its neighbours: a whole table of bad slots and one bad slot have different causes). */
+@@ -3258,7 +3258,7 @@
+        * and branches to the word it read -- the next trampoline's own first
+        * instruction, 0x39800000 (`li r12,0`). An instruction word as a call
+        * target is the signature, and registered handlers do not make it go away. */
+-      else if (!said && (uint32_t)ctx->ctr == 0x39800000u) {
++      else if (!said && addr == 0x39800000u   /* KZ2 patch 6100 */) {
+           said = 1;
+           fprintf(stderr,
+               "       ^ 0x39800000 is the instruction `li r12,0`, not an address: this call\n"

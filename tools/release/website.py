@@ -295,7 +295,7 @@ def download_block(root, version, problems):
         link = ver_span(f"<a href=\"{tag_url}\">v{version}</a>")
         get = ver_span(f"<a class=\"btn\" href=\"{tag_url}\">Download v{version}</a>")
         return ("<div class=\"dl\">\n"
-                f"<p class=\"ver\">{link} <span>pre-release</span></p>\n"
+                f"<p class=\"ver\">{link} <span>{'pre-release' if e['note'] == 'pre-release' else 'early release'}</span></p>\n"
                 f"<p class=\"small\">{esc(long_date(e['date']))} · partly playable · Windows x64</p>\n"
                 f"<p class=\"btns\">{get}<a class=\"btn alt\" href=\"{REPO}/releases\">All releases</a></p>\n"
                 "<p>The release page has the installer (recommended) and the portable zip, each with a .sha256 file, "
@@ -534,7 +534,8 @@ def render(root, problems):
     secs, headline, version = sections(root, problems)
     rel = release_of(pathlib.Path(root), version)
     if rel and rel["released"]:
-        cta = "<a class=\"cta-box\" href=\"#install\"><b>" + ver_span(f"v{version}") + "</b>pre-release download</a>"
+        kind = "pre-release" if rel.get("note") == "pre-release" else "early release"   # full releases from 0.1.14
+        cta = "<a class=\"cta-box\" href=\"#install\"><b>" + ver_span(f"v{version}") + f"</b>{kind} download</a>"
     else:
         cta = "<a class=\"cta-box\" href=\"#install\"><b>Install</b>not released yet</a>"
     w = [head(" (work in progress)", True, "style.css", "site.js")]

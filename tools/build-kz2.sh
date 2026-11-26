@@ -45,10 +45,11 @@ fi
 FFW="${KZ2_FFMPEG_WIN:-$MAINC/work/ffmpeg-win}"
 want_ff="${KZ2_FFMPEG_INCLUDE:-$FFW/include}"; no_ff=OFF
 [[ -f "$want_ff/libavcodec/avcodec.h" ]] || { echo "build-kz2: WARNING no FFmpeg headers at $want_ff: this developer build has black movies and silent AC3 (see tools/runtime/ffmpeg-lgpl-win.nix)" >&2; want_ff=""; no_ff=ON; }
-# Guards only (the remote build): the remote build takes RECOMP_DIR and SPU_DIR from this cache, so it must exist
-# (build-1, audit 2026-11-25: no cache meant a guessed port/kz2/spu and an exe without SPU jobs).
-[[ "$GO" == 1 && ! -f "$DIR/CMakeCache.txt" ]] && { echo "build-kz2: no $DIR/CMakeCache.txt: configure the build dir" \
-  "first (this script without KZ2_BUILD_GUARDS_ONLY, in the .#win shell)" >&2; exit 3; }
+# No cache yet: configured below (after the SPU lift check), in guards-only mode too. The remote build takes RECOMP_DIR
+# and SPU_DIR from this cache (without one it would guess port/kz2/spu and build an exe without SPU jobs), so the
+# script configures the build dir itself; cmake must be on PATH (the .#win shell). A failed configure removes the
+# cache it just made, so the next run configures again.
+had_cache=1; [[ -f "$DIR/CMakeCache.txt" ]] || had_cache=0
 # Lifted SPU images (tools/spu/lift_spu.sh): the cache must point at $OUT/spu/lift, a lift with spu_workloads.c and at
 # least one <image>/spu_recomp.c. An earlier change: an exe without them boots to black ("[spu_workload] ERROR ... no lifted
 # image ... DROPPED"); build-1 (2026-11-25): one froze in the menu. A second worktree gets them by linking
@@ -71,12 +72,18 @@ case "${cfg_spu_on^^}" in
     fi ;;
 esac
 SPU_ARGS=(); [[ -n "$want_spu" ]] && SPU_ARGS=(-DSPU_DIR="$want_spu" -DKZ2_ALLOW_NO_SPU="$no_spu")
-if [[ "$GO" != 1 && ! -f "$DIR/CMakeCache.txt" ]]; then
+if [[ "$had_cache" == 0 ]]; then
+  command -v cmake >/dev/null || { echo "build-kz2: no $DIR/CMakeCache.txt and no cmake on PATH: run in the .#win shell" >&2; exit 3; }
+  mkdir -p "$DIR"
+  echo "build-kz2: no $DIR/CMakeCache.txt: configuring it (log $DIR.configure.log)" >&2
   cmake -S "$ROOT/port/kz2" -B "$DIR" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$ROOT/port/cmake/mingw-w64.cmake" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE="$(command -v python3)" \
     -DKZ2_FFMPEG_INCLUDE_DIR="$want_ff" -DKZ2_ALLOW_NO_FFMPEG="$no_ff" "${SPU_ARGS[@]}" \
     -DPS3RECOMP_DIR="$PT" -DRECOMP_DIR="$OUT/recomp" >"$DIR.configure.log" 2>&1 \
-    || { tail -20 "$DIR.configure.log" >&2; exit 4; }
+    || { tail -20 "$DIR.configure.log" >&2
+         [[ -f "$DIR/CMakeCache.txt" ]] && { "$ROOT/tools/safe_rm.sh" "$DIR/CMakeCache.txt" >/dev/null 2>&1 \
+           || echo "build-kz2: remove $DIR/CMakeCache.txt by hand before the next run" >&2; }
+         exit 4; }
 fi
 # Re-configure when the patched toolkit changed: ps3recomp collects its sources with file(GLOB_RECURSE) without
 # CONFIGURE_DEPENDS, so a patch that adds a source file (6003's cellSpursLFQueue.c) is not linked from an old cache
@@ -124,6 +131,14 @@ if [[ "${KZ2_ALLOW_STALE_LIFT:-0}" != 1 && -f "$ann" ]] && grep -qE 'PPU_OVERRID
     || { echo "build-kz2: Lua unwind continuations are missing or stale: run tools/lift.sh" >&2; exit 3; }
 fi
 [[ "${KZ2_BUILD_GUARDS_ONLY:-0}" == 1 ]] && { echo "build-kz2: guards ok" >&2; exit 0; }
+# Optional local guard (since 2026-11-26): when tools/runtime/timed-window.sh is present (it is not part of the
+# public repository; skipped when not there) and reports a timed test window, a local build is refused
+# (exit 6). The script prints the window and who may build in it. Remote builds stop at the guards-only exit above, so
+# they are not held. KZ2_BUILD_IN_WINDOW=1 overrides.
+if [[ -f "$ROOT/tools/runtime/timed-window.sh" && "${KZ2_BUILD_IN_WINDOW:-0}" != 1 ]] \
+   && win="$(KZ2_LOCK_DIR="$LOCKS" bash "$ROOT/tools/runtime/timed-window.sh")"; then
+  echo "build-kz2: a KZ2 timed window is on ($win): not building (KZ2_BUILD_IN_WINDOW=1 overrides)" >&2; exit 6
+fi
 # Build slots across checkouts (tools/agents/slotlock.sh, private tooling): skipped when it is not there.
 SLOTS="${KZ2_BUILD_SLOTS:-1}"; [[ "$SLOTS" =~ ^[1-9][0-9]*$ ]] || SLOTS=1; SLOT=none; in_use=1
 if [[ -f "$ROOT/tools/agents/slotlock.sh" ]]; then

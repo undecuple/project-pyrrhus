@@ -1,0 +1,115 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Project Pyrrhus",
+  "repo": "undecuple/project-pyrrhus",
+  "inputs": [
+    {
+      "id": "game",
+      "role": "game",
+      "label": "Your Killzone 2 disc: the dump folder that holds PS3_GAME, or a decrypted .iso. The US disc (BCUS98116) is tested; the European, Asian and Japanese discs are accepted but untested.",
+      "formats": [{ "type": "folder" }, { "type": "file", "extensions": ["iso"] }],
+      "check": { "ids": ["BCUS98116", "BCES00081", "BCAS20066", "BCJS30032"] }
+    },
+    {
+      "id": "update",
+      "role": "update",
+      "label": "The 1.29 update folder of your disc's region: the folder that holds PARAM.SFO and USRDIR (on a PS3 or in RPCS3, dev_hdd0/game/<the disc's title id>).",
+      "formats": [{ "type": "folder" }],
+      "check": { "file": "PARAM.SFO", "ids": ["BCUS98116", "BCES00081", "BCAS20066", "BCJS30032"] }
+    },
+    {
+      "id": "eboot",
+      "role": "update",
+      "optional": true,
+      "label": "Your decrypted 1.29 EBOOT.elf, made from that update. Skip it when it is already in the update's USRDIR folder.",
+      "formats": [{ "type": "file", "extensions": ["elf"] }]
+    }
+  ],
+  "prepare": {
+    "program": ["toolchain/python/python.exe"],
+    "args": [
+      "{install}/kz2-setup/release/firstrun.py",
+      "--root={install}",
+      "--dump={input:game}",
+      "--update={input:update}",
+      "--eboot={input:eboot}",
+      "--log-dir={install}/logs"
+    ],
+    "label": "Checks your copy, then builds the game on this PC",
+    "done": ["{install}/build/kz2.exe", "{install}/build/build-stamp.json"]
+  },
+  "start": {
+    "program": ["Project Pyrrhus.exe"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [{ "path": "{install}/kz2-install.ini" }],
+      "new": { "install/portable": "1" },
+      "always": { "online/check_updates": "0" }
+    }
+  ],
+  "settings": [
+    {
+      "id": "display",
+      "label": "Display mode",
+      "group": "Display",
+      "help": "How the game window opens. Alt+Enter switches between borderless and a window while you play.",
+      "choices": [
+        { "label": "Borderless window", "set": { "display/mode": "borderless" } },
+        { "label": "Windowed", "set": { "display/mode": "windowed" } },
+        { "label": "Fullscreen", "set": { "display/mode": "fullscreen" } }
+      ],
+      "defaults": { "display/mode": "borderless" }
+    },
+    {
+      "id": "layout",
+      "label": "Pad layout",
+      "group": "Controls",
+      "help": "Original is the game's own buttons. Modern changes the pad buttons only.",
+      "choices": [
+        { "label": "Original", "set": { "controls/layout": "original" } },
+        { "label": "Modern", "set": { "controls/layout": "modern" } }
+      ],
+      "defaults": { "controls/layout": "original" }
+    },
+    {
+      "id": "prompts",
+      "label": "Button prompts",
+      "group": "Controls",
+      "help": "Which buttons the game shows. Auto follows the pad you use.",
+      "choices": [
+        { "label": "Auto", "set": { "controls/prompts": "auto" } },
+        { "label": "PS3", "set": { "controls/prompts": "ps3" } },
+        { "label": "PS4 / PS5", "set": { "controls/prompts": "ps4" } },
+        { "label": "Xbox", "set": { "controls/prompts": "xbox" } },
+        { "label": "Keyboard", "set": { "controls/prompts": "keyboard" } }
+      ],
+      "defaults": { "controls/prompts": "auto" }
+    }
+  ],
+  "saves": ["{install}/gamedata", "{install}/keybinds.ini", "{install}/gameplay.ini", "{install}/display.ini"],
+  "folders": {
+    "saves": [{ "path": "{install}/gamedata" }],
+    "logs": [{ "path": "{install}/build/logs" }]
+  },
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your saves and settings.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "The game's logs, to attach to a bug report.", "open": "logs" }
+  ],
+  "exit_codes": {
+    "0": "ok",
+    "2": "No Direct3D 12 graphics device was found. Install or update the graphics driver; the game's log is in the build\\logs folder.",
+    "3": "The game was closed, but it did not shut down in time and was ended. Its log is in the build\\logs folder.",
+    "5": "The game stopped on an internal error. Its log is in the build\\logs folder; please attach it to a bug report."
+  },
+  "looks": {
+    "allowed": false,
+    "reason": "Not tried with this port yet."
+  },
+  "system": {
+    "windows": { "version": "10", "graphics": { "d3d12": "11_0" } }
+  }
+}

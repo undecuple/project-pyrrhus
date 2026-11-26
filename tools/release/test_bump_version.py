@@ -116,6 +116,7 @@ def next_patch(v):
 def layout_round(name, root):
     cur = release_version.read(str(root))
     new = next_patch(cur)
+    kind = "pre-release" if release_version.is_prerelease(new) else "release"   # full releases from 0.1.14
     t = lambda rel: bump_version.at(root, rel).read_text(encoding="utf-8")  # noqa: E731
     base = snapshot(root)
     cl0 = t("public/CHANGELOG.md")
@@ -153,10 +154,10 @@ def layout_round(name, root):
         check(f"<!-- version -->{rel}<!-- /version -->" in t(at_exists[0]), f"{name}: ROADMAP marker span")
     cl = t("public/CHANGELOG.md")
     if re.search(r"^## \[Unreleased\]", cl0, re.M):
-        check(f"## [{new}] - 2030-01-02 (pre-release)\n\n### " in cl and "## [Unreleased]" not in cl
+        check(f"## [{new}] - 2030-01-02 ({kind})\n\n### " in cl and "## [Unreleased]" not in cl
               and cl.count(f"## [{new}]") == 1, f"{name}: [Unreleased] becomes {new}, blank line kept")
     else:
-        check(f"## [{new}] - 2030-01-02 (pre-release)\n\n### Added\n\n## [{cur}]" in cl, f"{name}: stub above the newest entry")
+        check(f"## [{new}] - 2030-01-02 ({kind})\n\n### Added\n\n## [{cur}]" in cl, f"{name}: stub above the newest entry")
     check(len(cl.splitlines()) >= len(cl0.splitlines()), f"{name}: no CHANGELOG line lost")
     site = t("public/site/index.html")
     spans = re.findall(r"<!-- version -->(.*?)<!-- /version -->", site)

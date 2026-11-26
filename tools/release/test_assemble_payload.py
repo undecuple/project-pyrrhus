@@ -115,7 +115,7 @@ def player_reads():
 
 def fake_repo(root):
     for rel in ("tools/release/firstrun.py", "tools/release/firstrun_check.py", "tools/release/version_check.py",
-                "tools/release/launch.py", "tools/release/install_ini.py", "tools/release/online_ini.py", "tools/release/online_dialog.py", "tools/release/lift_fixups.py", "tools/release/lua_unwind.py",
+                "tools/release/launch.py", "tools/release/support.py", "tools/release/install_ini.py", "tools/release/online_ini.py", "tools/release/online_dialog.py", "tools/release/lift_fixups.py", "tools/release/lua_unwind.py",
                 "tools/release/eboot_sha256.json", "tools/release/psarc_sha256.json", "tools/release/test_firstrun.py", "tools/release/spu_step.py",
                 "tools/release/iso9660.py",
                 "tools/release/rpcs3_locate.py", "tools/release/rpcs3_import.py",
@@ -124,7 +124,7 @@ def fake_repo(root):
                 "port/kz2/CMakeLists.txt", "port/kz2/main.cpp", "port/kz2/ppu_overrides.txt", "port/kz2/test_x.c",
                 "port/kz2/__pycache__/x.pyc", "port/cmake/mingw-w64.cmake", "port/cmake/notes.txt",
                 "port/patches-notes.txt",
-                "public/LICENSE", "public/README.md", "public/NOTICE.md", "installer/run.cmd",
+                "public/LICENSE", "public/README.md", "public/NOTICE.md", "installer/run.cmd", "installer/recomplauncher.json",
                 "work/ps3recomp-patched/LICENSE", "work/ps3recomp-patched/CMakeLists.txt",
                 "work/ps3recomp-patched/.kz2-patchset", "work/ps3recomp-patched/tools/ppu_lifter.py",
                 "work/ps3recomp-patched/runtime/a.c", "work/ps3recomp-patched/tests/sync/CMakeLists.txt",
@@ -166,6 +166,8 @@ def fake_repo(root):
     lgpl = "GNU LESSER GENERAL PUBLIC LICENSE Version 2.1\n"
     put(root, "public/licenses/LGPL-2.1.txt", lgpl)
     put(root, "public/licenses/FidelityFX-FSR1-LICENSE.txt", "MIT, AMD\n")
+    put(root, "public/licenses/jsp-vs-ex-LICENSE.txt", "MIT License, Tsamiuy, undecuple\n")
+    put(root, "public/licenses/project-vekta-LICENSE.txt", "MIT License, Gustavo Morinaga\n")
     put(root, "public/licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt", "MIT, Drobot\n")
     put(root, "work/ps3recomp-patched/third_party/at3_standalone/COPYING.LGPLv2.1", lgpl)
     put(root, "work/ffmpeg-win/bin/avcodec-63.dll", fake_dll(3 << 20))
@@ -233,7 +235,7 @@ def main():
         want = {"kz2-setup/release/firstrun.py", "kz2-setup/release/firstrun_check.py",
                 "kz2-setup/release/version_check.py", "kz2-setup/release/eboot_sha256.json",
                 "kz2-setup/release/psarc_sha256.json", "kz2-setup/release/iso9660.py",
-                "kz2-setup/release/launch.py", "kz2-setup/release/install_ini.py", "kz2-setup/release/online_ini.py", "kz2-setup/release/online_dialog.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/release/lua_unwind.py", "kz2-setup/eboot_ver.txt",
+                "kz2-setup/release/launch.py", "kz2-setup/release/support.py", "kz2-setup/release/install_ini.py", "kz2-setup/release/online_ini.py", "kz2-setup/release/online_dialog.py", "kz2-setup/release/lift_fixups.py", "kz2-setup/release/lua_unwind.py", "kz2-setup/eboot_ver.txt",
                 "kz2-setup/release/spu_step.py", "kz2-setup/release/rpcs3_locate.py",
                 "kz2-setup/release/rpcs3_import.py", "kz2-setup/spu/lift_spu.py", "kz2-setup/spu/gen_spu_register.py",
                 "kz2-setup/spu/kz2ver.py", "re/wws_jobs_v129.tsv", "re/wws_jobs_v101.tsv",
@@ -243,12 +245,12 @@ def main():
                 "ps3recomp/tools/ppu_lifter.py", "ps3recomp/runtime/a.c", "ps3recomp/tests/sync/CMakeLists.txt",
                 "ps3recomp/third_party/at3_standalone/COPYING.LGPLv2.1", "licenses/LICENSE.txt",
                 "licenses/ps3recomp-LICENSE.txt", "licenses/at3_standalone-COPYING.LGPLv2.1.txt",
-                "README.md", "NOTICE.md", "run.cmd", "manifest.json", "VERSION.txt",
+                "README.md", "NOTICE.md", "run.cmd", "manifest.json", "VERSION.txt", "recomplauncher.json",
                 "fonts/Rajdhani-Medium.ttf", "fonts/Rajdhani-Bold.ttf", "fonts/OFL.txt", "licenses/Rajdhani-OFL.txt",
                 "fonts/NotoSans-Regular.ttf", "licenses/NotoSans-OFL.txt",
                 "fonts/NotoSansCJK-Regular.ttc", "licenses/NotoSansCJK-OFL.txt",
                 "runtime/SDL3.dll", "licenses/SDL3-LICENSE.txt",
-                "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt",
+                "runtime/avcodec-63.dll", "runtime/avutil-61.dll", "licenses/LGPL-2.1.txt", "licenses/jsp-vs-ex-LICENSE.txt", "licenses/project-vekta-LICENSE.txt",
                 "licenses/FidelityFX-FSR1-LICENSE.txt", "licenses/FidelityFX-FSR1-Drobot-2014-MIT.txt",
                 "licenses/FFmpeg-COPYING.LGPLv2.1.txt", "licenses/FFmpeg-SOURCE.txt", "licenses/FFmpeg-LICENSE-build.txt"}
         want |= {"ffmpeg/include/" + rel for rel in FF_HEADERS}   # issue #16: the headers ship (*.h only)

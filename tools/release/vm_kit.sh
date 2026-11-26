@@ -34,6 +34,10 @@ G_EBOOT="${KZ2_VMKIT_EBOOT:-$MAIN/work/bin/EBOOT-129.elf}"
 SB=(tools/sandbox.sh --)
 MODE="${1:?usage: vm_kit.sh build | stage | preflight [STEP...]}"; shift || true
 
+# the zip's name for a version (release_version.zip_name: -portable.zip up to 0.1.13, -Windows-x64.zip from 0.1.14)
+zip_name() { python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import release_version as r; print(r.zip_name(sys.argv[2]))' \
+  "$PWD/tools/release" "$1"; }
+
 case "$MODE" in
 build)
   VER="$(python3 tools/release/release_version.py --check | sed -n 's/^ok //p')"   # installer/VERSION, the one version
@@ -59,7 +63,7 @@ build)
     | grep -ai "error\|successful\|warning\|compile:" | head -8 | cut -c1-200
   [[ -f "$B/iscc/Project-Pyrrhus-setup.exe" ]] || { echo "vm_kit: no setup exe (see $B/iscc/iscc.txt)"; exit 1; }
   nix develop .#re --command "${SB[@]}" python3 -I tools/release/pack_zip.py --payload "$B/payload" \
-    --out "$B/zip/Project-Pyrrhus-$VER-portable.zip" --replace 2>&1 | tail -2 | cut -c1-200 || echo "vm_kit: zip refused"
+    --out "$B/zip/$(zip_name "$VER")" --replace 2>&1 | tail -2 | cut -c1-200 || echo "vm_kit: zip refused"
   echo "$VER" > "$B/VERSION"
   ;;
 stage)
@@ -70,7 +74,7 @@ stage)
   # COMMANDS.md with the guest's path of the shared folder (KZ2_VMKIT_SHARE, e.g. a UNC path; else left as <SHARE>)
   python3 -c 'import sys; t=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(t.replace("<SHARE>", sys.argv[3]))' \
     tools/release/vm_kit/COMMANDS.md "$S/kit/COMMANDS.md" "${KZ2_VMKIT_SHARE:-<SHARE>}"
-  ZIP="$B/zip/Project-Pyrrhus-$VER-portable.zip"; [[ -f "$ZIP" ]] && cp "$ZIP" "$S/kit/"
+  ZIP="$B/zip/$(zip_name "$VER")"; [[ -f "$ZIP" ]] && cp "$ZIP" "$S/kit/"
   [[ -f "$B/PARTIAL" ]] && cp "$B/PARTIAL" "$S/kit/NOT-FOR-THE-VM.txt"
   (cd "$S/kit" && sha256sum -- * | grep -v "SHA256SUMS" > SHA256SUMS.txt)
   ln -sfn "$G_DUMP/PS3_GAME" "$S/game/dump/PS3_GAME"

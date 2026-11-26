@@ -4,8 +4,8 @@
 # Triggers: a published release (the maintainer publishes the draft release.yml made), and workflow_dispatch (input:
 # tag). Nothing is written: no release edit, no push, no tag, no artefact (the log is the output); the token can only
 # read. Checks (logic in tools/release/release_check.py, host-tested by test_release_check.py):
-#   tag = v + installer/VERSION at the tagged commit (release_version.py); published, pre-release while 0.x, title =
-#   tag, body names the version; assets are exactly Project-Pyrrhus-setup.exe, Project-Pyrrhus-<version>-portable.zip,
+#   tag = v + installer/VERSION at the tagged commit (release_version.py); published, pre-release only before 0.1.14, title =
+#   tag, body names the version; assets are exactly Project-Pyrrhus-setup.exe, Project-Pyrrhus-<version>-Windows-x64.zip (-portable.zip before 0.1.14),
 #   a .sha256 for each and SHA256SUMS (the list release.yml publishes); sha256sum -c SHA256SUMS passes and every
 #   .sha256 matches its file and SHA256SUMS; test_version_agree.py passes at the tag; README.md and site/index.html
 #   link releases/tag/<tag>.

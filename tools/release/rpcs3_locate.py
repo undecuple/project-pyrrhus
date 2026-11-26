@@ -302,7 +302,7 @@ def _candidate_paths(hint):
         c.append((home / ".config" / "rpcs3", "linux-config"))
         c.append((home / ".var/app/net.rpcs3.RPCS3/config/rpcs3", "flatpak"))
     else:
-        wh = _wine_home()  # e.g. Z:\home\user under Wine/Proton
+        wh = _wine_home()  # e.g. Z:\home\<name> under Wine/Proton
         if wh:
             c.append((Path(wh + "\\.config\\rpcs3"), "wine-z-linux-config"))
             c.append((Path(wh + "\\.var\\app\\net.rpcs3.RPCS3\\config\\rpcs3"), "wine-z-flatpak"))

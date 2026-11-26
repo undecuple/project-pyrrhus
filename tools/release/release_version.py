@@ -14,7 +14,9 @@ installer/VERSION holds MAJOR.MINOR.PATCH and nothing else. From it:
   - build_launcher.sh: the launcher's version block (launcher.rc gets KZ2_VER_* from --rc);
   - version_check.py: compares the installed VERSION.txt with the releases' tags;
   - public/CITATION.cff: --stamp-citation at release time.
-Tags are vMAJOR.MINOR.PATCH; every release is a GitHub pre-release until v1.0.0; no suffixes.
+Tags are vMAJOR.MINOR.PATCH with no suffixes. Releases before 0.1.14 were GitHub pre-releases; from 0.1.14 on
+they are full releases, still described as early and experimental (FIRST_FULL_RELEASE, is_prerelease), and the zip is
+named Project-Pyrrhus-<version>-Windows-x64.zip (zip_name; up to 0.1.13: -portable.zip).
 Exit 0 = ok, 1 = a check failed, 2 = usage.
 """
 import argparse
@@ -28,6 +30,26 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 VERSION_FILE = os.path.join("installer", "VERSION")
 CITATION = os.path.join("public", "CITATION.cff")
 STRICT = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+
+
+FIRST_FULL_RELEASE = "0.1.14"   # the first full (not pre-) GitHub release; the zip's Windows-x64 name starts here too
+
+
+def key(v):
+    """'0.1.14' -> (0, 1, 14)."""
+    return tuple(int(x) for x in v.split("."))
+
+
+def is_prerelease(v):
+    """True for the 0.x releases before FIRST_FULL_RELEASE (published as GitHub pre-releases); False from it on."""
+    return key(v) < key(FIRST_FULL_RELEASE)
+
+
+def zip_name(v):
+    """The zip asset of release v: Project-Pyrrhus-<v>-portable.zip up to 0.1.13 (published under that name, so
+    release-check.yml on an old tag expects it), Project-Pyrrhus-<v>-Windows-x64.zip from FIRST_FULL_RELEASE on (a
+    launcher picks the download for the player's PC by the system and processor words; release.yml)."""
+    return f"Project-Pyrrhus-{v}-" + ("portable.zip" if is_prerelease(v) else "Windows-x64.zip")
 
 
 def valid(v):

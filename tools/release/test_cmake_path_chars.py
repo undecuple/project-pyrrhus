@@ -9,6 +9,8 @@ Reproduced here with the host's CMake, no game data:
   2. A C project configured in a build folder whose path holds ';' fails in CMakeDetermineCompilerId (needs a C
      compiler on PATH; skipped without one).
   3. A plain folder and '(' ')' '#' ' ' configure fine, so P1 refuses only the three characters.
+  3b. A folder with spaces configures and builds a small program (case 4; the default install folder has a space),
+      with a plain folder as the control; letters outside ASCII and other punctuation are probed and printed (INFO).
   4. firstrun_check.PATH_BAD_CHARS is exactly '[', ']' and ';'.
 Not reproduced here: '[' in the folder that holds CMake itself (the player's toolchain\\cmake under the install
 folder). KZ3 reproduced that on a Windows 10 VM (2026-10-29): CMake 4.4.4 under a '[' folder fails its own compiler
@@ -76,6 +78,33 @@ def main():
             for name in ("plain", "with (paren) #2"):
                 rc, out = run(["cmake", "-S", src, "-B", os.path.join(tmp, name)] + tc)
                 check(f"3 a build folder named {name!r} configures", rc == 0, out)
+            # 4: configure AND build a small program whose source and build folders sit under a
+            # folder with spaces (the default install folder ends in "Project Pyrrhus"), and probe letters outside
+            # ASCII and the characters a Windows path may hold that CMake, Ninja or the compiler might mind. Spaces
+            # must build (firstrun_check has no space check); the probe lines say what this host's tools do with the
+            # rest (INFO only: Windows' code pages are not reproduced here, so P2 only warns).
+            with open(os.path.join(src, "CMakeLists.txt"), "w", encoding="utf-8") as f:
+                f.write("cmake_minimum_required(VERSION 3.20)\nproject(t C)\nadd_executable(t main.c)\n")
+            with open(os.path.join(src, "main.c"), "w", encoding="utf-8") as f:
+                f.write("#include <stdio.h>\nint main(void) { puts(\"ok\"); return 0; }\n")
+            gen = ["-G", "Ninja"] if shutil.which("ninja") else []
+
+            def builds(name):
+                top = os.path.join(tmp, name)
+                s2 = os.path.join(top, "src")
+                shutil.copytree(src, s2)
+                b = os.path.join(top, "build")
+                rc1, o1 = run(["cmake", "-S", s2, "-B", b] + gen + tc)
+                rc2, o2 = run(["cmake", "--build", b]) if rc1 == 0 else (rc1, "")
+                return rc1 == 0 and rc2 == 0, (o1 + " " + o2)[-400:]
+
+            ok, out = builds("Project Pyrrhus with spaces")
+            check("4 a folder with spaces configures and builds", ok, out)
+            ok, out = builds("plain_control")
+            check("4 negative control: a plain folder configures and builds", ok, out)
+            for name in ("Jos\u00e9 \u00f1 \u00e4", "x$y", "x&y", "x!y", "x%y", "x=y", "x'y", "x,y", "x+y", "x~1", "x@y", "x`y"):
+                ok, out = builds("probe " + name)
+                print(f"INFO 4 probe {name!r}: {'builds' if ok else 'FAILS: ' + out[-200:]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"test_cmake_path_chars: {'PASS' if not FAILS else 'FAIL ' + ', '.join(FAILS)}")

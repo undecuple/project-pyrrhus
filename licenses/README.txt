@@ -7,6 +7,8 @@ NotoSans-OFL.txt        Noto Sans (SIL Open Font License 1.1), fonts\NotoSans-Re
 LGPL-2.1.txt           the LGPL 2.1 text for FFmpeg's ATRAC3/ATRAC3+ decoder (at3_standalone.dll) and the FFmpeg decoder DLLs (avcodec-63.dll, avutil-61.dll), all separate DLLs beside the game's exe
 FidelityFX-FSR1-LICENSE.txt   AMD FidelityFX FSR 1 shader headers (MIT, Copyright (c) 2021 Advanced Micro Devices, Inc.), compiled into the renderer
 FidelityFX-FSR1-Drobot-2014-MIT.txt   the MIT notice "Copyright (c) 2014 Michal Drobot" carried in FSR 1's ffx_a.h
+jsp-vs-ex-LICENSE.txt   jsp-vs-ex (MIT, Copyright (c) 2026 Tsamiuy and Copyright (c) 2026 undecuple): patch 6045 adapts its patch 0004
+project-vekta-LICENSE.txt   Project Vekta (MIT, Copyright (c) 2026 Gustavo Morinaga and the Project Vekta contributors; its LICENSE at fd97c34f5654): the attest job, support.py and the build priority adapt its files
 Project-Pyrrhus-LICENSE.txt   this project's own MIT licence (same copyright holder as the Killzone 3 port, Project Helghast)
 
 The installer and the portable zip ship these under licenses\ (tools/release/assemble_payload.py), with the

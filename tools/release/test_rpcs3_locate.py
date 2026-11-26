@@ -129,7 +129,7 @@ def main():
             line = "dump D:\\Jane Doe\\Docs\\kz2 and " + json.dumps("D:\\Jane Doe\\Docs\\x")
             out = red(line)
             check("Jane" not in out and out.count("<Documents>") == 2, f"first-run log: a moved Documents folder ({out})")
-            out = red("C:\\Users\\Other Person\\Games and C_/Users/Other_Person/x and C%3A%5CUsers%5COther%20Person%5Cy")
+            out = red("C:\\Users\\ExampleOther Person\\Games and C_/Users/Other_Person/x and C%3A%5CUsers%5COther%20Person%5Cy")
             check("Other" not in out and out.count("<user>") == 3, f"another user's folder in three forms ({out})")
             h = str(home)
             for form in (h.replace(" ", "_"), urllib.parse.quote(h, safe=""), urllib.parse.quote(h, safe="/:")):

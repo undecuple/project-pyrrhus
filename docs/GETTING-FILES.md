@@ -119,6 +119,8 @@ A `WARN` lets it go on. The full log is next to the installer (or in the install
 | O1 | FAIL | The install folder or the build folder is inside OneDrive | Install into a folder outside OneDrive (the default is fine) |
 | O2 | FAIL | A game file exists only online in OneDrive (nothing was read, so nothing was downloaded) | Right-click the game folders, choose "Always keep on this device", wait for the download, then run the setup again |
 | O3 | OK | A note: the dump or update folder is inside OneDrive but its files are on this device | Nothing |
+| P1 | FAIL | The install folder or the build folder has `[`, `]` or `;` in its path, which the build's CMake cannot handle | Choose a folder without them (the default is fine) |
+| P2 | WARN | The install folder or the build folder has letters outside A to Z (such as é or ñ, often from the Windows user name). The build is not tested with them and may stop | If it stops, choose a folder with only A to Z, digits, spaces and `- _ . ( )`, such as `C:\Games\Project Pyrrhus` |
 | D0 | OK / FAIL | FAIL: the dump folder was not found. OK: a note that the dump is a decrypted ISO file, or that `PS3_GAME` or `PS3_GAME/USRDIR` was picked and the folder above it is used | Pick the dump folder again |
 | I1 | FAIL | "this ISO is encrypted; use a decrypted dump": the ISO's file table or its files cannot be read as plain data | Use a decrypted dump (a folder or a decrypted ISO) |
 | I2 | FAIL | The ISO cannot be read: not an ISO image, damaged or cut short | Copy the ISO again |

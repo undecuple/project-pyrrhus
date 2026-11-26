@@ -224,7 +224,7 @@ def main():
         for i in range(7):
             open(os.path.join(logs, f"firstrun-20200101-00000{i}.log"), "w").close()
         fr.copy_to_install_logs(log, logs)
-        kept = sorted(os.listdir(logs))
+        kept = sorted(n for n in os.listdir(logs) if n != "launcher.log")   # main notes its RESULT there (2026-11-26)
         check(len(kept) == fr.KEEP_LOG_COPIES and "firstrun-20200101-000000.log" not in kept, f"9 kept: {kept}")
 
         # 10. --dry-run on the real table writes nothing and lists all steps with commands

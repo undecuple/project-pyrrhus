@@ -1,8 +1,8 @@
 # Troubleshooting
 
 Find what you see, read the likely cause, try what is listed, and open an issue when the entry says so. Each entry
-only lists causes that the setup or launcher detects and names, or that a player's issue has shown. The port is a
-pre-release, so something not listed here may still be a bug: say so in an issue. Speed, graphics and other known
+only lists causes that the setup or launcher detects and names, or that a player's issue has shown. The port is an
+early, experimental release, so something not listed here may still be a bug: say so in an issue. Speed, graphics and other known
 problems are in [KNOWN_ISSUES.md](KNOWN_ISSUES.md); questions about the files you need are in [FAQ.md](FAQ.md) and
 [GETTING-FILES.md](GETTING-FILES.md).
 
@@ -142,6 +142,14 @@ All of them are in the install folder (or the unpacked portable folder):
 | The setup log | `Project-Pyrrhus-setup*.log`; the setup's finish page also offers "Open the install log" | what the installer did |
 | The launcher log | `logs\launcher.log` | one line per start: what it decided, the version, the build stamp, the Online choice |
 | The game log | `build\logs\kz2-<date>-<time>.log` (take the newest) | the game's own log of each session |
+
+**Or attach a support package.** "Make a support package" in the Start menu (in a portable folder: run
+`Project Pyrrhus.exe --support-package`) writes one zip to the `logs` folder and opens it: the three newest game logs,
+up to 10 crash reports, the first-run and launcher logs, your settings files and a short `facts.txt` (the port
+version, Windows version, processor, memory and free disk space). It holds text only, at most 20 MB, with your user
+folders (also on another drive or a network share), your Windows account name, network server names and the PC's
+name replaced; it never holds your saves, the folders your game files are in, or game files.
+Nothing is uploaded: you attach the zip yourself.
 
 **Before you attach one:** the setup, first-run, launcher and game logs hide your Windows user name (paths in your user folder
 appear as `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%` or `<user>`); open the file and search it for your name

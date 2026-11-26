@@ -22,6 +22,9 @@ builder, done-marker). Standard library only, Python 3.11+, Windows and Linux.
   --jobs       compile/lift job count; default from free RAM. The bundled llvm-mingw compiler reserves 3 GiB, budgets
                1 GiB per job and caps at 16/logical CPUs; the GCC fallback reserves 8 GiB, budgets 1.5 GiB per job
                and caps at 8. PPU and SPU lifting use at most 4 of those jobs.
+               Under 8 GiB of free memory when the build starts, every step runs at a lower priority (Windows
+               BELOW_NORMAL_PRIORITY_CLASS, elsewhere nice 10; from Project Vekta, MIT) so the PC stays usable; the log's
+               "# free disk" line says so. Above that nothing changes.
   --toolchain  an llvm-mingw folder (bin/x86_64-w64-mingw32-clang[.exe]), built with port/cmake/llvm-mingw.cmake;
                default: the payload's <root>/toolchain/llvm-mingw when present, else port/cmake/mingw-w64.cmake
                (the GCC MinGW-w64 cross compiler on PATH; a NOTE line says so, public #34). Another toolchain than
@@ -59,6 +62,8 @@ Machine-readable lines on stdout, for the Inno wizard's output page and the zip'
   PROGRESS step=N/M name=<step> done=X total=Y elapsed=S pct=P      (P = whole pipeline, weights applied)
   REASON <text>                        (before RESULT ok=0, one per reason: an input reason or a failing check's message)
   RESULT ok=1|0 step=<failed step, quit or -> elapsed=S   (quit: --interactive ended at q after a failed check)
+  progress F <step label>              (only with RECOMPLAUNCHER=1: RecompLauncher's progress line, F from 0 to 1,
+                                       after each PROGRESS line; not logged)
 The compile step's done/total come from Ninja's "[x/y]" status lines. Every other line is the step's own output.
 
 Resume: each finished step writes <build>/.firstrun/<NN>-<name>.done (JSON: the inputs fingerprint, duration). A
@@ -168,6 +173,28 @@ LIFT_JOBS_MAX = 4
 
 
 # ---------------------------------------------------------------------------------------------------------- context
+# Compiler and build variables a player's MSYS2, MinGW or Visual Studio setup may leave in the environment; the build
+# with the bundled compiler drops them (Ctx.env), so CMake and clang see only our toolchain.
+COMPILER_VARS = ("CC", "CXX", "CPP", "LD", "AR", "RC", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CPATH",
+                 "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", "INCLUDE", "LIB", "LIBPATH", "PKG_CONFIG_PATH",
+                 "PKG_CONFIG_LIBDIR", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "CMAKE_GENERATOR", "CMAKE_MAKE_PROGRAM",
+                 "MAKEFLAGS", "MSYSTEM", "MINGW_PREFIX", "GCC_EXEC_PREFIX", "COMPILER_PATH")
+
+
+def clean_path(ours, environ):
+    """The Windows build's PATH: our folders (compiler, CMake, Ninja, Python), then Windows' own (%SystemRoot%\\System32,
+    %SystemRoot%, Wbem, Windows PowerShell), and nothing else from the player's PATH."""
+    sysroot = (environ.get("SystemRoot") or environ.get("SYSTEMROOT") or environ.get("windir") or r"C:\Windows").rstrip("\\/")
+    system = [sysroot + "\\System32", sysroot, sysroot + "\\System32\\Wbem", sysroot + "\\System32\\WindowsPowerShell\\v1.0"]
+    seen, out = set(), []
+    for d in ours + system:
+        k = d.lower()
+        if d and k not in seen:
+            seen.add(k)
+            out.append(d)
+    return ";".join(out)
+
+
 @dataclass
 class Ctx:
     root: str
@@ -183,6 +210,7 @@ class Ctx:
     python: str = sys.executable
     cmake: str = "cmake"
     ninja: str = ""
+    low_priority: bool = False                   # little free memory: the steps run at a lower priority
     facts: dict = field(default_factory=dict)
     cache: dict = field(default_factory=dict, repr=False)
 
@@ -221,12 +249,27 @@ class Ctx:
     def b(self, *rel):
         return os.path.join(self.build, *rel)
 
-    def env(self):
-        """Child environment: the bundled compiler, CMake and Ninja first on PATH (release layout)."""
+    def env(self, environ=None, nt=None):
+        """Child environment: the bundled compiler, CMake and Ninja first on PATH (release layout). On Windows with the
+        payload's own compiler (toolchain/llvm-mingw) the PATH is built from scratch (clean_path): our tools and
+        Windows' own folders only, and the compiler variables (CC, CFLAGS, CPATH ...) are dropped, so an MSYS2, MinGW,
+        Strawberry Perl or Cygwin compiler on the player's PATH is never picked up (issue #34's kind of mix-up).
+        KZ2_FIRSTRUN_FULL_PATH=1 keeps the player's PATH (diagnosis only). A CMake or Ninja the payload lacks is
+        taken from the player's PATH (player_tools: only its folder is kept); found nowhere, main stops with a REASON. Elsewhere, and for the GCC fallback (no
+        bundled compiler), the PATH stays as it was with our tools first."""
+        environ = os.environ if environ is None else environ
+        nt = (os.name == "nt") if nt is None else nt
         extra = [os.path.join(self.toolchain, "bin")] if self.toolchain else []
         extra += [os.path.join(self.root, "toolchain", *d) for d in (("cmake", "bin"), ("ninja",))]
-        e = dict(os.environ)
-        e["PATH"] = os.pathsep.join([d for d in extra if os.path.isdir(d)] + [e.get("PATH", "")])
+        e = dict(environ)
+        ours = [d for d in extra if os.path.isdir(d)]
+        if self.clean_env(environ, nt):
+            keep, _ = self.player_tools(environ, nt)
+            for k in [k for k in e if k.upper() in COMPILER_VARS or k.upper() == "PATH"]:
+                del e[k]
+            e["PATH"] = clean_path(ours + [os.path.dirname(p) for p in (self.python,) if os.path.isabs(p)] + keep, e)
+        else:
+            e["PATH"] = os.pathsep.join(ours + [e.get("PATH", "")])
         e["PYTHONIOENCODING"] = "utf-8"
         e["PYTHONUTF8"] = "1"
         e["KZ2_EBOOT_VER"] = self.ver                                # the tree's EBOOT version
@@ -235,6 +278,34 @@ class Ctx:
         if fixups_file(self):
             e["PPU_JT_HINTS"] = self.b("analysis", "jt_hints.txt")    # written by lift_fixups.py before the lift
         return e
+
+    def clean_env(self, environ=None, nt=None):
+        """True when env() builds the clean PATH: Windows, the payload's own compiler, no KZ2_FIRSTRUN_FULL_PATH=1."""
+        environ = os.environ if environ is None else environ
+        nt = (os.name == "nt") if nt is None else nt
+        return nt and self.bundled_compiler() and environ.get("KZ2_FIRSTRUN_FULL_PATH") != "1"
+
+    def player_tools(self, environ=None, nt=None):
+        """CMake or Ninja the payload does not bundle (self.cmake a bare "cmake", self.ninja ""): the folder on the
+        player's PATH that holds each, kept on the clean PATH, and the names found nowhere. -> (folders, missing)."""
+        environ = os.environ if environ is None else environ
+        nt = (os.name == "nt") if nt is None else nt
+        path = next((v for k, v in environ.items() if k.upper() == "PATH"), "")
+        exe = ".exe" if nt else ""
+        need = [n for n, have in (("cmake", os.path.isabs(self.cmake)), ("ninja", bool(self.ninja))) if not have]
+        keep, missing = [], []
+        for n in need:
+            d = next((d for d in path.split(";" if nt else os.pathsep) if d and os.path.isfile(os.path.join(d, n + exe))), "")
+            if d:
+                keep += [] if d in keep else [d]
+            else:
+                missing.append(n)
+        return keep, missing
+
+    def bundled_compiler(self):
+        """True when the compiler is the payload's own llvm-mingw (<root>/toolchain/llvm-mingw)."""
+        t = os.path.normcase(os.path.abspath(self.toolchain)) if self.toolchain else ""
+        return bool(t) and t == os.path.normcase(os.path.abspath(os.path.join(self.root, "toolchain", "llvm-mingw")))
 
     def parts(self):
         """The build's inputs as three hashes: `base` = the folders and the EBOOT's identity from
@@ -1273,6 +1344,8 @@ class Runner:
         self.status_file, self.status_head = status_file, ""
         self.reasons = []      # why the build stopped: REASON lines after RESULT ok=0 (the wizard's and launcher's box)
         self.fail_inputs = None   # the check step's FAIL inputs (INPUT_OF) when it stopped there; main records them
+        self.fail_codes = []      # the check step's FAIL codes (D1, U2, E1 ...): launcher.log (note_result)
+        self.last_result = ""     # the RESULT line
         self.t0 = time.monotonic()
         tot = sum(s.weight for s in steps) or 1.0
         self.frac = [s.weight / tot for s in steps]
@@ -1316,6 +1389,10 @@ class Runner:
         pct = 100.0 * (sum(self.frac[:i]) + self.frac[i] * min(1.0, part))
         self.emit(f"PROGRESS step={i + 1}/{len(self.steps)} name={self.steps[i].name} done={done} total={total} "
                   f"elapsed={int(time.monotonic() - self.t0)} pct={pct:.1f}")
+        if os.environ.get("RECOMPLAUNCHER") == "1":
+            # RecompLauncher's setup step shows "progress <0..1> <text>" lines (its docs/DEVELOPERS.md, "prepare");
+            # only when it runs us, and never in the log (the PROGRESS line above is the record)
+            self.emit(f"progress {pct / 100:.3f} {self.steps[i].label}", to_log=False)
 
     def progress_due(self, done, total):
         """At most one archive-hash PROGRESS line per 0.5 %, and the last one (from Project Helghast v0.1.3)."""
@@ -1329,7 +1406,8 @@ class Runner:
         step = self.steps[i]
         self.log.write(f"$ {subprocess.list2cmdline(argv)}")
         t = time.monotonic()
-        kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
+        pk = priority_kw(self.ctx.low_priority)
+        kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | pk.get("creationflags", 0)} if os.name == "nt" else pk
         captured = []
         try:
             self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -1476,6 +1554,12 @@ class Runner:
                 if fails:
                     self.fail_inputs = {INPUT_OF.get(c.get("code")) for c in j.get("checks", [])
                                         if c.get("level") == "FAIL"}
+                    self.fail_codes = sorted({c.get("code") for c in j.get("checks", []) if c.get("level") == "FAIL"})
+                    c = self.ctx
+                    if same_failure(c.build, fail_key(c.iso or c.dump, c.update, c.eboot, self.fail_codes)):
+                        # the same unchanged inputs failed the same way again: the specific lines, then the short
+                        # numbered guide (2026-11-26)
+                        return list(fails) + _fc().repeat_guide(_fc().own_disc_id(c.iso or c.dump), self.fail_codes)
                     return fails
             except (ValueError, AttributeError, KeyError, TypeError):
                 pass
@@ -1495,8 +1579,32 @@ class Runner:
         return self.result(False, step)
 
     def result(self, ok, step):
-        self.emit(f"RESULT ok={int(ok)} step={step} elapsed={int(time.monotonic() - self.t0)}")
+        self.last_result = f"RESULT ok={int(ok)} step={step} elapsed={int(time.monotonic() - self.t0)}"
+        self.emit(self.last_result)
         return 0 if ok else 1
+
+
+LOW_MEMORY = 8 * GIB      # under this much free RAM when the build starts, its steps run at a lower priority
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+def low_memory(avail):
+    """Little free memory (under 8 GiB when the build starts): the build's processes then run at a lower priority, so
+    the rest of the PC stays usable while every core compiles. Above that nothing changes. From Project Vekta's
+    tools/release/firstrun.py low_memory and priority_kw (github.com/gustavomorinaga/project-vekta, commit
+    fd97c34f5654, main 2026-11-24; MIT, Copyright (c) 2026 Gustavo Morinaga and the Project Vekta contributors; itself after Project
+    Helghast's low_memory_for and lower_priority, same author as this project)."""
+    return bool(avail) and avail < LOW_MEMORY
+
+
+def priority_kw(low, nt=None):
+    """subprocess.Popen arguments for a lower priority (Windows below normal, else nice 10), or none (from Project
+    Vekta, as low_memory)."""
+    if not low:
+        return {}
+    if (os.name == "nt") if nt is None else nt:
+        return {"creationflags": BELOW_NORMAL_PRIORITY_CLASS}
+    return {"preexec_fn": lambda: os.nice(10)}
 
 
 def header(ctx, log_path, fallback):
@@ -1505,7 +1613,8 @@ def header(ctx, log_path, fallback):
     return [f"# started {datetime.datetime.now().isoformat(timespec='seconds')}",
             f"# firstrun.py, Python {platform.python_version()}, {platform.platform()}",
             f"# cores {os.cpu_count()}, available RAM {ram / GIB:.1f} GiB" if ram else f"# cores {os.cpu_count()}",
-            f"# free disk {du.free / GIB:.1f} GiB on the build drive, jobs {ctx.jobs}",
+            f"# free disk {du.free / GIB:.1f} GiB on the build drive, jobs {ctx.jobs}" +
+            (", below-normal priority (under 8 GiB of free memory)" if ctx.low_priority else ""),
             f"# root {ctx.root}", f"# build {ctx.build}"] + \
         ([f"# file systems: {fsl}"] if (fsl := file_systems([("install", ctx.root), ("game files", ctx.dump),
                                                               ("update", ctx.update)])) else []) + [
@@ -1544,7 +1653,7 @@ This checks your own Killzone 2 disc dump (US BCUS98116; the European, Asian and
 the 1.29 update of the same region and the decrypted EBOOT, then lifts and compiles the game on this computer (5-30 minutes; Ctrl+C stops it, the next start resumes). Nothing is downloaded
 and nothing of the game is copied; the files it generates are your own and must not be shared."""
 UPDATE_HELP = """The 1.29 update of your disc's region is required. Install it on your PS3 (then copy
-dev_hdd0/game/<your disc's title id>, such as BCUS98116) or install the 1.29 update in RPCS3 (see its documentation). The port cannot decrypt the EBOOT: it needs
+dev_hdd0/game/<your disc's title id>) or install the 1.29 update in RPCS3 (see its documentation). The port cannot decrypt the EBOOT: it needs
 a decrypted EBOOT.elf, made from your own copy, in the update's USRDIR folder. This project ships no decryption tools
 or instructions."""
 EBOOT_AGAIN = ("The EBOOT must be the {want} update's one, not the disc's: EBOOT.elf, the decrypted form of EBOOT.BIN in "
@@ -1735,6 +1844,93 @@ def ini_paths(root):
     return g if g["dump"] and g["update"] else {}
 
 
+CHECK_FAIL_KEY = "last-check-fail.txt"     # in the build folder: a hash of the last failed check (no paths)
+
+
+def parent_update(update, dump):
+    """The update pick is a folder of title-id folders (dev_hdd0/game) with no PARAM.SFO of its own: -> its folder
+    for the disc's title id (firstrun_check.update_in_parent), else ""."""
+    if not update or os.path.isfile(os.path.join(update, "PARAM.SFO")):
+        return ""
+    return _fc().update_in_parent(update, _fc().own_disc_id(dump))
+
+
+# What the check reads in each input (relative paths): their sizes and times go into fail_key, so a file the player
+# replaced or added in the same folder counts as a new attempt, not the same failure
+KEY_FILES = ("", "PARAM.SFO", os.path.join("USRDIR", "EBOOT.BIN"), os.path.join("USRDIR", "EBOOT.elf"),
+             os.path.join("USRDIR", "added_data_ps3.psarc"), os.path.join("USRDIR", "patch_data_ps3"),
+             os.path.join("PS3_GAME", "PARAM.SFO"), os.path.join("PS3_GAME", "USRDIR", "EBOOT.BIN"),
+             os.path.join("PS3_GAME", "USRDIR", "data_ps3.psarc"))
+FAIL_KEY_MAX_AGE = 3600      # seconds: an older recorded failure starts a new count
+
+
+def _stat_part(path):
+    out = []
+    for rel in KEY_FILES if path and os.path.isdir(path) else ("",):
+        try:
+            st = os.stat(os.path.join(path, rel) if rel else path)
+            out.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
+        except (OSError, TypeError, ValueError):
+            out.append(f"{rel}:-")
+    return ",".join(out)
+
+
+def fail_key(dump, update, eboot, codes):
+    """A hash of one failed check (2026-11-26): the three inputs as given, the sizes and modification times of what
+    the check reads in them (KEY_FILES), and the FAIL codes. Only the hash is kept."""
+    parts = [os.path.normcase(os.path.abspath(x)) + "|" + _stat_part(x) if x else "" for x in (dump, update, eboot)]
+    parts += sorted(codes)
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def same_failure(build, key, now=None):
+    """True when the last failed check had this key (the same inputs, unchanged, failed the same way twice in a row)
+    and was recorded under FAIL_KEY_MAX_AGE seconds ago; records the key and the time either way. Never fails."""
+    now = time.time() if now is None else now
+    p = os.path.join(build, CHECK_FAIL_KEY)
+    old, when = "", 0.0
+    try:
+        with open(p, encoding="utf-8") as f:
+            parts = f.read().split()
+        old, when = parts[0], float(parts[1]) if len(parts) > 1 else 0.0
+    except (OSError, IndexError, ValueError):
+        pass
+    try:
+        os.makedirs(build, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(f"{key} {int(now)}\n")
+    except OSError:
+        pass
+    return bool(old) and old == key and 0 <= now - when <= FAIL_KEY_MAX_AGE
+
+
+def clear_failure(build):
+    try:
+        os.remove(os.path.join(build, CHECK_FAIL_KEY))
+    except OSError:
+        pass
+
+
+def note_result(root, result, codes=(), environ=None, out=None):
+    """one line in <root>/logs/launcher.log with the first run's RESULT line and its FAIL ids (no paths),
+    so a report attached from the launcher shows why it stopped (a player's launcher.log held only "start:" lines).
+    Under RecompLauncher (RECOMPLAUNCHER=1) the same ids go to stdout last, so its short log ends on them. Never fails."""
+    environ = os.environ if environ is None else environ
+    if not result:
+        return
+    line = result + (f" fails={','.join(sorted(codes))}" if codes else "")
+    try:
+        d = os.path.join(root, "logs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "launcher.log"), "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} first-run: {line}\n")
+    except OSError:
+        pass
+    if environ.get("RECOMPLAUNCHER") == "1" and codes:
+        print(f"The check stopped the setup: {', '.join(sorted(codes))}. The lines above say what to change; then set "
+              "it up again.", file=out or sys.stdout, flush=True)
+
+
 def record_paths(root, dump, update, eboot, wrong=()):
     """After a failed check the player quit: the answers go to kz2-install.ini [paths] (the folders-once keys the
     wizard writes) with `wrong` = the inputs the FAIL lines were about, so the next start (the launcher's
@@ -1810,6 +2006,10 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
                 return ""
             if r and need_dir and iso and os.path.isfile(r) and r.lower().endswith(".iso"):
                 return os.path.abspath(r)      # a decrypted disc ISO (firstrun_check reads inside it)
+            one = _fc().single_iso(_fc().resolve_dump(r)) if r and need_dir and iso else ""
+            if one and yes(f"  This folder holds no PS3_GAME but one disc image, {os.path.basename(one)}. Use it?", True):
+                say(f"  using {os.path.abspath(one)}")
+                return os.path.abspath(one)    # 2026-11-26: one answer, not "pick that file"
             if r and (os.path.isdir(r) if need_dir else os.path.isfile(r)):
                 if resolve and resolve(r) != r:
                     say(f"  using {os.path.abspath(resolve(r))}")
@@ -1846,6 +2046,7 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
             say(f"  not found: {r}")
 
     target = EBOOT_VERS[Ctx(root=root, build=root).ver]["check"]
+    build_dir = os.path.abspath(a.build or os.path.join(root, "build"))
     prev = {}
     try:
         with open(os.path.join(os.path.abspath(a.build or os.path.join(root, "build")), "paths.json"),
@@ -1886,8 +2087,13 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
                 dump = folder("Disc dump: the folder holding PS3_GAME, or a decrypted .iso file", dump,
                               resolve=_fc().resolve_dump, iso=True)
             if wrong is None or "update" in wrong:
-                upd = folder("1.29 update folder (dev_hdd0/game/<your disc's title id>, such as BCUS98116)", upd,
-                             resolve=_fc().resolve_update)
+                upd = folder(f"1.29 update folder ({_fc().game_dir(_fc().own_disc_id(dump)).replace(os.sep, '/')})",
+                             upd, resolve=_fc().resolve_update)
+                mine = parent_update(upd, dump)
+                if mine and yes(f"  This folder holds the update folders of several games; {os.path.basename(mine)} "
+                                "is your disc's. Use it?", True):
+                    say(f"  using {mine}")
+                    upd = mine
             if wrong is None or "eboot" in wrong:
                 auto = os.path.join(upd, "USRDIR", "EBOOT.elf")
                 elf = elf or (prev.get("eboot", "") if prev.get("update") == upd else "") or \
@@ -1899,17 +2105,27 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
         got = None
         while True:
             rc, text = check(dump, upd, elf, target)
-            say(text.rstrip())
             notes.append("# interactive check")
             notes.extend(text.rstrip().splitlines())
-            a.fail_reasons = []
+            a.fail_reasons, a.fail_codes = [], []
             if rc == 0:
+                say(text.rstrip())
+                clear_failure(build_dir)
                 break
             checks = text_checks(text)
             a.fail_reasons = check_reasons(checks, text_reasons(text))   # the launcher's dialog when the player quits here
             codes = {c["code"] for c in checks if c["level"] == "FAIL"}
+            a.fail_codes = sorted(codes)
+            again = same_failure(build_dir, fail_key(dump, upd, elf, codes))
+            say(text.rstrip())     # the specific lines always come first (2026-11-26 review)
+            guide = "\n".join(_fc().repeat_guide(_fc().own_disc_id(dump), codes)) if again else ""
+            if again:      # the same unchanged inputs failed the same way again: the numbered guide after them
+                notes.append("# the same check failed again: guide shown")
             inputs = {INPUT_OF.get(c) for c in codes}
             if codes and codes <= {"E1", "H1"} and elf and os.path.isfile(elf):
+                if guide:
+                    say("")
+                    say(guide)
                 # only the chosen EBOOT is wrong (another version, e.g. the disc's 1.01 one, or a build this port does
                 # not run, H1): ask for it again, not for the folders (from Project Helghast PR #11; no EBOOT at all
                 # keeps the question below)
@@ -1928,7 +2144,11 @@ def interactive(a, root, log_path, notes, ask=input, out=sys.stdout, check=_chec
                 continue
             if "U0" in text or "U1" in text or "U2" in text or "E1" in text:
                 say("")
-                say(UPDATE_HELP)
+                say(UPDATE_HELP.replace("dev_hdd0/game/<your disc's title id>",
+                                        _fc().game_dir(_fc().own_disc_id(dump)).replace(os.sep, "/")))
+            if guide:
+                say("")
+                say(guide)
             try:
                 r = ask("Fix the FAIL lines, then Enter = check again, c = change the folders, q = quit: ").strip().lower()
             except (EOFError, StopIteration):
@@ -2086,6 +2306,16 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
     # a pick of PS3_GAME, PS3_GAME/USRDIR or the update's USRDIR: the folder above, for every step, not just the
     # check (a silent install's /DUMP= is resolved by the setup; the command line here was not; Project Helghast PR #14)
     a.dump, a.update = _fc().resolve_dump(a.dump), _fc().resolve_update(a.update)
+    one_iso = _fc().single_iso(a.dump)
+    if one_iso:
+        # the folder that holds the ISO was picked (2026-11-26): the one ISO in it is the disc (asked in the text UI)
+        notes.append(f"# disc dump: the folder holds no PS3_GAME and one ISO, {os.path.basename(one_iso)}: using it")
+        a.dump = one_iso
+    mine = parent_update(a.update, a.dump)
+    if mine:
+        # dev_hdd0/game picked as the update (2026-11-26): its folder for the disc's title id is the update
+        notes.append(f"# 1.29 update: the folder holds several title-id folders; using {os.path.basename(mine)}, the disc's")
+        a.update = mine
     is_iso = bool(a.dump) and os.path.isfile(a.dump)      # a decrypted disc ISO instead of a dump folder
     if steps is None:
         steps = steps_for(is_iso)
@@ -2099,11 +2329,12 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
         notes.append("# " + tc_note)
     # a pick of PS3_GAME, PS3_GAME/USRDIR or the update's USRDIR names the folder above (as the check and the wizard)
     a.dump, a.update = _fc().resolve_dump(a.dump), _fc().resolve_update(a.update) if a.update else a.update
+    avail = available_ram()
     ctx = Ctx(root=root, build=os.path.abspath(a.build or os.path.join(root, "build")),
               dump=os.path.abspath(a.dump), iso=os.path.abspath(a.dump) if is_iso else "",
               update=os.path.abspath(a.update) if a.update else "",
               eboot=os.path.abspath(a.eboot) if a.eboot else "",
-              jobs=a.jobs or jobs_for(available_ram(), clang=bool(toolchain), cores=os.cpu_count()),
+              jobs=a.jobs or jobs_for(avail, clang=bool(toolchain), cores=os.cpu_count()), low_priority=low_memory(avail),
               toolchain=toolchain,
               python=bundled.get("python", sys.executable), cmake=bundled.get("cmake", "cmake"),
               ninja=bundled.get("ninja", ""))
@@ -2129,14 +2360,26 @@ def main(argv=None, steps=None, out=sys.stdout, ask=input):
         log.write("# the player quit before the build")
         if getattr(a, "fail_reasons", None):   # quit at a failed check: the launcher's dialog says why
             r.failed("quit", *a.fail_reasons)
+        note_result(root, r.last_result or "RESULT ok=0 step=quit", getattr(a, "fail_codes", []), out=out0)
         log.close()
         return 1
     if os.name != "nt":
         signal.signal(signal.SIGTERM, _interrupt)
+    if ctx.clean_env():
+        _, missing = ctx.player_tools()
+        if missing:     # the clean PATH has no player folders, so a bare "cmake" would fail late and unclearly
+            rc = r.failed("tools", f"The build needs {' and '.join(missing)}, which the install's toolchain folder does "
+                          f"not have ({os.path.join(root, 'toolchain')}). Repair or reinstall Project Pyrrhus with the "
+                          "current installer.")
+            log.close()
+            return rc
     try:
         rc = r.run()
     except Exception as e:   # always end with a RESULT line: the Inno wizard waits for one
         rc = r.failed("internal", f"internal error: {e!r}")
+    note_result(root, r.last_result, r.fail_codes, out=out0)
+    if rc == 0:
+        clear_failure(ctx.build)
     if rc == 1 and r.fail_inputs is not None:
         # the check step failed: the next start (launcher --check-first, the zip's run.cmd) checks these answers first
         # and asks again only for the failed inputs (record_paths)

@@ -4,8 +4,8 @@
 # Triggers: a pushed tag vMAJOR.MINOR.PATCH (builds, then creates a DRAFT release) and workflow_dispatch (a dry run:
 # builds and uploads the workflow artifact, never publishes). Nothing runs on a push to a branch or on a pull request.
 # Release rules: the version is installer/VERSION and a tag must say the same (tools/release/release_version.py; the
-# same string is in the exe, the launcher, the installer and CITATION.cff); the release is a pre-release while the
-# major version is 0; its title is the tag; its notes are written from the tag's CHANGELOG.md entry
+# same string is in the exe, the launcher, the installer and CITATION.cff); the release is a full GitHub release from
+# 0.1.14 on (earlier ones were pre-releases; tools/release/release_version.py FIRST_FULL_RELEASE); its title is the tag; its notes are written from the tag's CHANGELOG.md entry
 # (tools/release/release_notes.py, which refuses a tag without one); SHA256SUMS and one .sha256 per file sit beside
 # the assets; an existing release is never touched, no tag is created, moved or deleted, and no asset is overwritten.
 # The maintainer reads the draft and publishes it.
@@ -26,7 +26,9 @@
 # when their SHA-256 matches the pin, so a slow licence server cannot stop the build.
 # Nothing of the game is used or produced here: the installer carries sources, the toolkit and the toolchain only.
 #
-# Published files: Project-Pyrrhus-setup.exe, Project-Pyrrhus-<version>-portable.zip, a .sha256 for each, SHA256SUMS.
+# Published files: Project-Pyrrhus-setup.exe, Project-Pyrrhus-<version>-Windows-x64.zip (the portable zip, so named
+# from 0.1.14: the system and processor words let a launcher pick it), a .sha256 for each, SHA256SUMS.
+# On tag pushes the attest job signs both files' build provenance first (actions/attest; from Project Vekta, MIT).
 name: release
 
 on:
@@ -240,7 +242,7 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           python3 tools/release/pack_zip.py --payload build/release-payload \
-            --out "installer/Output/Project-Pyrrhus-$VERSION-portable.zip"
+            --out "installer/Output/Project-Pyrrhus-$VERSION-Windows-x64.zip"
           ls -l installer/Output
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -249,17 +251,76 @@ jobs:
           path: |
             installer/Output/Project-Pyrrhus-setup.exe
             installer/Output/Project-Pyrrhus-setup.exe.sha256
-            installer/Output/Project-Pyrrhus-*-portable.zip
-            installer/Output/Project-Pyrrhus-*-portable.zip.sha256
+            installer/Output/Project-Pyrrhus-*-Windows-x64.zip
+            installer/Output/Project-Pyrrhus-*-Windows-x64.zip.sha256
             installer/Output/release-body.md
           if-no-files-found: error
           retention-days: 14
 
-  # Tag pushes only; a dispatch never publishes. A draft pre-release (major 0) titled with the tag. If a release for the
+  # Build provenance for the two published files (from Project Vekta's release.yml attest job, github.com/
+  # gustavomorinaga/project-vekta at fd97c34f5654, MIT, Copyright (c) 2026 Gustavo Morinaga and the Project Vekta contributors; adapted):
+  # a statement that this workflow built them from this repository at this commit, signed through Sigstore with the
+  # run's own identity (no key is kept anywhere) and stored by GitHub. Anyone can check a downloaded file:
+  #   gh attestation verify Project-Pyrrhus-setup.exe --repo undecuple/project-pyrrhus
+  # Tag pushes only, before the draft is created, so no release goes without it (a signature goes to Sigstore's
+  # public log and stays there, which a dispatch dry run should not do). The subjects are the same SHA256SUMS lines
+  # the publish job writes. The last step checks each file against what GitHub stored, with the workflow and the ref
+  # it must name. No checkout: the job runs no repository code. Not run yet (no tag since it was added).
+  attest:
+    needs: installer
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read         # gh run download: the installer job's artifact
+      id-token: write       # the run's OIDC token, for which Sigstore issues the signing certificate
+      attestations: write   # GitHub stores the attestation; the last step reads it back
+    steps:
+      - name: The two files and their sums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.installer.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir assets && cd assets
+          gh run download "$GITHUB_RUN_ID" --name "Project-Pyrrhus-$VERSION" --dir .
+          zip="Project-Pyrrhus-$VERSION-Windows-x64.zip"
+          for f in Project-Pyrrhus-setup.exe "$zip"; do
+            { test -s "$f" && test -s "$f.sha256" && sha256sum -c "$f.sha256"; } || {
+              echo "::error::$f or its .sha256 is missing or does not match"; exit 1; }
+          done
+          sha256sum Project-Pyrrhus-setup.exe "$zip" > SHA256SUMS   # the same lines as the publish job's SHA256SUMS
+          cat SHA256SUMS
+
+      # the commit the v4.2.1 tag points to (its package.json there still says 4.1.0, an upstream quirk)
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4.2.1
+        with:
+          subject-checksums: assets/SHA256SUMS
+
+      - name: Each file verifies against the stored attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd assets
+          while read -r _ f <&3; do
+            ok=0
+            for try in 1 2 3; do   # the attestation may take a moment to be served
+              if gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --source-ref "$GITHUB_REF" \
+                   --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"; then
+                ok=1; break
+              fi
+              echo "attempt $try for $f failed"; sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "::error::$f does not verify against its attestation"; exit 1; }
+          done 3< SHA256SUMS
+
+  # Tag pushes only; a dispatch never publishes. A draft full release (from 0.1.14, not a pre-release) titled with the tag. If a release for the
   # tag already exists the job fails: nothing is edited, re-uploaded or clobbered, and no tag is touched (--verify-tag
   # refuses to create one). No checkout: the job runs no repository code.
   publish:
-    needs: installer
+    needs: [installer, attest]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -278,7 +339,7 @@ jobs:
           mkdir assets && cd assets
           gh run download "$GITHUB_RUN_ID" --name "Project-Pyrrhus-$VERSION" --dir .
           ls -l
-          zip="Project-Pyrrhus-$VERSION-portable.zip"
+          zip="Project-Pyrrhus-$VERSION-Windows-x64.zip"
           for f in Project-Pyrrhus-setup.exe "$zip"; do
             test -s "$f" && test -s "$f.sha256"
             sha256sum -c "$f.sha256"
@@ -288,8 +349,7 @@ jobs:
           fi
           sha256sum Project-Pyrrhus-setup.exe "$zip" > SHA256SUMS
           cat SHA256SUMS
-          pre=""; case "$VERSION" in 0.*) pre="--prerelease" ;; esac
           # the notes the installer job wrote from the tag's CHANGELOG.md entry (not uploaded as an asset)
           test -s release-body.md
-          gh release create "$GITHUB_REF_NAME" --draft $pre --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-body.md \
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-body.md \
             Project-Pyrrhus-setup.exe Project-Pyrrhus-setup.exe.sha256 "$zip" "$zip.sha256" SHA256SUMS
