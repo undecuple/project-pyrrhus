@@ -1,0 +1,24 @@
+KZ2 patch 7047: use atomic accesses for the POSIX SPURS wake generation.
+
+Patch 7046 advances the generation before the signaler takes the mutex.
+Use the existing acquire accessor in the timed-wait loop and the final check.
+Store zero with a relaxed atomic during initialization, before publication.
+The sequentially consistent sleeper handshake and the Windows path are unchanged.
+
+Licence: MIT (project LICENSE).
+Test: python3 tools/runtime/test_kwake_posix.py --check-atomics
+
+--- a/runtime/spu/spurs_kern_sched.h
++++ b/runtime/spu/spurs_kern_sched.h
+@@ -180,3 +180,3 @@
+ typedef struct { pthread_mutex_t lk; pthread_cond_t cv; volatile uint32_t gen; volatile int nsleep; } kz3_kwake;
+-static inline void kz3_kwake_init(kz3_kwake* w) { pthread_mutex_init(&w->lk, 0); pthread_cond_init(&w->cv, 0); w->gen = 0; w->nsleep = 0; }
++static inline void kz3_kwake_init(kz3_kwake* w) { pthread_mutex_init(&w->lk, 0); pthread_cond_init(&w->cv, 0); __atomic_store_n(&w->gen, 0, __ATOMIC_RELAXED); w->nsleep = 0; }
+ static inline uint32_t kz3_kwake_gen(kz3_kwake* w) { return __atomic_load_n(&w->gen, __ATOMIC_ACQUIRE); }
+@@ -219,4 +219,4 @@
+         if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+-        while (w->gen == seen && pthread_cond_timedwait(&w->cv, &w->lk, &t) == 0) {}
+-        woke = w->gen != seen;
++        while (kz3_kwake_gen(w) == seen && pthread_cond_timedwait(&w->cv, &w->lk, &t) == 0) {}
++        woke = kz3_kwake_gen(w) != seen;
+     }

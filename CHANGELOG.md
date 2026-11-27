@@ -38,6 +38,7 @@ port is early and experimental (partly playable): see [RELEASE-CRITERIA.md](docs
 - **macOS fonts (patch 6109):** the system fontset now finds `fonts/` next to the executable on macOS, where there is no `/proc/self/exe`; the FIOS cache stamp reads the executable path the same way.
 - **macOS speed, frame thread (patch 6087):** the frame thread's sleep between FIFO passes was a no-op everywhere but Windows, so it spun at the outer loop's full rate -- ~35k message pumps a second, each a dispatch to the main queue, and a busy core. It sleeps 4 ms like the Windows build now (`nanosleep`, which takes waits past one second; host test `test_posix_sleep_ms.py`): pumps dropped 122x (in the contributor's 400 s scripted session, ~280 per 10 s; it was ~34,600).
 - **POSIX SPURS kernel wake (patch 7046):** the SPURS kernel threads signal each other without the lock when nobody sleeps, and a waiter watches for new work for 20 us (`KZ2_KWAKE_SPIN_US`, 0 = off) before it sleeps. Windows keeps its own path. Host test `test_kwake_posix.py` checks that no signal is lost.
+- **POSIX SPURS kernel wake (patch 7047):** all generation counter accesses are atomic, so a signal can advance the counter while a waiter reads it. Signaling still skips the mutex when no waiter is asleep.
 
 ## [0.1.13] - 2026-11-13 (pre-release)
 

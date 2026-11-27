@@ -6,9 +6,13 @@ Builds the patched header with a small host program and checks, with the pre-sle
     out: a signal is never lost between a waiter's last look at the generation and its sleep;
   - four waiters and one signaler: every waiter sees the final generation, none times out after the last signal;
   - a signal with nobody asleep does not take the lock (the lock is held by the test while it signals).
-POSIX only; no game data. Needs work/ps3recomp-patched (tools/build-kz2-macos.py makes it).
+With --check-atomics, checks that every POSIX generation counter access uses an
+atomic builtin (patch 7047). Both checks use the toolkit from
+tools/ps3recomp-patched.sh, with KZ2_PATCHED_DIR or KZ2_OUT overrides.
 """
+import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,7 +71,34 @@ int main(void) {
 '''
 
 
+def check_atomics(header):
+    _, marker, posix = header.read_text().partition('\n#else\n#include <pthread.h>\n')
+    if not marker:
+        raise SystemExit('FAIL: POSIX kwake section not found')
+    posix = re.sub(r'/\*.*?\*/|//[^\n]*', ' ', posix, flags=re.S)
+    member = r'(?:->|\.)\s*gen\b'
+    builtin = re.compile(r'\b__atomic_(load_n|store_n|add_fetch)\s*\(\s*&\s*\w+\s*' + member + r'\s*,')
+    plain = [line.strip() for line in builtin.sub('', posix).splitlines() if re.search(member, line)]
+    if plain:
+        raise SystemExit('FAIL: non-atomic POSIX kwake generation access:\n' + '\n'.join(plain))
+    if set(builtin.findall(posix)) != {'load_n', 'store_n', 'add_fetch'}:
+        raise SystemExit('FAIL: POSIX kwake generation must have atomic loads, initialization and increment')
+    print('PASS: patch 7047 uses atomic accesses for the POSIX kwake generation')
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--check-atomics', action='store_true', help='check the generation accesses in the patched source')
+    args = parser.parse_args()
+    output = Path(os.environ.get('KZ2_OUT') or ROOT / 'work')
+    toolkit = Path(os.environ.get('KZ2_PATCHED_DIR') or output / 'ps3recomp-patched')
+    inc = toolkit / 'runtime/spu'
+    header = inc / 'spurs_kern_sched.h'
+    if args.check_atomics:
+        if not header.is_file():
+            raise SystemExit(f'Missing patched toolkit header {header}; run tools/ps3recomp-patched.sh first')
+        check_atomics(header)
+        return
     if os.name == 'nt':
         print('SKIP: the Windows kwake is a different path')
         return
@@ -75,9 +106,8 @@ def main():
     if not cc:
         print('SKIP: no host C compiler')
         return
-    inc = ROOT / 'work/ps3recomp-patched/runtime/spu'
-    if not (inc / 'spurs_kern_sched.h').is_file():
-        raise SystemExit('Missing work/ps3recomp-patched; build first')
+    if not header.is_file():
+        raise SystemExit(f'Missing patched toolkit header {header}; run tools/ps3recomp-patched.sh first')
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
         (t / 'harness.c').write_text(HARNESS)
